@@ -67,12 +67,7 @@ anything.
 
 ## Install
 
-```bash
-cargo install sumimi            # the server and the client, one binary
-sumimi serve --dir ./sumimi --port 3000
-```
-
-Or download the release archive (it ships the dashboard frontend and the
+Download the release archive (it ships the dashboard frontend and the
 documentation next to the executable):
 
 | platform | file |
@@ -92,6 +87,14 @@ tar xzf sumimi-v0.4.0-Linux-x86_64.tar.gz
 ```
 
 On Windows, unzip the archive and run `sumimi.exe serve --dir .\sumimi --port 3000`.
+
+Or from crates.io — **the crates are published for the 0.3.x line**, so
+`cargo install sumimi` gives that one, not the release above:
+
+```bash
+cargo install sumimi            # the server and the client, one binary
+sumimi serve --dir ./sumimi --port 3000
+```
 
 The crates are `sumimi` (the binary), `sumimi-service` (the library) and
 `sumimi-cli` (the client). They are Apache-2.0.

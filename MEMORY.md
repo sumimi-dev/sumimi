@@ -352,19 +352,58 @@ with them ✓ ⇒ **0.7% of them time out** ✗ ⇒ the client finds out late �
 
 ### And the traffic does not have to be loopback ✓ ✓
 
-Every number above was loopback traffic ✓. Now it is measured ✓ — the same
-server on the EPYC, the same rate, once over loopback ✓ and once from a laptop over
-the **public internet** ✓ (39 ms of round trip ✓, 512 connections ✓):
+Every number above was loopback traffic ✓. Now it is measured ✓ — and the first
+measurement was **not controlled** ✓ (two different server processes on the EPYC ✓,
+two different histories ✓) ⇒ it said "the memory is the same" ✓ ⇒ **and that was
+wrong** ✗ ✗.
 
-| the traffic | the rate achieved | the requests lost | the server's peak |
-| --- | ---: | ---: | ---: |
-| loopback (64 connections) | 5 000 /s | **0** | 171 MB |
-| the public internet (512 connections, 39 ms) | 4 999 /s | **529 of 75 000 (0.7%)** | 148 MB |
+The controlled version ✓: **the same container** ✓, the same server ✓, the same rate
+✓, **three runs each** ✓, the server **restarted** ✓ every time ✓ — once with the
+load generator **inside** the container (loopback ✓) and once with it **on the
+laptop**, over the **public internet** ✓ (39 ms of round trip ✓):
 
-⇒ **the memory is the same** ✓ ✓ (two different server processes ✓, two different
-histories ✓) ⇒ **what the network costs is the tail** ✓ ✓ ⇒ the caveat is now
-**measured** ✓ ✓, not assumed ✓ ✓. **TLS is still unmeasured** ✓ — that one needs a
-certificate on the box ✓.
+| the traffic | the three peaks | the worst | the promise (512 MB ⇒ 256 MB) |
+| --- | --- | ---: | --- |
+| loopback (the generator inside) | 215 / 207 / 206 MB | **215 MB** | ✓ holds |
+| the public internet (the generator outside) | 261 / 251 / 244 MB | **261 MB** | ✗ **broken by 5 MB** |
+
+⇒ **the network costs ~20% of the memory** ✓ ✓ — the requests arrive in batches ✓
+(39 ms of waiting ✓) ⇒ the server parses a batch at a time ✓ ⇒ the peak is higher ✓.
+⇒ **and the default rate was measured over loopback** ✓ ⇒ so it carries **no
+margin** ✓ ⇒ **the minimum tier's recommended rate breaks the promise on a real
+network** ✗ ✗ ⇒ [#17](https://github.com/sumimi-dev/sumimi/issues/17) ✓ ✓ (the
+proposal: **15 000/s on the minimum tier, 30 000/s on the recommended one** ✓ ✓ —
+by the network's numbers ✓, with ~20% to spare ✓ ✓).
+
+⇒ **what the network costs is the tail too** ✓ ✓ — at 5 000/s over the internet,
+**0.7% of the requests timed out** ✓ (529 of 75 000 ✓) against **0** over loopback ✓
+⇒ **TLS is still unmeasured** ✓ — that one needs a certificate on the box ✓.
+
+### The most deployment-like measurement ✓ ✓
+
+A **container** is what a customer actually runs ✓ ⇒ so the numbers from inside one
+(4 vCPU ✓, **the 128 MB engine tier** ✓ = the minimum tier ✓, the released v0.4.0 ✓)
+are the ones to quote ✓:
+
+| the rate offered | the peak | refused | the queue | the engine held |
+| --- | ---: | ---: | ---: | ---: |
+| 5 000 /s | 117 MB | 0 | 0 | 2 MB |
+| 10 000 /s | 157 MB | 0 | 0 | 2 MB |
+| 15 000 /s | 163 MB | 0 | 0 | 2 MB |
+| **20 000 /s** (the tier's default ✓) | **208 MB** | 0 | 0 | 768 KB |
+| 30 000 /s | 220 MB | **180 313** ✓ | 0 | 768 KB |
+
+⇒ **the gate works** ✓ ✓ — the limit is 20 000/s ✓ ⇒ offering 30 000/s gets
+**180 313 refusals** ✓ ⇒ the server admits 20 000/s ✓ ⇒ **the memory does not
+grow** ✓ ✓ ⇒ **the box is protected** ✓ ✓.
+⇒ and the EPYC, re-measured with the fixed tool ✓, lands on the same line ✓ ✓:
+**100 / 143 / 207 / 236 MB** at 5 / 10 / 15 / 20 000/s ✓ ✓ — its ceiling is
+**~16 700/s** ✓ (two slow cores ✓), and past it the memory **stops growing** ✓ ✓.
+
+⇒ **and a container has one more trap** ✗ ✗ — the server reads `/proc/meminfo` ✓ ⇒
+the **host's** memory ✓ ⇒ in a `--memory=512m` container it thinks it has 7.7 GB ✓ ⇒
+it sizes the engine at 256 MB ✓ and the gate at 40 000/s ✓ ⇒ **the container gets
+OOM-killed** ✗ ⇒ [#16](https://github.com/sumimi-dev/sumimi/issues/16) ✓ ✓.
 
 ### A measurement trap worth writing down ✓ ✓
 
