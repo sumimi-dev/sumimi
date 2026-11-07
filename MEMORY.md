@@ -281,7 +281,7 @@ and 256 → 250, 275 and 255 MB ✓) ✓ and the two in-flight limits ✓ (248 a
    whatever the traffic does ✓, and a burst above it is refused (with a
    `Retry-After` ✓) instead of taking the box with it ✓ ✓.
 
-### The same numbers on two very different machines ✓
+### The same numbers on very different machines ✓
 
 **Two machines is an observation, not a law** ✓ ✓ — the doubt has its own issue ✓
 ([#15](https://github.com/sumimi-dev/sumimi/issues/15) ✓): two points cannot prove a
@@ -307,15 +307,77 @@ higher rate** ✓ ✓ (and at the ceiling the M5 uses *more* ✓ — it churns m
 (the memory table ✓) and *can this box take it?* ✓ (the CPU ✓ and the disk ✓) ✓ ✓.
 
 **So the number to measure on the box you ship on is the rate, not the memory** ✓ —
-the memory follows from it ✓ ✓ — **and until a third machine says otherwise, treat the
-table as "measured on two boxes" ✓, not as a law ✓** ✓.
+the memory follows from it ✓ ✓ — **and now that a third machine says the same thing ✓,
+the table is "measured on three boxes" ✓, not a law on two ✓** ✓.
 
-**And every one of these numbers is loopback traffic** ✓ ✓ — the client connects to
-`127.0.0.1` ✓, so **no TLS ✓, no network card ✓, no latency** ✓ ✓. That does not
-change the **memory** a request costs ✓ ✓ (the parsing is the same ✓) — but it makes
-**how much the box can take** ✓ look better than it is ✓ ✓: a real deployment pays
-for the TLS handshake and the encryption ✓ ✓ ⇒ **the ceiling is lower there** ✓ ✓.
-**Measure the TLS case too** ✓ before promising a rate ✓ ✓.
+### The third machine says the same thing ✓ ✓ ✓
+
+The doubt had its own issue ([#15](https://github.com/sumimi-dev/sumimi/issues/15) ✓)
+— *two points cannot prove a rule, and the two might be a coincidence* ✓. So: a
+**third** machine, a different CPU, a small plain VPS — **AMD EPYC-Genoa, 2 vCPU,
+2 GB** ✓ — measured with the **released v0.4.0 binary** ✓ and the Go tool ✓
+([sumimi-gotest](https://github.com/sumimi-dev/sumimi-gotest) ✓), on Linux ✓, so the
+peak is the exact high-water mark ✓.
+
+| the rate offered | the EPYC (2 vCPU, 2 GB) | the Xeon (2 vCPU) | the M5 (10 cores) |
+| --- | ---: | ---: | ---: |
+| 5 000 /s | **103 MB** | 116 MB | 117 MB |
+| 10 000 /s | **143 MB** | 148 MB | 148 MB |
+| 15 000 /s | **202 MB** | — | — |
+| 20 000 /s | 214 MB (the box served 16 676/s) | 253 MB | 271 MB |
+| 30 000 /s | 215 MB (served 16 669/s) | 309 MB | 302 MB |
+| 40 000 /s | 197 MB (served 17 097/s) | — | — |
+| what the machine could serve | **~16 700 /s** | ~43 000 /s | ~113 000 /s |
+
+⇒ **the same rule, the third time** ✓ ✓ ✓ — the peak ≈ 68 MB + 7.8 MB per 1 000
+requests a second ✓: at 5 000 that is 107 MB (the EPYC: **103** ✓), at 10 000 it is
+146 MB (**143** ✓), at 15 000 it is 185 MB (**202** ✓) ✓ ✓ ✓.
+
+⇒ **so it was not a coincidence** ✓ ✓ ✓ — [#15](https://github.com/sumimi-dev/sumimi/issues/15)
+is answered: at the same rate, **three** machines of three different CPUs cost the
+same memory ✓ ✓; what the CPU decides is **how far up the rate axis you can go** ✓ ✓
+(16 700/s here ✓, 43 000 on the Xeon ✓, 113 000 on the M5 ✓ ✓).
+
+⇒ **and past the ceiling the memory stops growing** ✓ ✓ — at 20 000/s the EPYC's
+peak is 214 MB and its queue is **0** ✓ ✓: the requests it cannot parse **never
+enter** ✓ ✓ ⇒ **the memory is safe** ✓ ✓ — the price is paid in **time** ✓, not in
+memory ✓ ✓.
+
+⇒ **but the default rate was too high for it** ✗ ✗ — the EPYC's default is **40 000/s**
+(the recommended tier ✓ ⇒ the engine's budget is min(RAM/4, 256 MB) = 256 MB ✓ ⇒
+40 000/s ✓) while the box serves ~16 700/s ✓ ⇒ the requests above that are **not
+refused** ✓ (the gate's limit is 40 000 ✓) ⇒ they **wait** ✓ ⇒ and the client waits
+with them ✓ ⇒ **0.7% of them time out** ✗ ⇒ the client finds out late ✓ ⇒ this is
+[#14](https://github.com/sumimi-dev/sumimi/issues/14) ✓ ✓.
+
+### And the traffic does not have to be loopback ✓ ✓
+
+Every number above was loopback traffic ✓. Now it is measured ✓ — the same
+server on the EPYC, the same rate, once over loopback ✓ and once from a laptop over
+the **public internet** ✓ (39 ms of round trip ✓, 512 connections ✓):
+
+| the traffic | the rate achieved | the requests lost | the server's peak |
+| --- | ---: | ---: | ---: |
+| loopback (64 connections) | 5 000 /s | **0** | 171 MB |
+| the public internet (512 connections, 39 ms) | 4 999 /s | **529 of 75 000 (0.7%)** | 148 MB |
+
+⇒ **the memory is the same** ✓ ✓ (two different server processes ✓, two different
+histories ✓) ⇒ **what the network costs is the tail** ✓ ✓ ⇒ the caveat is now
+**measured** ✓ ✓, not assumed ✓ ✓. **TLS is still unmeasured** ✓ — that one needs a
+certificate on the box ✓.
+
+### A measurement trap worth writing down ✓ ✓
+
+**`ru_maxrss` on Linux is not the child's peak** ✗ ✗ — Linux does **not** reset it on
+`exec` ✓, so a child's high-water mark still carries the parent's resident set from
+the moment of the fork ✓ ✓. The load generator is a big process by the third point ✓
+⇒ its memory was reported as the server's peak ✓ ⇒ **the same rate measured 418 MB
+and then 831 MB** ✗ ✗ — while the server's own `/proc` `VmHWM` stayed at 130~140 MB ✓
+✓ ✓.
+
+⇒ **the server reports its own peak** ✓ (`/api/heartbeat` ⇒ `peakRssBytes` ✓) and
+**that is the number to believe** ✓ ✓; `ru_maxrss` is only the fallback for the
+platforms with no `/proc` ✓ (macOS resets it on `exec` ✓, so there it is clean ✓).
 
 **The mechanism, tested where it is cheapest to test** ✓: the same machine ✓, the same
 rate ✓, only the **thread count** changed ✓ — glibc gives every thread its own arena
