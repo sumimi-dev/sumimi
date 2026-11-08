@@ -546,6 +546,30 @@ the DuckDB crate ✓ ⇒ ⇒ ⇒ but they are **churn, not residency** ✓ ⇒ �
 allocator hands the same pages back for the next row ✓ ⇒ ⇒ ⇒ ⇒ so it costs
 **CPU**, not memory ✓ ⇒ ⇒ ⇒ [#19](https://github.com/sumimi-dev/sumimi/issues/19) ✓ ✓.
 
+### How to repeat the measurement
+
+Three rulers. The first one is the exact one.
+
+| the ruler | the command | what it answers | how long |
+|---|---|---|---|
+| the allocations per request | `cargo test -p sumimi-service --test allocations -- --nocapture --test-threads=1` | how many bytes and how many allocations each request costs — deterministic, the same every run | seconds |
+| the peak, end to end | `sumimi-gotest sweep --binary <the released sumimi-server> --rates 5000,10000,20000,40000 --seconds 20 --settle 5` | the peak resident set and the rate actually served — a fresh server per point, so every row is that point's own peak | two minutes |
+| the peak, on a CI runner | `.github/workflows/measure.yml` — dispatched by hand | the same, for anybody else to reproduce: every release in one run, on one runner, so the versions are comparable | ten minutes |
+
+The first one needs nothing but a checkout, and it is the one that says where the
+memory goes. The second one needs a quiet machine and the released binary. The
+third one needs the workflow on `main` — it is not there yet, it goes in with the
+merge.
+
+The second one's setup: the tool is the public one, and the password comes from
+the environment, because that is where the server it starts gets it too:
+
+```sh
+export SUMIMI_ADMIN_PASSWORD=sumimi-gotest
+MALLOC_MMAP_THRESHOLD_=65536 sumimi-gotest sweep --binary ./sumimi \
+  --rates 5000,10000,20000,40000 --seconds 20 --settle 5 --out report.md
+```
+
 ### A measurement trap worth writing down ✓ ✓
 
 **`ru_maxrss` on Linux is not the child's peak** ✗ ✗ — Linux does **not** reset it on
