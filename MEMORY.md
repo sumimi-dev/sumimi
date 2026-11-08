@@ -436,6 +436,41 @@ to optimise** ✓ ⇒ and the biggest lever found so far is **the queue** ✓:
 is usually a batch of one** ✓ ⇒ ⇒ the "10 000 rows a batch" never happens ✓ ⇒
 ⇒ both the throughput ceiling ✓ and the churn ✓ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
 
+### The seven fixes ✓ ✓ (v0.4.2 ✓, [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓)
+
+Each one was measured with the same ruler ✓ (the counting allocator ✓, the
+release build ✓) and each step is in the issue ✓ ⇒ ⇒ **the issue is the
+record** ✓ ✓.
+
+| # | what was wrong | what it cost | the fix |
+| ---: | --- | ---: | --- |
+| 1 | the queue was a `VecDeque` ⇒ **growing it moved every hit in it** | 10 331 B per push | a chain of blocks ⇒ **1 054 B** ✓ |
+| 2 | the writer wrote **as soon as the queue was not empty** ⇒ a request was a batch of one | 1 000 transactions per 1 000 requests | the writer **waits for a batch** ✓ ⇒ 3 transactions ✓ |
+| 3 | `into_hit()` **copied the whole tree** | 713 B | the map is **moved** ✓ ⇒ 0 B ✓ |
+| 4 | the payload was a **`Value` tree** ⇒ every field copied out of it again | 679 B of tree | parsed **straight into the fields** ✓ ⇒ 49 B ✓ |
+| 5 | the fields were **copied** into the event | a few hundred B | they are **moved** ✓ |
+| 6 | the channel lookup **lowercased the referrer once per domain** ⇒ over a hundred times | **1 731 B** ✓✓ | the needles are lowercase constants ✓ ⇒ **nothing is allocated** ✓ |
+| 7 | the allocator **kept the pages it took** | **23% of the peak** ✓ | `MALLOC_MMAP_THRESHOLD_=65536` ✓ |
+
+⇒ **the request path, now** ✓ (the same ruler ✓):
+
+| the stage | before | **now** |
+| --- | ---: | ---: |
+| the body, parsed | 697 B | **49 B** ✓ |
+| building the hit (the tracker's own body ✓) | 3 493 B | **898 B** ✓ |
+| the whole request | 26 347 B | **23 128 B** ✓ |
+| a push into a queue of 1 000 rows | 10 331 B | **1 054 B** ✓ |
+
+⇒ ⇒ **−12% of the request's memory** ✓ ✓ ⇒ and the peak follows at the high
+rates ✓ ⇒ ⇒ ⇒ ⇒ **the answer to "does the memory follow the implementation?"
+is yes** ✓ ✓ ✓.
+
+⇒ **and the biggest single item is not the peak** ✓ ⇒ the **write path** costs
+**9 966 B per row** ✓ ⇒ ⇒ **four vectors per row** ✓ ⇒ ⇒ three of them inside
+the DuckDB crate ✓ ⇒ ⇒ ⇒ but they are **churn, not residency** ✓ ⇒ ⇒ ⇒ the
+allocator hands the same pages back for the next row ✓ ⇒ ⇒ ⇒ ⇒ so it costs
+**CPU**, not memory ✓ ⇒ ⇒ ⇒ [#19](https://github.com/sumimi-dev/sumimi/issues/19) ✓ ✓.
+
 ### A measurement trap worth writing down ✓ ✓
 
 **`ru_maxrss` on Linux is not the child's peak** ✗ ✗ — Linux does **not** reset it on

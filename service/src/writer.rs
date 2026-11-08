@@ -146,7 +146,7 @@ pub struct Writer {
 ///
 /// ⇒ ⇒ ⇒ **three of the four rates are better** ✓ ⇒ ⇒ ⇒ and the fourth is
 /// the same ✓ ⇒ ⇒ ⇒ ⇒ so the default is a thousand ✓ ✓ (`SUMIMI_MAX_BATCH`
-/// changes it ✓ — see issue #19 ✓).
+/// changes it ✓ — see issue #20 ✓).
 pub const DEFAULT_MAX_BATCH: usize = 1_000;
 
 impl Writer {
