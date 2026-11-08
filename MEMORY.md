@@ -168,9 +168,13 @@ the server uses **the recommended rate for its memory** ✓:
 > **recommended tier** (256 MB, 512 MB) admits **40 000/s** ✓.
 
 It comes from the measured rule (§6 ✓): the peak is about **68 MB + 7.8 MB per 1 000
-requests a second** ✓, so the limit is set where the box is **full but not over** ✓ —
-above it the server refuses ✓, which is the honest answer ✓ ✓. The other three knobs
-stay off by default ✓ — they are the backstop, not the lever ✓ ✓.
+requests a second** ✓ — **and after the seven fixes (§6 ✓) that rule is no longer
+the binding one** ✓ ⇒ ⇒ ⇒ the smallest box we measured runs out of **CPU** at
+about **19 700 requests a second** ✓ ⇒ ⇒ ⇒ so 20 000/s is where that box is
+**full but not over** ✓ ⇒ ⇒ ⇒ ⇒ **the memory is not what limits it any more** ✓
+⇒ ⇒ ⇒ ⇒ **the limit is set where the box is full but not over** ✓ ⇒ ⇒ ⇒ ⇒ above
+it the server refuses ✓ ⇒ ⇒ ⇒ ⇒ which is the honest answer ✓ ✓. The other three
+knobs stay off by default ✓ — they are the backstop, not the lever ✓ ✓.
 
 ### The rate follows the writer
 
@@ -238,37 +242,70 @@ so the peak is what the table carries ✓.
 | the rate offered | the peak RSS | the engine holds | what it fits |
 | --- | ---: | ---: | --- |
 | 5 000 /s | **110 MB** ✓ | 2 MB | the **minimum** tier (256 MB) ✓ — 146 MB to spare ✓ |
-| **10 000 /s** | **116 MB** ✓ | 2 MB | the **minimum** tier ✓ — 140 MB to spare ✓ |
-| **20 000 /s** | **187 MB** ✓ | 3 MB | the **minimum** tier ✓ — **69 MB to spare** ✓ |
-| 40 000 /s | **183 MB** ✓ | 3 MB | the **minimum** tier ✓ — and the box is at its ceiling ✓ |
+| **10 000 /s** | **115 MB** ✓ | 2 MB | the **minimum** tier ✓ — 141 MB to spare ✓ |
+| **20 000 /s** | **182 MB** ✓ | 3 MB | the **minimum** tier ✓ — **74 MB to spare** ✓ |
+| 40 000 /s | **182 MB** ✓ | 3 MB | the **minimum** tier ✓ — and the box is at its ceiling ✓ |
 | 100 000 /s | **~850 MB** (by the rule ✓) — measured **~600 MB** on a bigger box ✓ | | **neither** ✓ |
 | 200 000 /s | **~600 MB, and it stops growing** ✓ | | the traffic is refused, not stored ✓ |
 
 ⇒ ⇒ **these numbers need `MALLOC_MMAP_THRESHOLD_=65536` in the environment**
-✓ ⇒ ⇒ ⇒ without it the same box peaks at 136 / 146 / **205** / **261 MB** ✓ ⇒
-⇒ ⇒ ⇒ ⇒ **−19% / −21% / −9% / −30%** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that one line is worth
+✓ ⇒ ⇒ ⇒ without it the same box peaks at 138 / 145 / **208** / **210 MB** ✓ ⇒
+⇒ ⇒ ⇒ ⇒ **−20% / −21% / −12% / −13%** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that one line is worth
 more than every table row** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (the Docker image sets it ✓ ⇒ ⇒ ⇒
 ⇒ ⇒ ⇒ a systemd deployment should ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ see the page ✓ ✓).
 
+⇒ ⇒ **and it is not free** ✓ ⇒ ⇒ ⇒ the pages come back, but the CPU pays for
+them ⇒ ⇒ ⇒ ⇒ **mmap/munmap are system calls** ✓ ⇒ ⇒ ⇒ ⇒ **−5% of the
+throughput** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (measured twice ✓ ⇒ ⇒ ⇒ ⇒ ⇒ 19 724 → 18 665/s ✓)
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so it is a knob, not a free win** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **the deployment picks it** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the Docker
+image picks it for you** ✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and on macOS it does
+nothing at all** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that is Apple's allocator,
+not glibc's** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so this table is a Linux
+table** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the CI workflow runs on a Linux
+runner for the same reason** ✓ ✓.
+
 ⇒ ⇒ **and the rule changed** ✓ ⇒ ⇒ ⇒ it used to be **68 MB + 7.8 MB per 1 000
-requests a second** ✓ ⇒ ⇒ ⇒ ⇒ **now it is 68 MB + 1.2 MB per 1 000** ✓ ⇒ ⇒ ⇒
-⇒ ⇒ ⇒ ⇒ **six times flatter** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that is the seven fixes**
-✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
+requests a second** ✓ ⇒ ⇒ ⇒ ⇒ **now the curve is flat** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ the same
+box ✓ ⇒ ⇒ ⇒ ⇒ ⇒ the same tool ✓ ⇒ ⇒ ⇒ ⇒ ⇒ **5 000/s: 103 → 110 MB** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ **10 000/s: 143 → 115 MB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so the growth over that
+range is 1 MB per 1 000** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **seven times flatter** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and it stops at the ceiling** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ **182 MB
+whether you offer 20 000 or 40 000** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the box
+is the limit now, not the memory** ✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the
+flat part is the seven fixes** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the 7 MB
+at the bottom is the batch waiting to be written** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ (the M5 says the same ✓ ⇒ ⇒ ⇒ 133 → 139 MB at 5 000/s ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so it is a constant, not a slope** ✓ ✓)
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
 
 **And the box's ceiling rose** ✓ ✓ (the same box ✓, the same tool ✓, back to
-back ✓):
+back ✓ ⇒ ⇒ ⇒ **two runs each** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ so it is not one lucky run ✓ ✓):
 
 | the rate offered | v0.4.1 | **v0.4.2** ✓ | v0.4.2 + the allocator ✓ |
 | --- | ---: | ---: | ---: |
-| 5 000 /s | 132 MB | 136 MB | **110 MB** ✓ |
-| 10 000 /s | 148 MB | 146 MB | **116 MB** ✓ |
-| 20 000 /s | 227 MB (**17 131/s** ✓) | 205 MB (**19 861/s** ✓) | **187 MB** (18 817/s ✓) |
-| 40 000 /s | 201 MB (**16 952/s** ✓) | 261 MB (**20 264/s** ✓) | **183 MB** (18 894/s ✓) |
+| 5 000 /s | 136 / 138 MB | 138 / 138 MB | **110 / 111 MB** ✓ |
+| 10 000 /s | 145 / 146 MB | 145 / 146 MB | **115 / 115 MB** ✓ |
+| 20 000 /s | 221 / 234 MB (**16 751 / 16 872/s** ✓) | **208 / 208 MB** (**19 656 / 19 792/s** ✓) | **182 / 183 MB** (18 604 / 18 725/s ✓) |
+| 40 000 /s | 221 / 239 MB (**16 931 / 16 935/s** ✓) | **210 / 210 MB** (**19 281 / 19 683/s** ✓) | **178 / 186 MB** (18 317 / 18 490/s ✓) |
 
-⇒ ⇒ **the CPU-bound box now serves 16% more traffic** ✓ ✓ ⇒ ⇒ ⇒ (the batching
+⇒ ⇒ **the CPU-bound box now serves 17% more traffic** ✓ ✓ ⇒ ⇒ ⇒ (the batching
 ⇒ ⇒ ⇒ 1 000 transactions became 3 ✓ ⇒ ⇒ ⇒ ⇒ ⇒ the CPU was the ceiling ✓ ⇒ ⇒
 ⇒ ⇒ ⇒ ⇒ **the ceiling moved** ✓ ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ and at the same rate the
-peak is **−18%** ✓ ✓.
+peak is **−9%** ✓ ✓.
+
+⇒ ⇒ **the same measurement on an Apple M5 says the same shape** ✓ ⇒ ⇒ ⇒ (the
+peak follows the rate ✓ ⇒ ⇒ ⇒ ⇒ at the low rates v0.4.1 and v0.4.2 are the
+same ✓ ⇒ ⇒ ⇒ ⇒ ⇒ at the top v0.4.2 is cheaper ✓ ⇒ ⇒ ⇒ ⇒ 318 → 270 MB ✓ ✓)
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **but macOS cannot repeat itself** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (its peak is
+the kernel's `ru_maxrss` ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ which counts the shared pages ✓
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the same binary at 5 000/s measured 104 MB in one
+round ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ and 133 MB in the next ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **Linux repeats to ±2 MB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so the table only believes Linux** ✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the CI workflow runs on a Linux runner** ✓ ✓
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (the reports: `benchmarks/sweep-epyc-2026-11-08-repeat.md` ✓
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ and `benchmarks/sweep-m5-2026-11-08-repeat.md` ✓ ✓).
 
 **And the rule stops applying at the top** ✓: on a bigger box, 100 000, 150 000 and
 200 000 requests a second all land at **~600 MB** ✓ ✓ — because the server parses
@@ -277,13 +314,18 @@ about **113 000 requests a second** and no more ✓, and everything above that i
 memory" regime, it is a **"most of it is turned away"** regime ✓ ✓ — a real 200 000/s
 needs a stronger box and a faster write path ✓, not more RAM ✓ ✓.
 
-**That rule is where the default limit comes from** ✓: the rate is set where the box is
+**That is where the default limit comes from** ✓: the rate is set where the box is
 **full but not over** ✓ ⇒ **20 000 a second per 128 MB of the engine's budget** ⇒
-**20 000/s on the minimum tier ✓, 40 000/s on the recommended one ✓** ✓.
+**20 000/s on the minimum tier ✓, 40 000/s on the recommended one ✓** ✓ ⇒ ⇒ ⇒ ⇒
+**and now the smallest box we measured is full there too** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ (its CPU
+runs out at about 19 700/s ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so the memory is no longer what
+limits the minimum tier** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the CPU is** ✓ ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **which is a different reason for the same number** ✓ ✓ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and it is the honest one** ✓ ✓ ✓
 
 ⇒ ⇒ **and the promise now holds with room to spare** ✓ ⇒ ⇒ ⇒ the minimum tier
-at its own recommended rate ⇒ **187 MB of 256 MB** ✓ ⇒ ⇒ ⇒ ⇒ (before: 256 MB of
-256 MB ✓ ⇒ ⇒ ⇒ ⇒ exactly the ceiling ✓ ⇒ ⇒ ⇒ ⇒ **now: 69 MB to spare** ✓ ✓) ⇒
+at its own recommended rate ⇒ **182 MB of 256 MB** ✓ ⇒ ⇒ ⇒ ⇒ (before: 256 MB of
+256 MB ✓ ⇒ ⇒ ⇒ ⇒ exactly the ceiling ✓ ⇒ ⇒ ⇒ ⇒ **now: 74 MB to spare** ✓ ✓) ⇒
 ⇒ ⇒ ⇒ ⇒ ⇒ **that was [#17](https://github.com/sumimi-dev/sumimi/issues/17)'s
 complaint** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and it is answered** ✓ ✓ ✓.
 
@@ -442,8 +484,9 @@ two wins ✓ ⇒ a 512 MB container gets the minimum tier ✓ ✓.
 
 ### Where the memory actually goes ✓ ✓ (measured, [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓)
 
-The rule in §6 — **7.8 MB per 1 000 requests a second** — is the **allocator's
-retention of the churn** ✓, not the data ✓ (the body is 109 bytes ✓). The
+The old rule — **7.8 MB per 1 000 requests a second** ✓ ⇒ ⇒ ⇒ the one §6 records
+before the seven fixes ✓ ⇒ ⇒ ⇒ — was the **allocator's retention of the churn** ✓,
+not the data ✓ (the body is 109 bytes ✓). The
 **churn**, measured with a counting allocator ✓ (`service/tests/allocations.rs` ✓):
 
 | the stage | bytes per request |

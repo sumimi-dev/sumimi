@@ -95,12 +95,14 @@ jobs:
           done
           if [ "$ALLOCATOR" = "yes" ]; then
             for run in $(seq 1 ${RUNS}); do
-              sumimi-gotest sweep \
+              # The variable goes into the **environment**, not into a flag:
+              # the server the tool starts inherits it, and the tool itself
+              # does not care (it is Go; it does not use the C allocator).
+              MALLOC_MMAP_THRESHOLD_=65536 sumimi-gotest sweep \
                 --binary "servers/${TAGS##*,}/sumimi" \
                 --rates "$RATES" \
                 --seconds 20 \
                 --settle 5 \
-                --env MALLOC_MMAP_THRESHOLD_=65536 \
                 --out "report-allocator-$run.md" \
                 --json "report-allocator-$run.json"
             done
