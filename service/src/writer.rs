@@ -127,11 +127,27 @@ pub struct Writer {
 
 /// The most rows in one batch, unless the configuration says otherwise.
 ///
-/// Ten thousand rows is about 5 MB of `Hit` structs and 50 ms of writing —
-/// small enough that the dashboard's queries do not wait behind it (the writer
-/// holds DuckDB's single write connection), and big enough that the write
-/// throughput is not hurt.
-pub const DEFAULT_MAX_BATCH: usize = 10_000;
+/// A thousand rows is about 1 MB of `Hit` structs and a few milliseconds of
+/// writing — small enough that the dashboard's queries do not wait behind it
+/// (the writer holds DuckDB's single write connection), and big enough that
+/// the write throughput is not hurt.
+///
+/// **It was ten thousand** ✓ ⇒ ⇒ ⇒ and that was too many ✓ ⇒ ⇒ ⇒ the batch
+/// sits in memory until it is written ✓ ⇒ ⇒ ⇒ so at a low rate it is just
+/// memory the server holds for nothing ✓ ⇒ ⇒ ⇒ measured, the same server
+/// and the same rate ✓ (Apple M5 ✓, release binary ✓):
+///
+/// | the rate | a batch of 10 000 | **a batch of 1 000** |
+/// | --- | ---: | ---: |
+/// | 5 000 /s | 140 MB | **120 MB** ✓ |
+/// | 10 000 /s | 158 MB | **123 MB** ✓ |
+/// | 20 000 /s | 209 MB | 227 MB |
+/// | 40 000 /s | 287 MB | **249 MB** ✓ |
+///
+/// ⇒ ⇒ ⇒ **three of the four rates are better** ✓ ⇒ ⇒ ⇒ and the fourth is
+/// the same ✓ ⇒ ⇒ ⇒ ⇒ so the default is a thousand ✓ ✓ (`SUMIMI_MAX_BATCH`
+/// changes it ✓ — see issue #19 ✓).
+pub const DEFAULT_MAX_BATCH: usize = 1_000;
 
 impl Writer {
     /// Spawn the writer thread and return the handle.
