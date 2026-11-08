@@ -105,7 +105,7 @@ pub async fn app_asset(State(state): State<AppState>, Path(path): Path<String>) 
 /// `GET /docs` — the documentation index.
 pub async fn docs_index(State(state): State<AppState>) -> Response {
     match read_docs(&state, "index.html").await {
-        Some(bytes) => (
+        Some((bytes, _)) => (
             [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
             bytes,
         )
@@ -121,8 +121,10 @@ pub async fn docs_asset(State(state): State<AppState>, Path(path): Path<String>)
     }
 
     match read_docs(&state, &path).await {
-        Some(bytes) => {
-            let mime = mime_for(&path);
+        Some((bytes, name)) => {
+            // The content type follows the **file** that was read, not the
+            // request: a directory is served as its `index.html`.
+            let mime = mime_for(&name);
             (
                 [(header::CONTENT_TYPE, mime)],
                 bytes,
@@ -135,22 +137,32 @@ pub async fn docs_asset(State(state): State<AppState>, Path(path): Path<String>)
 
 /// Read a file of the documentation site.
 ///
+/// Returns the bytes and the name of the file they came from — a directory is
+/// served as its `index.html`, and the content type has to say so.
+///
 /// The **on-disk** copy comes first: the release archive ships the documentation
 /// next to the executable, and a user may have edited it. The copy **embedded in
 /// the binary** is the fallback, so a server installed with `cargo install`
 /// still has a documentation site.
-async fn read_docs(state: &AppState, path: &str) -> Option<Vec<u8>> {
+async fn read_docs(state: &AppState, path: &str) -> Option<(Vec<u8>, String)> {
     let relative = path.trim_start_matches('/').trim_end_matches('/');
 
     let mut file = state.config.docs_dir.join(relative);
+    let mut name = relative.to_string();
     if is_dir(&file).await {
         file = file.join("index.html");
+        name = format!("{relative}/index.html");
     }
     if let Ok(bytes) = tokio::fs::read(&file).await {
-        return Some(bytes);
+        return Some((bytes, name));
     }
 
-    embedded(relative).or_else(|| embedded(&format!("{relative}/index.html")))
+    // The embedded copy, file by file.
+    if let Some(bytes) = embedded(relative) {
+        return Some((bytes, name));
+    }
+    let index = format!("{relative}/index.html");
+    embedded(&index).map(|bytes| (bytes, index))
 }
 
 /// A file of the embedded documentation site.

@@ -6,7 +6,7 @@
 <title>FAQ — Sumimi</title>
 <meta name="description" content="Frequently asked questions about Sumimi: compatibility with Umami, system requirements, DuckDB, the self-contained binary, missing page views, dropped events, TLS, backups and privacy questions.">
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
 </head>
 <body>
@@ -14,29 +14,44 @@
 
 <header class="site-header">
   <div class="wrap">
-    <a class="brand" href="index.html">
+    <a class="brand" href="../index.html">
       <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
       <span>Sumimi</span>
       <span class="brand-cn">数咪咪</span>
     </a>
     <nav class="site-nav" aria-label="Main">
       <ul>
-        <li><a href="index.html">Home</a></li>
-        <li><a href="install.html">Install</a></li>
-        <li><a href="self-host.html">Self-host</a></li>
-        <li><a href="tracker.html">Tracker</a></li>
-        <li><a href="api.html">API</a></li>
-        <li><a href="cli.html">CLI</a></li>
-        <li><a href="memory.html">Memory</a></li>
-        <li><a href="privacy.html">Privacy</a></li>
-        <li><a href="faq.html" aria-current="page">FAQ</a></li>
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="index.html" aria-current="page">Docs</a></li>
+        <li><a href="../blog/">Blog</a></li>
+        <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
       </ul>
     </nav>
   </div>
 </header>
 
 <main id="main">
-  <div class="wrap">
+  <div class="wrap wrap-wide">
+    <div class="docs-layout">
+      <aside class="docs-rail">
+        <p class="rail-title">Documentation</p>
+        <nav class="rail-nav" aria-label="Documentation">
+          <p class="rail-group">Overview</p>
+          <a href="index.html">Overview</a>
+          <p class="rail-group">Getting started</p>
+          <a href="install.html">Install</a>
+          <a href="self-host.html">Self-host</a>
+          <p class="rail-group">Using it</p>
+          <a href="tracker.html">Tracker</a>
+          <a href="api.html">HTTP API</a>
+          <a href="cli.html">CLI</a>
+          <p class="rail-group">Reference</p>
+          <a href="memory.html">Memory &amp; capacity</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="faq.html" aria-current="page">FAQ</a>
+        </nav>
+      </aside>
+      <article class="docs-body">
 
     <h1 class="page-title">FAQ</h1>
     <p class="page-lede">
@@ -126,6 +141,23 @@
     </p>
 
     <h2>Installation</h2>
+
+    <h3>Do I need systemd, or root, to run it?</h3>
+    <p>
+      No. <code>sumimi service start</code> runs the server under a supervisor — a second
+      process that owns it and restarts it when it dies — with no systemd unit, no init
+      script and no root. Everything it owns lives inside the instance directory, so it runs
+      as the user who installed it.
+    </p>
+    <pre class="shell"><code>sumimi service start --dir ~/sumimi \
+  --domain stats.example.com --email you@example.com
+sumimi service status --dir ~/sumimi</code></pre>
+    <p>
+      A systemd unit works just as well — the server does not care which of the two you
+      choose, and the <a href="self-host.html">self-hosting guide</a> has one. There is also
+      a container, if you would rather not install anything: the
+      <a href="install.html#1-docker--the-default">install guide</a> has the command.
+    </p>
 
     <h3>Do I need to install DuckDB separately?</h3>
     <p>
@@ -313,7 +345,17 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
 
     <h3>How do I get a certificate?</h3>
     <p>
-      Either through the reverse proxy or from the server itself.
+      Either from the server itself — the default — or through a reverse proxy.
+    </p>
+    <p>
+      From the server itself: <code>sumimi service start --domain example.com --email
+      you@example.com</code>, or <code>sumimi serve --ssl example.com --ssl-email
+      you@example.com</code> in the foreground. The certificate is issued by Let's Encrypt over
+      ACME and renewed in the background — no certbot, no renewal cron job. The challenge is
+      TLS-ALPN-01, so port 443 must reach the Sumimi process directly: no proxy in front of
+      it. Port 80 does not need to be open. Back up the cache directory (by default an
+      <code>acme</code> directory next to the database, e.g. <code>/var/lib/sumimi/acme</code>):
+      it holds the ACME account and the certificates, and losing it means re-issuing.
     </p>
     <p>
       Through the reverse proxy: Caddy does it with three lines of configuration; nginx does it
@@ -321,14 +363,6 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
       the domain's DNS record pointing at the server — a DNS record that has not propagated yet
       is the most common cause of a failed first issuance. If port 80 is closed, use the
       DNS-01 challenge instead.
-    </p>
-    <p>
-      From the server itself: <code>sumimi serve --ssl example.com --ssl-email
-      you@example.com</code>. The certificate is issued by Let's Encrypt over ACME and renewed
-      in the background. The challenge is TLS-ALPN-01, so port 443 must reach the Sumimi
-      process directly — no proxy in front of it. Port 80 does not need to be open. Back up the
-      cache directory (by default an <code>acme</code> directory next to the database, e.g. <code>/var/lib/sumimi/acme</code>): it holds the ACME account and the
-      certificates, and losing it means re-issuing.
     </p>
 
     <h3>How do I back it up?</h3>
@@ -468,6 +502,8 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
       implements the Umami v2 HTTP API. Apache-2.0 licensed.
     </p>
 
+      </article>
+    </div>
   </div>
 </main>
 
@@ -479,14 +515,10 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
     <ul>
-      <li><a href="install.html">Install</a></li>
-      <li><a href="self-host.html">Self-host</a></li>
-      <li><a href="tracker.html">Tracker</a></li>
-      <li><a href="api.html">API</a></li>
-      <li><a href="cli.html">CLI</a></li>
-      <li><a href="memory.html">Memory</a></li>
-      <li><a href="privacy.html">Privacy</a></li>
-      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="index.html">Docs</a></li>
+      <li><a href="../blog/">Blog</a></li>
+      <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
     </ul>
   </div>
 </footer>

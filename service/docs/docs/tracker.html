@@ -6,7 +6,7 @@
 <title>Tracker — Sumimi</title>
 <meta name="description" content="Install the Sumimi tracker on your website: the script tag, the data attributes, self-hosting, putting it on a CDN, tracking custom events, and managing several sites.">
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
 </head>
 <body>
@@ -14,29 +14,44 @@
 
 <header class="site-header">
   <div class="wrap">
-    <a class="brand" href="index.html">
+    <a class="brand" href="../index.html">
       <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
       <span>Sumimi</span>
       <span class="brand-cn">数咪咪</span>
     </a>
     <nav class="site-nav" aria-label="Main">
       <ul>
-        <li><a href="index.html">Home</a></li>
-        <li><a href="install.html">Install</a></li>
-        <li><a href="self-host.html">Self-host</a></li>
-        <li><a href="tracker.html" aria-current="page">Tracker</a></li>
-        <li><a href="api.html">API</a></li>
-        <li><a href="cli.html">CLI</a></li>
-        <li><a href="memory.html">Memory</a></li>
-        <li><a href="privacy.html">Privacy</a></li>
-        <li><a href="faq.html">FAQ</a></li>
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="index.html" aria-current="page">Docs</a></li>
+        <li><a href="../blog/">Blog</a></li>
+        <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
       </ul>
     </nav>
   </div>
 </header>
 
 <main id="main">
-  <div class="wrap">
+  <div class="wrap wrap-wide">
+    <div class="docs-layout">
+      <aside class="docs-rail">
+        <p class="rail-title">Documentation</p>
+        <nav class="rail-nav" aria-label="Documentation">
+          <p class="rail-group">Overview</p>
+          <a href="index.html">Overview</a>
+          <p class="rail-group">Getting started</p>
+          <a href="install.html">Install</a>
+          <a href="self-host.html">Self-host</a>
+          <p class="rail-group">Using it</p>
+          <a href="tracker.html" aria-current="page">Tracker</a>
+          <a href="api.html">HTTP API</a>
+          <a href="cli.html">CLI</a>
+          <p class="rail-group">Reference</p>
+          <a href="memory.html">Memory &amp; capacity</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="faq.html">FAQ</a>
+        </nav>
+      </aside>
+      <article class="docs-body">
 
     <h1 class="page-title">Tracker</h1>
     <p class="page-lede">
@@ -306,6 +321,8 @@ sumimi.pageview();</code></pre>
       licences are recorded in <code>assets/CREDITS.md</code>.
     </p>
 
+      </article>
+    </div>
   </div>
 </main>
 
@@ -317,14 +334,10 @@ sumimi.pageview();</code></pre>
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
     <ul>
-      <li><a href="install.html">Install</a></li>
-      <li><a href="self-host.html">Self-host</a></li>
-      <li><a href="tracker.html">Tracker</a></li>
-      <li><a href="api.html">API</a></li>
-      <li><a href="cli.html">CLI</a></li>
-      <li><a href="memory.html">Memory</a></li>
-      <li><a href="privacy.html">Privacy</a></li>
-      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="index.html">Docs</a></li>
+      <li><a href="../blog/">Blog</a></li>
+      <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
     </ul>
   </div>
 </footer>

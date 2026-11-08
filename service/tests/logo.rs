@@ -30,19 +30,32 @@ fn canonical_shapes() -> String {
     svg[start..end].to_string()
 }
 
+/// Every page of the documentation site, in every section.
+fn html_pages(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(html_pages(&path));
+        } else if path.extension().and_then(|e| e.to_str()) == Some("html") {
+            found.push(path);
+        }
+    }
+    found
+}
+
 /// Every copy of the logo in the repository must match the canonical file.
 #[test]
 fn every_logo_copy_matches_the_canonical_file() {
     let shapes = canonical_shapes();
 
-    // The documentation site.
+    // The documentation site — every page of it, in every section.
     let docs = docs();
     let mut pages = 0;
-    for entry in std::fs::read_dir(&docs).expect("docs/ exists") {
-        let path = entry.expect("a directory entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("html") {
-            continue;
-        }
+    for path in html_pages(&docs) {
         let html = std::fs::read_to_string(&path).expect("a readable page");
         assert!(
             html.contains(&shapes),

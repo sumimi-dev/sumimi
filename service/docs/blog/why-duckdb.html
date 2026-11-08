@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why DuckDB: 85× smaller, and why we keep no indexes — Sumimi</title>
+<meta name="description" content="The same rows in two engines: 4 750 bytes per page view on PostgreSQL, 56 bytes on DuckDB. Where the difference comes from, and why the answer is not the compression but the indexes.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="../index.html">
+      <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
+      <span>Sumimi</span>
+      <span class="brand-cn">数咪咪</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="../docs/">Docs</a></li>
+        <li><a href="index.html" aria-current="page">Blog</a></li>
+        <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+
+    <div class="post-head">
+      <p class="post-meta"><time datetime="2026-11-06">6 November 2026</time><span>9 min read</span></p>
+      <h1 class="page-title">Why DuckDB: 85× smaller, and why we keep no indexes</h1>
+      <p class="page-lede">
+        The headline number is 85×. The interesting number is <em>where it comes from</em> —
+        because it is not the compression, and it is not the columnar layout alone.
+      </p>
+    </div>
+
+    <article class="post-body">
+
+      <h2>The measurement</h2>
+      <p>
+        The fair way to compare two stores is the <strong>marginal cost</strong>: how much
+        space does one more row take? A file has a fixed overhead, so measuring a 10 000-row
+        database against a 1 000 000-row one and taking the slope removes it.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>the engine</th><th>the marginal cost per page view</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Umami + PostgreSQL</td><td><strong>4 750 B</strong></td></tr>
+            <tr><td>Sumimi + DuckDB</td><td><strong>55.6 B</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        <strong>85×.</strong> In the raw files, the same 100 000 page views are 453 MB on
+        PostgreSQL and 4.8 MB on DuckDB.
+      </p>
+      <p>
+        That comparison is only worth anything if the two sides hold the same data, so we
+        checked: the same 26 fields, compared one by one with an MD5 — all identical, and the
+        five Core Web Vitals summed to exactly the same values. Same rows, same fields,
+        different storage.
+      </p>
+      <div class="callout warn">
+        <p class="callout-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v5"/><path d="M12 17.5v.01"/><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6A2 2 0 0 0 22 18L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+          One number, and the caliber it is measured in
+        </p>
+        <p>
+          There are two honest numbers and they are not the same. On synthetic data with
+          identical IDs, the marginal cost is 85×. On <strong>real site data</strong>, with
+          the 36-character UUIDs the server actually issues, it is about <strong>50×</strong>.
+          The difference is the identifier format and how much your URLs and titles repeat.
+          So: <strong>promise 50–85×, and say which one you mean.</strong>
+        </p>
+      </div>
+
+      <h2>Where the space goes on the PostgreSQL side</h2>
+      <p>
+        Here is a real 100 000-page-view dataset, taken apart table by table:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>the table</th><th>the total</th><th>of which indexes</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>session_data</code> (a key-value table, 600 000 rows)</td><td>248 MB</td><td>142 MB</td></tr>
+            <tr><td><code>website_event</code></td><td>202 MB</td><td>151 MB</td></tr>
+            <tr><td><code>session</code></td><td>99 MB</td><td>85 MB</td></tr>
+            <tr><td><strong>the total</strong></td><td><strong>557 MB</strong></td><td><strong>378 MB (68%)</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        <strong>Two thirds of the space is indexes.</strong> And that has nothing to do with
+        compression or columnar layout: a B-tree index entry costs 50–70 bytes whether the
+        value in it is unique or repeated a million times. The indexes are not smaller on a
+        row store. They are just there.
+      </p>
+      <p>
+        The other half of it is structural: Umami stores session attributes in a key-value
+        table — one row per attribute per session — while Sumimi derives the session and the
+        visitor from the event table and stores neither. The table data itself is 179 MB on
+        PostgreSQL against 7.8 MB on DuckDB: <strong>23×</strong> for the rows alone.
+      </p>
+
+      <h2>And what about the compression?</h2>
+      <p>
+        Compression is real, and it is worth measuring rather than assuming. The same 100 000
+        page views, at three levels of realism, in our own DuckDB file:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>how realistic the data is</th><th>the size per page view</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>synthetic (5 000 URLs, 2 000 titles, half the columns null)</td><td>36.8 B</td></tr>
+            <tr><td><strong>real (50 000 long URLs, 20 000 titles, UTM filled, 33% click ids)</strong></td><td><strong>81.4 B</strong></td></tr>
+            <tr><td>worst case (100 000 unique hashes, no repetition at all)</td><td>204.6 B</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        So "highly repetitive data compresses well" is worth <strong>2.2–5.6×</strong> on its
+        own. It is a real effect — and it is not where the 85× comes from. The indexes are.
+      </p>
+
+      <h2>The queries follow the storage</h2>
+      <p>
+        The panels are the same panels, the same data, two engines:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>the panel</th><th>DuckDB</th><th>SQLite</th><th>the ratio</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>summary</td><td>8.3 ms</td><td>234.7 ms</td><td>28×</td></tr>
+            <tr><td>timeseries</td><td>5.1 ms</td><td>97.0 ms</td><td>19×</td></tr>
+            <tr><td>top 50 pages</td><td>1.4 ms</td><td>70.9 ms</td><td>51×</td></tr>
+            <tr><td>referrers</td><td>2.1 ms</td><td>68.7 ms</td><td>33×</td></tr>
+            <tr><td>browsers</td><td>3.8 ms</td><td>120.3 ms</td><td>32×</td></tr>
+            <tr><td>countries</td><td>3.7 ms</td><td>115.3 ms</td><td>31×</td></tr>
+            <tr><td>the file on disk</td><td>6.8 MB</td><td>77.8 MB</td><td>11×</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        SQLite is not the villain here — it is the other end of the same trade-off. It is a
+        row store with a page cache, it is a fine database, and it is not what a columnar
+        engine is for. We ship it too, for the teams who want an ordinary database file. But
+        for a table of 42 columns that is only ever appended to and read one column at a
+        time, DuckDB is the right shape.
+      </p>
+
+      <h2>The decision we did not expect: no indexes at all</h2>
+      <p>
+        DuckDB has <strong>zonemaps</strong> — a min/max per column per row group — and they
+        come for free with the data. They are what prunes a scan, and on our table they were
+        enough: the query plans were identical to PostgreSQL's, and the scan times were
+        identical too (0.005 s over 2 million rows).
+      </p>
+      <p>
+        But our schema had <code>event.id BIGINT PRIMARY KEY</code>, and DuckDB 2.0 turns
+        that into an ART index — <strong>on disk</strong>. Measured on the real 42-column
+        schema, 100 000 page views:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>the table</th><th>the disk</th><th>the write</th><th>the query</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>with a primary key</td><td>+1.0 MB (+10.5 B per view)</td><td>+9%</td><td>the same (0.92–1.07× — noise)</td></tr>
+            <tr><td>without one</td><td>—</td><td>—</td><td>the same</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        So the index bought <strong>nothing measurable on the query side</strong>. What it did
+        buy was a cliff:
+      </p>
+      <div class="callout tip">
+        <p class="callout-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+          The reason the fact table carries no index
+        </p>
+        <p>
+          Loading the same rows in bulk into a table <em>with</em> a primary key needs a
+          <strong>~1 GB memory budget</strong> — at 128 MB, 256 MB and 512 MB it runs out of
+          memory, and chunking does not save it: it dies at the 13-millionth row. The same rows
+          into a table <em>without</em> one need <strong>128 MB</strong>, which is the budget
+          the server already uses.
+        </p>
+        <p>
+          That is the whole argument. An index on a table that is only ever appended to buys
+          no measurable speed, and it creates a path that only explodes on a customer's
+          512 MB box, only at scale. It also costs about 7% of the disk. We took the index
+          out.
+        </p>
+      </div>
+
+      <h2>What it adds up to</h2>
+      <p>
+        Three decisions, each measured rather than assumed: a columnar engine instead of a row
+        store, no indexes on the fact table, and one file instead of a server. Together they
+        are why <strong>1 000 000 page views a year take 20 GB instead of 1.73 TB</strong> —
+        and why the panels answer in milliseconds instead of seconds.
+      </p>
+      <p>
+        The next post is the other measurement: how much traffic that box can actually take
+        before anything runs out of memory.
+      </p>
+
+      <p class="post-foot">
+        Next: <a href="how-much-traffic.html">how much traffic can a 1 vCPU box take?</a> — the
+        memory rule, three machines and the measurement traps. Or the
+        <a href="../docs/memory.html">memory and capacity</a> reference, if you want the
+        tables without the story.
+      </p>
+
+    </article>
+
+    <p class="footnote">
+      Sumimi / 数咪咪 is an independent open-source project. It is an open-source alternative to
+      Umami and implements the Umami v2 HTTP API; no Umami assets are used. Licensed under the
+      Apache-2.0 licence. Third-party names are referenced nominatively.
+    </p>
+
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p class="footer-mark">
+      <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
+      Sumimi 数咪咪
+    </p>
+    <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
+    <ul>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs/">Docs</a></li>
+      <li><a href="index.html">Blog</a></li>
+      <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>

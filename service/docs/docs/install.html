@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Install — Sumimi</title>
-<meta name="description" content="Install Sumimi: download the release archive, unpack the self-contained sumimi executable, start the server, create a website and install the tracker.">
+<meta name="description" content="Install Sumimi: a container with one command, or one self-contained executable. Either way it runs on a 1 vCPU / 512 MB box and issues its own Let's Encrypt certificate.">
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
 </head>
 <body>
@@ -14,41 +14,129 @@
 
 <header class="site-header">
   <div class="wrap">
-    <a class="brand" href="index.html">
+    <a class="brand" href="../index.html">
       <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
       <span>Sumimi</span>
       <span class="brand-cn">数咪咪</span>
     </a>
     <nav class="site-nav" aria-label="Main">
       <ul>
-        <li><a href="index.html">Home</a></li>
-        <li><a href="install.html" aria-current="page">Install</a></li>
-        <li><a href="self-host.html">Self-host</a></li>
-        <li><a href="tracker.html">Tracker</a></li>
-        <li><a href="api.html">API</a></li>
-        <li><a href="cli.html">CLI</a></li>
-        <li><a href="memory.html">Memory</a></li>
-        <li><a href="privacy.html">Privacy</a></li>
-        <li><a href="faq.html">FAQ</a></li>
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="index.html" aria-current="page">Docs</a></li>
+        <li><a href="../blog/">Blog</a></li>
+        <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
       </ul>
     </nav>
   </div>
 </header>
 
 <main id="main">
-  <div class="wrap">
+  <div class="wrap wrap-wide">
+    <div class="docs-layout">
+      <aside class="docs-rail">
+        <p class="rail-title">Documentation</p>
+        <nav class="rail-nav" aria-label="Documentation">
+          <p class="rail-group">Overview</p>
+          <a href="index.html">Overview</a>
+          <p class="rail-group">Getting started</p>
+          <a href="install.html" aria-current="page">Install</a>
+          <a href="self-host.html">Self-host</a>
+          <p class="rail-group">Using it</p>
+          <a href="tracker.html">Tracker</a>
+          <a href="api.html">HTTP API</a>
+          <a href="cli.html">CLI</a>
+          <p class="rail-group">Reference</p>
+          <a href="memory.html">Memory &amp; capacity</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="faq.html">FAQ</a>
+        </nav>
+      </aside>
+      <article class="docs-body">
 
     <h1 class="page-title">Install</h1>
     <p class="page-lede">
-      From an empty machine to a running analytics server in about five minutes. You need a
-      64-bit Linux box (or macOS), some disk for the programs and the database, and nothing
-      else — no database server, no container runtime, no Node, no shared library to install.
+      Two ways to run it: a container, or one file. Either way you get the same server — and
+      either way it asks Let's Encrypt for its own certificate, so there is no certbot, no
+      renewal cron and no reverse proxy to set up before the first page view.
     </p>
 
-    <h2>1. Get the release archive</h2>
+    <h2>1. Docker — the default</h2>
     <p>
-      Every release publishes an archive containing:
+      One command, one volume, one container. The image carries the executable, the dashboard
+      frontend and this documentation — the same bundle the release archive ships.
     </p>
+    <pre class="shell"><code>docker run -d --name sumimi \
+  --restart unless-stopped \
+  -p 3000:3000 -p 443:443 \
+  -v sumimi-data:/data \
+  -e SUMIMI_SSL_DOMAIN=stats.example.com \
+  -e SUMIMI_SSL_EMAIL=you@example.com \
+  ghcr.io/sumimi-dev/sumimi:latest</code></pre>
+    <p>What each part is for:</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>The part</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>--restart unless-stopped</code></td>
+            <td>Docker brings the container back when it dies. This is the same job the supervisor does outside Docker — the server is restarted, not left dead.</td>
+          </tr>
+          <tr>
+            <td><code>-v sumimi-data:/data</code></td>
+            <td>The instance directory: the events, the accounts, the certificates. This is the one thing to back up, and the one thing to keep when you move the server.</td>
+          </tr>
+          <tr>
+            <td><code>-p 3000:3000</code></td>
+            <td>The dashboard and the API. Put a reverse proxy in front of it if you want the public port to be 443 only.</td>
+          </tr>
+          <tr>
+            <td><code>-p 443:443</code></td>
+            <td>Needed for the certificate: Let's Encrypt's TLS-ALPN-01 challenge has to reach the process. Leave it out only if you terminate TLS somewhere else.</td>
+          </tr>
+          <tr>
+            <td><code>SUMIMI_SSL_DOMAIN</code></td>
+            <td>The domain the certificate is issued for. It has to point at this host. Leave it out and the server speaks plain HTTP.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Or with compose, which is the same thing in a file:
+    </p>
+    <pre class="shell"><code>docker compose up -d</code></pre>
+    <p>
+      The container runs as an unprivileged user (uid 10001) and reads <strong>its own</strong>
+      memory limit rather than the host's, so a container limited to 512&nbsp;MB sizes itself
+      for 512&nbsp;MB. The dashboard frontend is served by the container itself
+      (<code>SUMIMI_APP_URL=/app</code>), so the whole thing works with no outbound request
+      at all.
+    </p>
+    <div class="callout tip">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+        The image is not published yet
+      </p>
+      <p>
+        The workflow that publishes it is in the repository
+        (<code>.github/workflows/publish-container.yml</code>) and runs on every release tag.
+        Until the first tag has gone through, build it yourself — it takes a while the first
+        time, because DuckDB is compiled from source:
+      </p>
+      <pre class="shell"><code>docker build -t sumimi:local .
+docker run -d --name sumimi -p 3000:3000 -v sumimi-data:/data sumimi:local</code></pre>
+    </div>
+
+    <h2>2. The binary — no container runtime</h2>
+    <p>
+      If you would rather not run a container, the whole product is one executable. DuckDB is
+      linked <strong>statically</strong>: its engine is compiled into the binary, so there is
+      no <code>libduckdb.so</code> to ship, no <code>LD_LIBRARY_PATH</code> to set and no
+      loader configuration to do.
+    </p>
+
+    <h3>Get the release archive</h3>
     <div class="table-wrap">
       <table>
         <thead>
@@ -61,51 +149,6 @@
           <tr><td><code>docs/</code></td><td>This documentation site, served by the server at <code>/docs</code>.</td></tr>
         </tbody>
       </table>
-    </div>
-    <p>
-      DuckDB is linked <strong>statically</strong>: its engine is compiled into the executable.
-      It is self-contained — there is no <code>libduckdb.so</code> to ship, no
-      <code>LD_LIBRARY_PATH</code> to set, no rpath to fix and no <code>ldconfig</code> step.
-      Copy one file and run it.
-    </p>
-
-    <h3>One binary, two modes</h3>
-    <p>
-      There is nothing to choose: you download one file, and the subcommand decides what it
-      does.
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>I want to…</th><th>Command</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Run the server (collect page views, serve the dashboard)</td><td><code>sumimi serve --db … --port 3000</code></td></tr>
-          <tr><td>Create or reset the admin account</td><td><code>sumimi admin --username admin</code></td></tr>
-          <tr><td>Print the resolved configuration</td><td><code>sumimi config</code></td></tr>
-          <tr><td>Analyse the data from the command line</td><td><code>sumimi summary &lt;website-id&gt;</code>, <code>sumimi pages</code>, <code>sumimi export</code>, …</td></tr>
-          <tr><td>Fill a database with demo traffic</td><td><code>sumimi seed --db ./sumimi/data.duckdb</code></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p>
-      If you prefer the explicit names, the symlinks <code>sumimi-server</code> and
-      <code>sumimi-client</code> are in the archive: <code>sumimi-server serve</code> is the
-      server and <code>sumimi-client summary</code> is the analyser. They are the same file.
-    </p>
-    <div class="callout tip">
-      <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
-        Want a smaller binary instead?
-      </p>
-      <p>
-        There is an optional dynamic build: <code>make build-small</code> links the prebuilt
-        DuckDB library instead of compiling it in, which gives you a noticeably smaller
-        executable — at the price of one extra file to ship. In that case
-        <code>libduckdb.so</code> (or <code>libduckdb.dylib</code> on macOS) has to sit next to
-        the binary, and the loader has to be told where to find it. The default release is
-        static, so this only matters if you build from source.
-      </p>
     </div>
 
     <h3>Linux (x86-64)</h3>
@@ -134,14 +177,8 @@ Expand-Archive sumimi.zip</code></pre>
 cd sumimi
 cargo build --release
 <span class="cmt"># the executable lands in target/release/sumimi</span></code></pre>
-    <p>
-      <code>cargo build --release</code> produces the same self-contained executable as the
-      release archive. <code>make build-small</code> produces the smaller dynamic build
-      described above, and copies <code>libduckdb.so</code> into <code>target/release/</code>
-      for you.
-    </p>
 
-    <h2>2. Install the executable</h2>
+    <h3>Install the executable</h3>
     <pre class="shell"><code><span class="cmt"># the one executable: the server and the analysis CLI</span>
 sudo install -m 0755 sumimi /usr/local/bin/
 
@@ -154,31 +191,130 @@ sudo ln -sf /usr/local/bin/sumimi /usr/local/bin/sumimi-client
 sudo install -d -m 0755 /opt/sumimi
 sudo cp -r js docs /opt/sumimi/</code></pre>
     <p>
-      That is the whole installation. The binary carries DuckDB inside it, so there is no
-      library to install alongside and no loader configuration to do. If you would rather keep
-      everything together in one directory, install it into <code>/opt/sumimi</code> and
-      point the service's <code>ExecStart</code> at that path.
-    </p>
-    <p>
       The <code>js/</code> and <code>docs/</code> directories are optional. You need
       <code>js/</code> only if you serve the dashboard frontend from the backend yourself
       (<code>SUMIMI_APP_URL=/app</code>); by default it comes from a CDN. <code>docs/</code> is
       this documentation site, served at <code>/docs</code>. The tracker at
       <code>/sumimi.js</code> is compiled into the server binary, so it is available either way.
     </p>
+    <div class="callout tip">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.5A7 7 0 0 0 12 2z"/></svg>
+        Want a smaller binary instead?
+      </p>
+      <p>
+        There is an optional dynamic build: <code>make build-small</code> links the prebuilt
+        DuckDB library instead of compiling it in, which gives you a noticeably smaller
+        executable — at the price of one extra file to ship. In that case
+        <code>libduckdb.so</code> (or <code>libduckdb.dylib</code> on macOS) has to sit next to
+        the binary, and the loader has to be told where to find it. The default release is
+        static, so this only matters if you build from source.
+      </p>
+    </div>
 
-    <h2>3. Create the admin account</h2>
+    <h2>3. Run it — as a service, without root</h2>
+    <p>
+      <code>sumimi service start</code> runs the server under a <strong>supervisor</strong>: a
+      second process that owns the server and restarts it when it dies. Two processes, because
+      a process that the kernel kills — the OOM killer, a segfault — cannot restart itself, and
+      the whole point of the promise is that a traffic spike does not take the box with it.
+    </p>
+    <p>
+      There is nothing to install for it. No systemd unit, no init script, no root: the
+      supervisor is the same executable, started in its own process group, and everything it
+      owns lives inside the instance directory — so it runs as the user who installed it.
+    </p>
+    <pre class="shell"><code><span class="cmt"># start it, with a domain: the certificate is issued for it</span>
+sumimi service start --dir ~/sumimi \
+  --domain stats.example.com --email you@example.com
+
+<span class="cmt"># what is it doing?</span>
+sumimi service status --dir ~/sumimi
+
+<span class="cmt"># stop it</span>
+sumimi service stop --dir ~/sumimi</code></pre>
+    <p>
+      The four commands are the whole interface:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Command</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>sumimi service start</code></td><td>Starts the supervisor, which starts the server. It refuses to start twice.</td></tr>
+          <tr><td><code>sumimi service status</code></td><td>Whether it is running, for how long, how many times it has been restarted, where the log is.</td></tr>
+          <tr><td><code>sumimi service stop</code></td><td>Asks the server to shut down gracefully — the writer flushes, the instance store is checkpointed — and waits for it.</td></tr>
+          <tr><td><code>sumimi service restart</code></td><td>Stops it and starts it again, with the same arguments.</td></tr>
+        </tbody>
+      </table>
+    </p>
+    <p>Three files live inside the instance directory:</p>
+    <pre class="shell"><code>~/sumimi/
+├── data.duckdb      the events
+├── instance.sqlite  the accounts, the log, the imports, the cache
+├── acme/            the TLS certificate cache
+├── jwt-secret       the signing secret
+└── service/
+    ├── status.json   the state of the service, rewritten every heartbeat
+    ├── log           the server's output
+    └── stop          the stop request</code></pre>
+    <p>
+      The server's output goes to <code>service/log</code>, so <code>tail -f</code> on it is
+      the log. If the server keeps dying, the supervisor says so in the status
+      (<code>restarts</code>) and gives up after five failures in a row rather than restarting
+      a broken thing forever.
+    </p>
+    <div class="callout">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+        Prefer systemd, or want to see the server in the foreground?
+      </p>
+      <p>
+        Both are fine. <code>sumimi serve --dir ~/sumimi --domain stats.example.com</code>
+        runs the server in the foreground, and the
+        <a href="self-host.html">self-hosting guide</a> has a systemd unit for the people who
+        want their server managed by the system.
+      </p>
+    </div>
+
+    <h2>4. The certificate</h2>
+    <p>
+      This is the part that usually takes the longest on a cheap VPS, so Sumimi does it
+      itself. With a domain, the server asks <strong>Let's Encrypt</strong> for a certificate
+      over ACME and renews it in the background — no certbot, no renewal cron job, no
+      <code>acme.sh</code>, no reverse proxy whose only job is TLS.
+    </p>
+    <pre class="shell"><code><span class="cmt"># in the foreground</span>
+sumimi serve --dir ~/sumimi --ssl stats.example.com --ssl-email you@example.com
+
+<span class="cmt"># or as a service</span>
+sumimi service start --dir ~/sumimi \
+  --domain stats.example.com --email you@example.com</code></pre>
+    <p>
+      Two things have to be true: the domain has to point at the host, and port 443 has to
+      reach the Sumimi process — the challenge is TLS-ALPN-01, so the handshake itself has to
+      arrive. Behind a reverse proxy that terminates TLS, use the proxy's own ACME support
+      instead; the <a href="self-host.html#option-b-a-reverse-proxy-in-front">self-hosting
+      guide</a> has both.
+    </p>
+    <p>
+      The certificate cache lives in <code>acme/</code> inside the instance directory — back it
+      up with the rest, or the server has to ask for a new one.
+    </p>
+
+    <h2>5. Create the admin account</h2>
     <p>
       The server has one user: the administrator. Create it before the first run so the password
       is one you chose.
     </p>
-    <pre class="shell"><code>sumimi admin --dir /var/lib/sumimi \
+    <pre class="shell"><code>sumimi admin --dir ~/sumimi \
   --username admin --password 'a-long-passphrase'</code></pre>
     <p>
       If you leave <code>--password</code> out, a strong password is generated and printed
       <strong>once</strong>:
     </p>
-    <pre class="shell"><code>$ sumimi admin --dir ./sumimi --username admin
+    <pre class="shell"><code>$ sumimi admin --dir ~/sumimi --username admin
 admin user 'admin' ready
 password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
 (store it now — it is not shown again)</code></pre>
@@ -191,31 +327,11 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         The first <code>serve</code> on an empty database creates the admin user anyway, using
         <code>SUMIMI_ADMIN_USER</code> (default <code>admin</code>) and
         <code>SUMIMI_ADMIN_PASSWORD</code>. If the password is unset, one is generated and
-        printed to the service log exactly once. It is never stored in plaintext.
+        printed to the log exactly once. It is never stored in plaintext.
       </p>
     </div>
 
-    <h2>4. Run the server</h2>
-    <pre class="shell"><code>sumimi serve --dir /var/lib/sumimi --host 127.0.0.1 --port 3999</code></pre>
-    <p>
-      An instance is a <strong>directory</strong>. Everything it owns lives inside it, so
-      backing it up, moving it and deleting it are one operation on one path:
-    </p>
-    <pre class="shell"><code>/var/lib/sumimi/
-├── data.duckdb      the events
-├── instance.sqlite  the accounts, the log, the imports, the cache
-├── logs/            the server's log files
-├── acme/            the TLS certificate cache
-└── jwt-secret       the signing secret</code></pre>
-    <p>
-      To serve HTTPS directly — without a reverse proxy in front — add
-      <code>--ssl</code>:
-    </p>
-    <pre class="shell"><code>sumimi serve --dir /var/lib/sumimi \
-  --ssl example.com --ssl-email you@example.com</code></pre>
-    <p>
-      <code>--ssl-domain</code> is still accepted as an alias for <code>--ssl</code>.
-    </p>
+    <h2>6. The flags</h2>
     <p>
       The flags you will use most:
     </p>
@@ -235,7 +351,7 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
           <tr><td><code>--country-header &lt;name&gt;</code></td><td><code>SUMIMI_COUNTRY_HEADER</code></td><td>none</td><td>Header carrying the country code, e.g. <code>CF-IPCountry</code>.</td></tr>
           <tr><td><code>--js-dir &lt;path&gt;</code></td><td><code>SUMIMI_JS_DIR</code></td><td><code>js</code></td><td>Directory holding the dashboard frontend files. Only used when <code>SUMIMI_APP_URL=/app</code> makes the backend serve the frontend itself.</td></tr>
           <tr><td><code>--docs-dir &lt;path&gt;</code></td><td><code>SUMIMI_DOCS_DIR</code></td><td><code>docs</code></td><td>Directory holding the documentation site served at <code>/docs</code>.</td></tr>
-          <tr><td><code>--ssl &lt;domain&gt;</code></td><td><code>SUMIMI_SSL_DOMAIN</code></td><td>none</td><td>Serve HTTPS with a certificate obtained and renewed automatically over ACME. <code>--ssl-domain</code> is accepted as an alias. See <a href="self-host.html#lets-sumimi-manage-tls-itself">Let Sumimi manage TLS itself</a>.</td></tr>
+          <tr><td><code>--ssl &lt;domain&gt;</code></td><td><code>SUMIMI_SSL_DOMAIN</code></td><td>none</td><td>Serve HTTPS with a certificate obtained and renewed automatically over ACME. <code>--ssl-domain</code> is accepted as an alias.</td></tr>
           <tr><td><code>--ssl-email &lt;address&gt;</code></td><td><code>SUMIMI_SSL_EMAIL</code></td><td>none</td><td>Contact address registered with the ACME provider. Let's Encrypt sends expiry notices there.</td></tr>
           <tr><td><code>--ssl-cache-dir &lt;path&gt;</code></td><td><code>SUMIMI_SSL_CACHE_DIR</code></td><td><code>&lt;instance directory&gt;/acme</code></td><td>Directory holding the ACME account and the certificates. Back it up.</td></tr>
           <tr><td><code>--ssl-port &lt;port&gt;</code></td><td><code>SUMIMI_SSL_PORT</code></td><td><code>443</code></td><td>Port used for HTTPS when <code>--ssl</code> is set.</td></tr>
@@ -265,9 +381,9 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         <code>https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js</code>, so the frontend is
         served from a CDN out of the box and the backend only ships a tiny HTML shell. Set it
         to <code>/app</code> to serve the frontend from the backend's own <code>js/</code>
-        directory instead — that is what you want on an air-gapped machine. The tracker
-        (<code>sumimi.js</code>) is served by the backend itself and is unaffected by this
-        setting.</li>
+        directory instead — that is what you want on an air-gapped machine, and what the
+        container image does. The tracker (<code>sumimi.js</code>) is served by the backend
+        itself and is unaffected by this setting.</li>
     </ul>
     <p>
       A few more environment variables tune the process rather than the data:
@@ -310,33 +426,20 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
       (<code>SUMIMI_DB</code>). A third subcommand, <code>config</code>, prints the resolved
       configuration and exits.
     </p>
-    <div class="callout tip">
-      <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
-        HTTPS without a reverse proxy
-      </p>
-      <p>
-        With <code>--ssl example.com</code> the server obtains a Let's Encrypt certificate on
-        its own over ACME and renews it in the background. There is no certbot and no cron
-        job, and no reverse proxy is needed just to serve TLS. The challenge used is
-        TLS-ALPN-01, so port 443 has to reach the Sumimi process directly — behind a proxy
-        that terminates TLS, use the proxy's own ACME support instead.
-      </p>
-    </div>
 
-    <h2>5. Create a website</h2>
+    <h2>7. Create a website</h2>
     <p>
       Log in and create the website you want to measure. The website id is what the tracker
       needs.
     </p>
     <pre class="shell"><code><span class="cmt"># log in</span>
-curl -s -X POST http://127.0.0.1:3999/api/login \
+curl -s -X POST http://127.0.0.1:3000/api/login \
   -H 'content-type: application/json' \
   -d '{"username":"admin","password":"a-long-passphrase"}'
 <span class="cmt"># {"token":"eyJ...","user":{"id":"...","username":"admin","role":"admin",...}}</span>
 
 <span class="cmt"># create a website</span>
-curl -s -X POST http://127.0.0.1:3999/api/websites \
+curl -s -X POST http://127.0.0.1:3000/api/websites \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $TOKEN" \
   -d '{"name":"My Blog","domain":"blog.example.com"}'
@@ -347,7 +450,7 @@ curl -s -X POST http://127.0.0.1:3999/api/websites \
       for a website it does not know.
     </p>
 
-    <h2>6. Install the tracker</h2>
+    <h2>8. Install the tracker</h2>
     <p>
       The server serves the tracker itself at <code>/sumimi.js</code> — it is compiled into the
       binary, so it is always available whatever you set <code>SUMIMI_APP_URL</code> to. Put
@@ -362,9 +465,9 @@ curl -s -X POST http://127.0.0.1:3999/api/websites \
       in the <a href="tracker.html">tracker guide</a>.
     </p>
 
-    <h2>7. Look at the numbers</h2>
+    <h2>9. Look at the numbers</h2>
     <p>
-      Open <code>http://127.0.0.1:3999/</code> and log in with the admin account. The dashboard
+      Open <code>http://127.0.0.1:3000/</code> and log in with the admin account. The dashboard
       is a small HTML shell that loads the frontend JavaScript. By default that frontend comes
       from a CDN (<code>https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js</code>), so the
       backend ships no frontend code; set <code>SUMIMI_APP_URL=/app</code> to serve it from the
@@ -374,8 +477,8 @@ curl -s -X POST http://127.0.0.1:3999/api/websites \
     <p>
       You can also read the same numbers straight from the database file:
     </p>
-    <pre class="shell"><code>sumimi summary --db /var/lib/sumimi/data.duckdb 3f2a...
-sumimi pages --db /var/lib/sumimi/data.duckdb 3f2a... --limit 10</code></pre>
+    <pre class="shell"><code>sumimi summary --db ~/sumimi/data.duckdb 3f2a...
+sumimi pages --db ~/sumimi/data.duckdb 3f2a... --limit 10</code></pre>
     <p>
       The <a href="cli.html">CLI reference</a> lists every subcommand and every flag.
     </p>
@@ -399,7 +502,7 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
 
     <h2>Next steps</h2>
     <ul>
-      <li><a href="self-host.html">Self-host on a cheap VPS</a> — systemd, reverse proxy, TLS and backups.</li>
+      <li><a href="self-host.html">Self-host on a cheap VPS</a> — the service, TLS, the firewall and backups.</li>
       <li><a href="tracker.html">Tracker options</a> — custom events, self-hosting, CDN, multiple sites.</li>
       <li><a href="privacy.html">Privacy and data protection</a> — what is stored, what is refused, how to erase it.</li>
       <li><a href="faq.html">FAQ</a> — common problems and how to solve them.</li>
@@ -410,6 +513,8 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
       implements the Umami v2 HTTP API. Apache-2.0 licensed.
     </p>
 
+      </article>
+    </div>
   </div>
 </main>
 
@@ -421,14 +526,10 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
     <ul>
-      <li><a href="install.html">Install</a></li>
-      <li><a href="self-host.html">Self-host</a></li>
-      <li><a href="tracker.html">Tracker</a></li>
-      <li><a href="api.html">API</a></li>
-      <li><a href="cli.html">CLI</a></li>
-      <li><a href="memory.html">Memory</a></li>
-      <li><a href="privacy.html">Privacy</a></li>
-      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="index.html">Docs</a></li>
+      <li><a href="../blog/">Blog</a></li>
+      <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
     </ul>
   </div>
 </footer>

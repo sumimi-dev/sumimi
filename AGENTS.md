@@ -959,13 +959,23 @@ different.
 ### 4.6 service/docs/ — the website
 
 A static site (plain HTML + one stylesheet, no build step, no npm) served by the service
-binary at `/docs`:
+binary at `/docs`. It has three sections:
 
-* `service/docs/index.html` — the landing page (Sumimi branding, cats, install snippet);
-* `service/docs/install.html`, `self-host.html`, `tracker.html`, `api.html`, `cli.html`,
-  `privacy.html`, `faq.html` — the documentation;
+* `service/docs/index.html` — **the home page**: the story (why the project exists), the
+  design goals with the measured numbers, and the way in;
+* `service/docs/docs/` — **the documentation**: `index.html` (the section page),
+  `install.html`, `self-host.html`, `tracker.html`, `api.html`, `cli.html`, `memory.html`,
+  `privacy.html`, `faq.html`. Every page carries the same left-hand list of articles;
+* `service/docs/blog/` — **the blog**: `index.html` and the posts;
 * `service/docs/assets/style.css` — one stylesheet, light + dark via `prefers-color-scheme`;
 * `service/docs/assets/CREDITS.md` — the licence record for every asset (all artwork is original).
+
+**Every link is relative, and that is not a style choice.** The same files are published at
+`https://sumimi-dev.github.io` (the docs directory is the site root) and served by the
+binary at `/docs` (the docs directory is one level down). A relative link resolves the same
+way in both; an absolute one does not. So `docs/install.html` is written `docs/install.html`
+on the site and `install.html` inside `service/docs/docs/`, and the stylesheet is
+`../assets/style.css` from a page in a subdirectory.
 
 The site lives **inside the crate** and is **embedded in the binary** by `service/build.rs`
 (about 60 KB): a server installed with `cargo install` has a documentation site without
@@ -980,6 +990,42 @@ The **dashboard** is separate from the docs: the backend serves a very small HTM
 CDN to serve that frontend from anywhere; the backend binary stays tiny because the
 frontend is never embedded in it.
 
+### 4.7 The service, and the container
+
+**`sumimi service start|stop|status|restart`** runs the server under a **supervisor**: a
+second process that owns the server as a child and restarts it when it dies. The rules it
+follows, and the reasons for them:
+
+* **Two processes.** A process the kernel kills — the OOM killer, a segfault — cannot
+  restart itself. The supervisor is a separate executable for exactly that reason.
+* **No system manager, no root.** Everything the service owns lives inside the instance
+  directory, so it runs as the user who installed it. The supervisor is started in its own
+  process group (`CommandExt::process_group`) so that closing the terminal does not take it
+  down.
+* **No signals.** The supervisor asks the server to stop by closing the pipe on its
+  standard input; the server treats the end of that pipe as a request to shut down
+  gracefully (`SUMIMI_EXIT_ON_STDIN_EOF=1` — opt-in, because with a terminal on standard
+  input an end-of-file would be a surprise). The stop request is a file, and so is the
+  state, so `status` works without any privileges.
+* **Failure protection.** A server that dies within ten seconds of starting is a broken
+  server: after five of those in a row the supervisor stops and says so, rather than
+  restarting it forever. The backoff between restarts grows to thirty seconds — and a stop
+  request interrupts it.
+
+The state lives in `<dir>/service/`: `status.json` (the heartbeat), `log` (the server's
+output) and `stop` (the stop request).
+
+**The container** (`Dockerfile`, `docker-compose.yml`) is the same bundle in a box: the
+executable, the dashboard frontend and the documentation, exactly as the release archive
+ships them. It runs as an unprivileged user, serves the frontend itself
+(`SUMIMI_APP_URL=/app`, so the container makes no outbound request) and reads **its own**
+memory limit rather than the host's. `--restart unless-stopped` is the container's answer
+to the same job the supervisor does outside Docker.
+
+**TLS is the server's own job by default.** With a domain, the server asks Let's Encrypt
+for a certificate over ACME (TLS-ALPN-01) and renews it in the background — no certbot, no
+renewal cron job, no reverse proxy whose only job is TLS.
+
 ## 5. Non-negotiable engineering rules
 
 1. `#![forbid(unsafe_code)]` in every crate.
@@ -991,9 +1037,14 @@ frontend is never embedded in it.
 5. Every public API route has an integration test; every DuckDB query in `cli/` has a test
    against a generated fixture database.
 6. `cargo test` and `cargo clippy -- -D warnings` must pass before push.
-7. Schema changes are **additive** and must not require a migration step in v1
+7. **Every secret comes from the operating system's random source.** The JWT signing key,
+   the generated admin password and the password salt all go through
+   `config::random_secret` / `config::random_bytes` — and the shim behind them is small
+   enough to be wrong in a way nothing notices. `service/tests/secrets.rs` guards it: a
+   secret that is not random is a secret that everybody knows.
+8. Schema changes are **additive** and must not require a migration step in v1
    (`CREATE TABLE IF NOT EXISTS` at open time).
-8. **Every write path must fit in the same memory budget as the serving path.**
+9. **Every write path must fit in the same memory budget as the serving path.**
    The target box has 512 MB and the DuckDB ceiling is 128 MB, so a path that
    needs more is a path that breaks on the customer's machine. This is the reason
    the fact table carries **no index at all** — see §4.3. A table with a primary

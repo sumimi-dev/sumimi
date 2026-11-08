@@ -869,3 +869,246 @@ hr {
     font-size: 12pt;
   }
 }
+
+/* ------------------------------------------------------------------ the docs
+ *
+ * The documentation is a two-column layout: the list of articles on the left,
+ * the article on the right. The rail is sticky, and on a narrow screen it
+ * stacks above the article.
+ */
+
+.wrap-wide {
+  max-width: 78rem;
+}
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: 13.5rem minmax(0, 1fr);
+  gap: 3rem;
+  align-items: start;
+}
+
+@media (max-width: 62rem) {
+  .docs-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+}
+
+.docs-rail {
+  position: sticky;
+  top: 5.5rem;
+  font-size: 0.93rem;
+}
+
+@media (max-width: 62rem) {
+  .docs-rail {
+    position: static;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+.rail-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--fg-faint);
+}
+
+.rail-group {
+  margin: 1.15rem 0 0.3rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-faint);
+}
+
+.rail-group:first-child {
+  margin-top: 0;
+}
+
+.rail-nav a {
+  display: block;
+  margin-left: -0.55rem;
+  padding: 0.26rem 0.55rem;
+  border-radius: 6px;
+  color: var(--fg-soft);
+  text-decoration: none;
+  line-height: 1.4;
+}
+
+.rail-nav a:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+
+.rail-nav a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.docs-body > :first-child {
+  margin-top: 0;
+}
+
+/* --------------------------------------------------------------- the story
+ *
+ * The homepage tells a story: a short sequence of beats, each with a label.
+ * It is a card so it reads as one piece, not as a list of features.
+ */
+
+.story {
+  margin: 0 0 2rem;
+  padding: 1.6rem 1.75rem 1.4rem;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.story .steps {
+  margin-bottom: 0;
+}
+
+.story .steps > li {
+  margin-bottom: 1.35rem;
+}
+
+.story .steps > li:last-child {
+  margin-bottom: 0;
+}
+
+.story-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent-fg);
+}
+
+.story p {
+  margin-bottom: 0.6rem;
+}
+
+.story p:last-child {
+  margin-bottom: 0;
+}
+
+/* ------------------------------------------------------------------- stats */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.9rem;
+  margin: 0 0 1.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.stats li {
+  margin: 0;
+  padding: 0.95rem 1.05rem;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.stat-value {
+  display: block;
+  font-size: 1.65rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  color: var(--accent-fg);
+}
+
+.stat-label {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.87rem;
+  color: var(--fg-soft);
+}
+
+/* ------------------------------------------------------------------- blog */
+
+.post-list {
+  margin: 0 0 2rem;
+  padding: 0;
+  list-style: none;
+  max-width: var(--measure);
+}
+
+.post-item {
+  padding: 1.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.post-item:first-child {
+  padding-top: 0;
+}
+
+.post-item h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1.22rem;
+}
+
+.post-item h3 a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.post-item h3 a:hover {
+  color: var(--accent-fg);
+}
+
+.post-item p {
+  margin: 0.3rem 0 0;
+  color: var(--fg-soft);
+  font-size: 0.97rem;
+}
+
+.post-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.85rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.84rem;
+  color: var(--fg-faint);
+}
+
+.post-head {
+  margin: 0 0 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.post-head .page-title {
+  margin-bottom: 0.5rem;
+}
+
+.post-head .post-meta {
+  margin-bottom: 0;
+}
+
+.post-body {
+  max-width: 46rem;
+}
+
+.post-body h2 {
+  margin-top: 2.5rem;
+}
+
+.post-foot {
+  margin: 3rem 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.93rem;
+  color: var(--fg-soft);
+}
+

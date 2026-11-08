@@ -115,10 +115,21 @@ async fn the_documentation_is_served_without_a_directory_on_disk() {
     );
 
     // A page of the site.
-    let (status, content_type, body) = get(&app, "/docs/install.html").await;
+    let (status, content_type, body) = get(&app, "/docs/docs/install.html").await;
     assert_eq!(status, StatusCode::OK);
     assert!(content_type.contains("text/html"), "{content_type}");
     assert!(body.contains("Sumimi"), "the page is not the one we wrote");
+
+    // The documentation section, and the blog.
+    let (status, content_type, body) = get(&app, "/docs/docs/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/html"), "{content_type}");
+    assert!(body.contains("Documentation"), "the section page is not the one we wrote");
+
+    let (status, content_type, body) = get(&app, "/docs/blog/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/html"), "{content_type}");
+    assert!(body.contains("Blog"), "the blog index is not the one we wrote");
 
     // The stylesheet.
     let (status, content_type, body) = get(&app, "/docs/assets/style.css").await;

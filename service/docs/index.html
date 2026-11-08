@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sumimi — self-hosted web analytics in one self-contained binary</title>
-<meta name="description" content="Sumimi (数咪咪) is a self-hosted, single-binary web analytics service built with Rust, Axum and embedded DuckDB. Cookieless, no raw IP storage, Umami v2 compatible API.">
+<title>Sumimi — self-hosted web analytics for a small VPS</title>
+<meta name="description" content="Sumimi (数咪咪) is a self-hosted web analytics service that runs on a 1 vCPU / 512 MB VPS: one binary, one DuckDB file, 50–85× less disk than Umami on PostgreSQL, and no outbound requests at all.">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
@@ -22,14 +22,9 @@
     <nav class="site-nav" aria-label="Main">
       <ul>
         <li><a href="index.html" aria-current="page">Home</a></li>
-        <li><a href="install.html">Install</a></li>
-        <li><a href="self-host.html">Self-host</a></li>
-        <li><a href="tracker.html">Tracker</a></li>
-        <li><a href="api.html">API</a></li>
-        <li><a href="cli.html">CLI</a></li>
-        <li><a href="memory.html">Memory</a></li>
-        <li><a href="privacy.html">Privacy</a></li>
-        <li><a href="faq.html">FAQ</a></li>
+        <li><a href="docs/">Docs</a></li>
+        <li><a href="blog/">Blog</a></li>
+        <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
       </ul>
     </nav>
   </div>
@@ -43,12 +38,12 @@
         <div>
           <h1>Sumimi</h1>
           <p class="tagline">Count kitties popping into my websites.</p>
-          <p class="tagline-cn">由猫开发 — a self-hosted web analytics service that fits on a cheap VPS.</p>
+          <p class="tagline-cn">A self-hosted web analytics service that fits on a cheap VPS.</p>
           <p class="lede">
-            Sumimi is a single-binary analytics server written in Rust. It stores everything in
-            one embedded DuckDB file, serves its own tracker and dashboard, and makes no
-            outbound network calls at all. Nothing to sign up for, nothing to pay for, nothing
-            that phones home.
+            One executable and one DuckDB file. It serves its own tracker and dashboard,
+            stores the last few years of your traffic in a fraction of the disk, and makes
+            no outbound request of any kind — no account, no bill, nothing that phones
+            home.
           </p>
           <ul class="badges">
             <li><strong>Rust</strong> + Axum + Tokio</li>
@@ -58,9 +53,9 @@
             <li><strong>Apache-2.0</strong> licence</li>
           </ul>
           <div class="actions">
-            <a class="button button-primary" href="install.html">Install it</a>
-            <a class="button button-secondary" href="privacy.html">Read the privacy promise</a>
-            <a class="button button-secondary" href="api.html">API reference</a>
+            <a class="button button-primary" href="docs/install.html">Install it</a>
+            <a class="button button-secondary" href="docs/">Read the docs</a>
+            <a class="button button-secondary" href="blog/">Read the blog</a>
           </div>
         </div>
         <div class="hero-art">
@@ -93,19 +88,83 @@
       </div>
     </section>
 
-    <h2>What it is</h2>
+    <h2>Why I built Sumimi</h2>
     <p>
-      Sumimi collects page views from your own websites and serves them back to you as
-      statistics. The whole thing is one executable file plus one database file. There is no
-      queue, no cache to operate, no object storage, no Kubernetes, no managed cloud service in
-      the middle. You copy one file to a box, run one systemd unit, and you are done.
-    </p>
-    <p>
-      The HTTP API is <strong>Umami v2 compatible</strong>, so the official Umami dashboard — and
-      the existing Umami tracker snippets — work against it unchanged. Sumimi is an independent
-      open-source project; it implements the Umami v2 HTTP API and uses no Umami assets.
+      This started as a problem with my own server, not as an idea about a product. Here is
+      the whole of it, because it is the reason every design decision in Sumimi looks the way
+      it does.
     </p>
 
+    <div class="story">
+      <ol class="steps">
+        <li>
+          <p class="story-label">The box</p>
+          <p>
+            I have a small VPS — <strong>1 GB of RAM, one core, a 20 GB disk</strong> — and for
+            a long time it ran <a href="https://umami.is">Umami</a> for the traffic statistics of
+            several small sites of mine. It is not a big machine. It is not supposed to be one.
+            It is the box I already pay for.
+          </p>
+        </li>
+        <li>
+          <p class="story-label">Two problems</p>
+          <p>
+            The first was the <strong>disk</strong>. It filled up. Umami keeps every page view
+            in PostgreSQL — row after row, with thirty indexes on top — and the data is
+            append-only: it grows forever and nothing is ever handed back. I was pruning by
+            hand every few months, which is not a plan, it is a chore.
+          </p>
+          <p>
+            The second was the <strong>dashboard</strong>. Every time I opened a panel there was
+            a stutter, and after six months of history the stutter had become a wait: the
+            page was aggregating half a year of rows on every click.
+          </p>
+        </li>
+        <li>
+          <p class="story-label">The realization</p>
+          <p>
+            Both problems had the same root. Analytics data is <strong>append-only</strong>:
+            almost everything that arrives is new, and almost nothing is ever updated or
+            deleted. That is exactly the shape of data that a columnar engine compresses well
+            — store it as columns instead of rows, let the engine find the repetition, and
+            write it to disk compressed.
+          </p>
+          <p>
+            So the question stopped being "which analytics tool" and became "which storage
+            engine". If the same disk could hold <strong>seven years of history instead of
+            fifteen months</strong>, then with automatic backups and a rolling deletion policy
+            on top, the service could sit there and watch those sites for years without me
+            ever touching it again. It would stop being a chore and start being a
+            <strong>status monitor</strong> for the sites I run.
+          </p>
+        </li>
+        <li>
+          <p class="story-label">The decision</p>
+          <p>
+            <strong>DuckDB</strong> — a columnar engine compiled into the binary, so the whole
+            server is one file on disk with no database server to install, secure or upgrade.
+            The measurements are in
+            <a href="blog/why-duckdb.html">why DuckDB</a>: on the same data it needs
+            <strong>50–85× less space</strong> than Umami on PostgreSQL, and the panel queries
+            that took seconds take milliseconds.
+          </p>
+        </li>
+      </ol>
+    </div>
+
+    <p>
+      Fifteen months of history became seven years on the same disk. The measured factor is
+      larger than that — 50–85× depending on how repetitive your URLs and titles are — but
+      the disk stopped being the thing I think about, and that was the whole point.
+    </p>
+
+    <h2>What it turned into</h2>
+    <p>
+      A single executable that is both the server and the analysis CLI. It speaks the
+      <strong>Umami v2 HTTP API</strong>, so the official Umami dashboard and the existing
+      Umami tracker snippets work against it unchanged — Sumimi is an independent
+      open-source project and uses no Umami assets.
+    </p>
     <ul class="card-grid">
       <li>
         <div class="card-title">
@@ -137,137 +196,229 @@
       </li>
     </ul>
 
-    <h2>Quick start</h2>
-    <p>Five lines, on any Linux box with a spare gigabyte of disk:</p>
-    <pre class="shell"><code><span class="cmt"># 1. download the release archive and unpack it</span>
-curl -fsSL https://github.com/sumimi-dev/sumimi/releases/latest/download/sumimi-linux-amd64.tar.gz | tar xz
+    <h3>Where it fits</h3>
+    <ul>
+      <li>
+        <strong>The small sites you already own.</strong> A personal blog, a side project, a
+        static site — a box you are already paying for, and a page of JavaScript.
+      </li>
+      <li>
+        <strong>The sites whose traffic you want to keep.</strong> Not this month, not this
+        quarter: the whole history, on the disk you already have, with a backup you can
+        restore from. A dashboard you can open next year and still compare against today.
+      </li>
+      <li>
+        <strong>Services you run and care about.</strong> Once the history is cheap enough to
+        keep, the analytics stop being a report and start being a signal: is this deploy
+        actually better, did that outage show up, is the traffic shape healthy?
+      </li>
+      <li>
+        <strong>Anything where handing the data to a third party is not acceptable.</strong>
+        No cookies, no fingerprinting, raw IP addresses never stored, and the only machine
+        that sees a visitor is yours.
+      </li>
+    </ul>
 
-<span class="cmt"># 2. install the one executable — it is both the server and the CLI</span>
-sudo install -m 0755 sumimi /usr/local/bin/
-
-<span class="cmt"># 3. run it</span>
-sumimi serve --db /var/lib/sumimi/sumimi.duckdb --port 3999
-
-<span class="cmt"># 4. drop the tracker into your website</span>
-<span class="cmt">#    &lt;script defer src="https://your-host/sumimi.js" data-website-id="&lt;uuid&gt;"&gt;&lt;/script&gt;</span>
-
-<span class="cmt"># 5. look at the dashboard at https://your-host/</span></code></pre>
+    <h2>Two things that are usually a project of their own</h2>
     <p>
-      The release archive contains <code>sumimi</code> — one executable that is both the server
-      (<code>sumimi serve …</code>) and the analysis CLI (<code>sumimi summary …</code>) — plus
-      the <code>js/</code> directory with the dashboard frontend (and a copy of the tracker), and
-      the <code>docs/</code> directory with this documentation. DuckDB is compiled into the
-      executable, so it is a single self-contained binary: there is no shared library to ship
-      alongside it, and nothing else to install.
-      The <a href="install.html">install guide</a> has the full walkthrough, including Windows,
-      macOS, the admin password and the systemd unit.
+      On a cheap VPS, the two things that turn "copy one file onto a box" into a weekend are
+      the certificate and the process management. Sumimi does both, so neither one is your
+      problem.
     </p>
+    <ul class="card-grid">
+      <li>
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg>
+          <h3>It gets its own certificate</h3>
+        </div>
+        <p>
+          Give it a domain and it asks <strong>Let's Encrypt</strong> for a certificate over
+          ACME and renews it in the background. No certbot, no renewal cron job, and no
+          reverse proxy whose only job is to be in front of it — the handshake itself carries
+          the challenge.
+        </p>
+      </li>
+      <li>
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+          <h3>It restarts itself</h3>
+        </div>
+        <p>
+          <code>sumimi service start</code> runs the server under a supervisor: a second
+          process that owns it and brings it back when it dies. No systemd, no root, no
+          init script — <code>start</code>, <code>stop</code>, <code>status</code> and
+          <code>restart</code> are the whole interface.
+        </p>
+      </li>
+    </ul>
     <p>
-      No website yet? <code>sumimi seed --db ./demo.duckdb</code> fills a database with
-      synthetic demo traffic so you can look at the dashboard before pointing a real site at
-      it.
+      And if you would rather not install anything at all, there is a container:
     </p>
+    <pre class="shell"><code>docker run -d --name sumimi \
+  --restart unless-stopped \
+  -p 3000:3000 -p 443:443 \
+  -v sumimi-data:/data \
+  -e SUMIMI_SSL_DOMAIN=stats.example.com \
+  -e SUMIMI_SSL_EMAIL=you@example.com \
+  ghcr.io/sumimi-dev/sumimi:latest</code></pre>
     <p>
-      The dashboard frontend is loaded from a CDN by default, so the server ships no frontend
-      code and stays small; the tracker is compiled into the server binary and always served by
-      it. See the <a href="self-host.html#the-dashboard-frontend-and-the-tracker">self-hosting
-      guide</a> if you would rather serve the frontend yourself.
+      One command, one volume, one container — and Docker restarts it when it dies, which is
+      the same job the supervisor does outside a container.
     </p>
 
-    <h2>The privacy promise</h2>
+    <h2>Design goal 1 — how much traffic a small box takes</h2>
     <p>
-      Analytics software handles data that identifies people, so Sumimi treats the exclusions
-      as acceptance criteria rather than options. The <a href="privacy.html">privacy page</a>
-      states them in full; the short version:
+      The promise is a ceiling on the whole process, not just the database. The code pages,
+      the collector, the queue, the pages the allocator keeps and DuckDB's own share all
+      count, and the box runs out of all of them at once.
     </p>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Behaviour</th><th>Sumimi</th></tr>
+          <tr><th>tier</th><th>the machine</th><th>DuckDB's ceiling</th><th>the whole process</th></tr>
         </thead>
         <tbody>
-          <tr><td>Cookies</td><td><span class="pill no">never set</span></td></tr>
-          <tr><td><code>localStorage</code> identifiers</td><td><span class="pill no">never used</span></td></tr>
-          <tr><td>Fingerprinting (canvas, fonts, audio, hardware)</td><td><span class="pill no">never attempted</span></td></tr>
-          <tr><td>Raw IP addresses</td><td><span class="pill no">never stored, never logged</span></td></tr>
-          <tr><td>Visitor identifier</td><td>rotating, non-reversible HMAC over a coarse IP prefix</td></tr>
-          <tr><td>URL query strings</td><td>stripped by default (opt in per site)</td></tr>
-          <tr><td>Do Not Track / Global Privacy Control</td><td><span class="pill yes">honoured — nothing is sent</span></td></tr>
-          <tr><td>Geolocation</td><td>only from an edge header you configure; never from a geo-IP database</td></tr>
-          <tr><td>Outbound calls from the server</td><td><span class="pill no">none, ever</span></td></tr>
-          <tr><td>Retention</td><td>configurable window, enforced by <code>sumimi prune</code></td></tr>
+          <tr><td>minimum</td><td>1 vCPU / 512 MB</td><td>128 MB</td><td><strong>256 MB</strong></td></tr>
+          <tr><td>recommended</td><td>1 vCPU / 1 GB</td><td>256 MB</td><td><strong>512 MB</strong></td></tr>
         </tbody>
       </table>
     </div>
-    <div class="callout warn">
+    <p>
+      The memory a request costs is not a guess. The rule below was measured on
+      <strong>three machines with three different CPUs</strong>, so it is not one box's
+      quirk:
+    </p>
+    <div class="callout tip">
       <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v5"/><path d="M12 17.5v.01"/><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6A2 2 0 0 0 22 18L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-        One thing you have to take care of
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+        The rule a deployment is sized from
       </p>
       <p>
-        Custom event properties are <strong>free-form data you supply</strong>. If you put an
-        email address, a phone number or a user id in there, you have put personal data in your
-        database, and every privacy guarantee on this page stops applying to it. The tracker
-        never attaches anything sensitive on its own.
+        <strong>The peak RSS ≈ 68 MB + 7.8 MB per 1 000 requests a second.</strong> The engine
+        is only 2–12 MB of it; the rest is the collection path and the allocator. Set
+        <code>SUMIMI_MAX_ADMIT_RPS</code> to your rate and the process stays at the size the
+        rule predicts, whatever the traffic does — a burst above the limit is refused with a
+        <code>Retry-After</code> instead of taking the box with it.
       </p>
     </div>
-
-    <h2>Why another analytics tool?</h2>
     <p>
-      Most analytics services ask you to accept a privacy policy, hand your visitors' data to a
-      third party, and then charge by the number of page views. Sumimi is the opposite: the
-      software is Apache-2.0 licensed, the data stays on a machine you control, and the cost of running
-      it is one small VPS you already have.
+      Measured inside a container, with the released binary and the minimum tier's 128 MB
+      engine — the closest thing to what a customer actually runs:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>the rate offered</th><th>the peak RSS</th><th>refused</th><th>the queue</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>5 000 /s</td><td>117 MB</td><td>0</td><td>0</td></tr>
+          <tr><td>10 000 /s</td><td>157 MB</td><td>0</td><td>0</td></tr>
+          <tr><td>15 000 /s</td><td>163 MB</td><td>0</td><td>0</td></tr>
+          <tr><td><strong>20 000 /s</strong> (the tier's default)</td><td><strong>208 MB</strong></td><td>0</td><td>0</td></tr>
+          <tr><td>30 000 /s</td><td>220 MB</td><td>180 313</td><td>0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="stats">
+      <li>
+        <span class="stat-value">15 000 /s</span>
+        <span class="stat-label">the safe rate on a <strong>512 MB</strong> box — 20 000/s is the memory ceiling, and the public internet costs about 20% more memory than loopback</span>
+      </li>
+      <li>
+        <span class="stat-value">30 000 /s</span>
+        <span class="stat-label">the safe rate on a <strong>1 GB</strong> box — the budget doubles, so the ceiling doubles with it</span>
+      </li>
+      <li>
+        <span class="stat-value">8 000–20 000 /s</span>
+        <span class="stat-label">what <strong>one core</strong> really serves: our slowest box (2 slow EPYC cores) topped out at ~16 700/s, our fastest (10-core M5) at 113 000/s</span>
+      </li>
+    </ul>
+    <p>
+      Two honest caveats. <strong>The core is the limit before the memory is</strong> — past
+      what a box can parse, the server refuses the traffic rather than queueing it, and the
+      memory stops growing; that is the right answer, but it means the gate has to be set
+      below the machine's ceiling, not above it. And <strong>the disk fills long before
+      either</strong>: 15 000 page views a second is 1.3 million views a day, which is about
+      50 GB a year of rows. Keep the history you want, and let
+      <code>sumimi prune</code> and the retention window do the rest.
     </p>
     <p>
-      The <a href="self-host.html">self-hosting guide</a> walks through a complete deployment on
-      a 1 vCPU / 512 MB box: systemd, a reverse proxy, TLS via ACME, and backups you can
-      actually restore from.
+      The whole method, the other machines and the numbers behind these tables are in the
+      <a href="docs/memory.html">memory and capacity</a> page.
     </p>
 
-    <h2>Documentation</h2>
+    <h2>The numbers that started it</h2>
+    <p>
+      The same traffic, stored two ways — Umami on PostgreSQL, and Sumimi on DuckDB. Both
+      measured, on the same rows, with the same fields:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>views a day</th><th>Umami + PostgreSQL</th><th>Sumimi + DuckDB</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>10 000</td><td>17.3 GB / year</td><td><strong>0.20 GB / year</strong></td></tr>
+          <tr><td>100 000</td><td>173 GB / year</td><td><strong>2.0 GB / year</strong></td></tr>
+          <tr><td>1 000 000</td><td>1.73 TB / year</td><td><strong>20 GB / year</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      That is <strong>85× less space</strong> on the marginal cost — the fair comparison,
+      with the fixed overhead of an empty file taken out. On real site data, with real UUID
+      identifiers, it is about <strong>50×</strong>; the difference is how much your URLs and
+      titles repeat. Either way the gap is not a detail: PostgreSQL spends
+      <strong>68% of its space on indexes</strong> on a table that is only ever appended to,
+      and a columnar engine compresses the repetition instead.
+    </p>
+    <p>
+      The queries follow the storage. The same panels, the same data, two engines:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>the panel</th><th>DuckDB</th><th>SQLite</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>summary</td><td><strong>8.3 ms</strong></td><td>234.7 ms</td></tr>
+          <tr><td>timeseries</td><td><strong>5.1 ms</strong></td><td>97.0 ms</td></tr>
+          <tr><td>top 50 pages</td><td><strong>1.4 ms</strong></td><td>70.9 ms</td></tr>
+          <tr><td>referrers</td><td><strong>2.1 ms</strong></td><td>68.7 ms</td></tr>
+          <tr><td>browsers</td><td><strong>3.8 ms</strong></td><td>120.3 ms</td></tr>
+          <tr><td>countries</td><td><strong>3.7 ms</strong></td><td>115.3 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      That is the stutter, gone. The story of how each of these numbers was measured — and
+      what the measurement traps were — is in
+      <a href="blog/why-duckdb.html">why DuckDB</a> and
+      <a href="blog/how-much-traffic.html">how much traffic a small box takes</a>.
+    </p>
+
+    <h2>Where to go next</h2>
     <ul class="card-grid">
       <li>
         <div class="card-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
-          <h3><a href="install.html">Install</a></h3>
+          <h3><a href="docs/">Documentation</a></h3>
         </div>
-        <p>Download, unpack, run, create your first website, install the tracker.</p>
+        <p>Install, self-host on a cheap VPS, put the tracker on a site, the HTTP API, the CLI, and what the privacy promise covers.</p>
       </li>
       <li>
         <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5v.01M7 16.5v.01"/></svg>
-          <h3><a href="self-host.html">Self-host</a></h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <h3><a href="blog/">Blog</a></h3>
         </div>
-        <p>systemd, reverse proxy, TLS certificates, backups and upgrades on a cheap VPS.</p>
+        <p>Why I built it, what the storage engine buys, and the measurements behind the promises — with the method and the traps written down.</p>
       </li>
       <li>
         <div class="card-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
-          <h3><a href="tracker.html">Tracker</a></h3>
+          <h3><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></h3>
         </div>
-        <p>Every way to put <code>sumimi.js</code> on a site: plain script, self-hosting, CDN, multi-site.</p>
-      </li>
-      <li>
-        <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
-          <h3><a href="api.html">HTTP API</a></h3>
-        </div>
-        <p>Every endpoint, with the request bodies, response shapes and auth rules.</p>
-      </li>
-      <li>
-        <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
-          <h3><a href="cli.html">CLI</a></h3>
-        </div>
-        <p>The offline analyser: read the database file directly, or talk to a running server. One binary, two modes.</p>
-      </li>
-      <li>
-        <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/></svg>
-          <h3><a href="privacy.html">Privacy</a></h3>
-        </div>
-        <p>Exactly what is collected, what is refused, and how to erase it.</p>
+        <p>The source, the issues and the design documents — <code>AGENTS.md</code> is the architecture, <code>MEMORY.md</code> is the memory strategy.</p>
       </li>
     </ul>
 
@@ -288,14 +439,10 @@ sumimi serve --db /var/lib/sumimi/sumimi.duckdb --port 3999
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
     <ul>
-      <li><a href="install.html">Install</a></li>
-      <li><a href="self-host.html">Self-host</a></li>
-      <li><a href="tracker.html">Tracker</a></li>
-      <li><a href="api.html">API</a></li>
-      <li><a href="cli.html">CLI</a></li>
-      <li><a href="memory.html">Memory</a></li>
-      <li><a href="privacy.html">Privacy</a></li>
-      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="index.html">Home</a></li>
+      <li><a href="docs/">Docs</a></li>
+      <li><a href="blog/">Blog</a></li>
+      <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
     </ul>
   </div>
 </footer>

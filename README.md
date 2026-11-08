@@ -67,7 +67,20 @@ anything.
 
 ## Install
 
-Download the release archive (it ships the dashboard frontend and the
+**A container, if you want one** — one command, one volume, and Docker restarts it when
+it dies:
+
+```bash
+docker run -d --name sumimi \
+  --restart unless-stopped \
+  -p 3000:3000 -p 443:443 \
+  -v sumimi-data:/data \
+  -e SUMIMI_SSL_DOMAIN=stats.example.com \
+  -e SUMIMI_SSL_EMAIL=you@example.com \
+  ghcr.io/sumimi-dev/sumimi:latest
+```
+
+**Or one file.** Download the release archive (it ships the dashboard frontend and the
 documentation next to the executable):
 
 | platform | file |
@@ -87,6 +100,17 @@ tar xzf sumimi-v0.4.1-Linux-x86_64.tar.gz
 ```
 
 On Windows, unzip the archive and run `sumimi.exe serve --dir .\sumimi --port 3000`.
+
+**Running it as a service** — no systemd, no root, no init script. The server runs under
+a supervisor: a second process that owns it and restarts it when it dies. With a domain, it
+asks Let's Encrypt for its own certificate and renews it in the background:
+
+```bash
+sumimi service start --dir ./sumimi \
+  --domain stats.example.com --email you@example.com
+sumimi service status --dir ./sumimi
+sumimi service stop --dir ./sumimi
+```
 
 Or from crates.io — **the crates are published for the 0.3.x line**, so
 `cargo install sumimi` gives that one, not the release above:
@@ -172,7 +196,7 @@ sumimi gsc import gsc.csv --website <id>    # a Search Console export
 ```
 
 The same commands work against a local `.duckdb` file and against a running server
-(the admin account is used to log in). See `docs/cli.html`.
+(the admin account is used to log in). See `docs/docs/cli.html`.
 
 ## Development
 

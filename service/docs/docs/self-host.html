@@ -4,47 +4,61 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Self-host on a cheap VPS — Sumimi</title>
-<meta name="description" content="Run Sumimi on a 1 vCPU / 512 MB VPS: install the binaries, write a systemd unit, get a Let's Encrypt certificate — with a reverse proxy or with Sumimi's own --ssl flag — and back up the DuckDB file.">
+<meta name="description" content="A complete deployment of Sumimi on a 1 vCPU / 512 MB VPS: a service that restarts itself without root or systemd, a Let's Encrypt certificate the server gets for itself, and backups you can restore from.">
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="assets/style.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4 .3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="site-header">
   <div class="wrap">
-    <a class="brand" href="index.html">
+    <a class="brand" href="../index.html">
       <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
       <span>Sumimi</span>
       <span class="brand-cn">数咪咪</span>
     </a>
     <nav class="site-nav" aria-label="Main">
       <ul>
-        <li><a href="index.html">Home</a></li>
-        <li><a href="install.html">Install</a></li>
-        <li><a href="self-host.html" aria-current="page">Self-host</a></li>
-        <li><a href="tracker.html">Tracker</a></li>
-        <li><a href="api.html">API</a></li>
-        <li><a href="cli.html">CLI</a></li>
-        <li><a href="memory.html">Memory</a></li>
-        <li><a href="privacy.html">Privacy</a></li>
-        <li><a href="faq.html">FAQ</a></li>
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="index.html" aria-current="page">Docs</a></li>
+        <li><a href="../blog/">Blog</a></li>
+        <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
       </ul>
     </nav>
   </div>
 </header>
 
 <main id="main">
-  <div class="wrap">
+  <div class="wrap wrap-wide">
+    <div class="docs-layout">
+      <aside class="docs-rail">
+        <p class="rail-title">Documentation</p>
+        <nav class="rail-nav" aria-label="Documentation">
+          <p class="rail-group">Overview</p>
+          <a href="index.html">Overview</a>
+          <p class="rail-group">Getting started</p>
+          <a href="install.html">Install</a>
+          <a href="self-host.html" aria-current="page">Self-host</a>
+          <p class="rail-group">Using it</p>
+          <a href="tracker.html">Tracker</a>
+          <a href="api.html">HTTP API</a>
+          <a href="cli.html">CLI</a>
+          <p class="rail-group">Reference</p>
+          <a href="memory.html">Memory &amp; capacity</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="faq.html">FAQ</a>
+        </nav>
+      </aside>
+      <article class="docs-body">
 
     <h1 class="page-title">Self-host on a cheap VPS</h1>
     <p class="page-lede">
-      A complete deployment of Sumimi on a 1 vCPU / 512 MB machine: a dedicated user, a
-      systemd unit, a real certificate, and backups you can restore from. The server is a
-      single self-contained executable — DuckDB is compiled into it — so deploying it means
-      copying one file onto the box. Nothing here needs more than a few megabytes of RAM. TLS
-      can come from a reverse proxy or from Sumimi itself — the guide covers both.
+      A complete deployment on a 1 vCPU / 512 MB machine: a service that restarts itself
+      without root and without systemd, a certificate the server gets for itself, and backups
+      you can restore from. The server is a single self-contained executable — DuckDB is
+      compiled into it — so deploying it means copying one file onto the box.
     </p>
 
     <h2>What the box needs</h2>
@@ -55,9 +69,9 @@
         </thead>
         <tbody>
           <tr><td>vCPU</td><td>1</td><td>Plenty. The server is idle between flushes.</td></tr>
-          <tr><td>RAM</td><td>512 MB</td><td>DuckDB is capped at 256 MB by default so the OOM killer stays away.</td></tr>
+          <tr><td>RAM</td><td>512 MB</td><td>DuckDB is capped at 128 MB by default so the OOM killer stays away.</td></tr>
           <tr><td>Disk</td><td>10 GB</td><td>The database is small; page views are a few dozen bytes each.</td></tr>
-          <tr><td>OS</td><td>Debian 12 / Ubuntu 22.04+</td><td>Any systemd Linux works. Alpine needs <code>libstdc++</code> and <code>libgcc</code>.</td></tr>
+          <tr><td>OS</td><td>Debian 12 / Ubuntu 22.04+</td><td>Any Linux works. Alpine needs <code>libstdc++</code> and <code>libgcc</code>.</td></tr>
           <tr><td>Programs</td><td>one executable</td><td><code>sumimi</code> — the server and the analysis CLI in one program. Self-contained: DuckDB is compiled in.</td></tr>
         </tbody>
       </table>
@@ -79,7 +93,33 @@
         at most that.</li>
     </ul>
 
-    <h2>1. Create the user and the directories</h2>
+    <h2>Option A: a container</h2>
+    <p>
+      If the box has Docker, this is the shortest path: one container, one volume, and Docker
+      restarts it when it dies. The <a href="install.html#1-docker--the-default">install
+      guide</a> has the command.
+    </p>
+    <pre class="shell"><code>docker run -d --name sumimi \
+  --restart unless-stopped \
+  -p 3000:3000 -p 443:443 \
+  -v sumimi-data:/data \
+  -e SUMIMI_SSL_DOMAIN=stats.example.com \
+  -e SUMIMI_SSL_EMAIL=you@example.com \
+  ghcr.io/sumimi-dev/sumimi:latest</code></pre>
+    <p>
+      The rest of this page is for the case where you would rather not run a container: one
+      executable and one directory.
+    </p>
+
+    <h2>Option B: one executable, run as a service</h2>
+    <p>
+      This is the default when there is no container runtime. <code>sumimi service start</code>
+      runs the server under a <strong>supervisor</strong> — a second process that owns the
+      server and restarts it when it dies. No systemd, no init script, no root: everything
+      lives inside the instance directory, so it runs as the user who installed it.
+    </p>
+
+    <h3>1. Create the user and the directories</h3>
     <p>
       Run the server as its own unprivileged user. It never needs root and it never needs to
       write anywhere except its data directory.
@@ -88,8 +128,12 @@
 sudo mkdir -p /var/lib/sumimi
 sudo chown sumimi:sumimi /var/lib/sumimi
 sudo chmod 0750 /var/lib/sumimi</code></pre>
+    <p>
+      Or skip the dedicated user and run it as yourself — that works too, and it is what the
+      <code>--dir ~/sumimi</code> form of the commands below does.
+    </p>
 
-    <h2>2. Install the executable</h2>
+    <h3>2. Install the executable</h3>
     <pre class="shell"><code><span class="cmt"># download and unpack the release archive</span>
 cd /tmp
 curl -fsSL https://github.com/sumimi-dev/sumimi/releases/latest/download/sumimi-linux-amd64.tar.gz | tar xz
@@ -102,7 +146,7 @@ sudo install -d -m 0755 /opt/sumimi
 sudo cp -r js docs /opt/sumimi/</code></pre>
     <div class="callout tip">
       <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.5A7 7 0 0 0 12 2z"/></svg>
         One file, nothing to configure
       </p>
       <p>
@@ -114,12 +158,7 @@ sudo cp -r js docs /opt/sumimi/</code></pre>
       <p>
         The archive also ships <code>sumimi-server</code> and <code>sumimi-client</code> as
         symlinks to <code>sumimi</code>, for people who prefer the explicit names — they are
-        the same file. The unit below uses <code>sumimi serve</code>.
-      </p>
-      <p>
-        If you would rather keep the program in one directory that is trivially versioned and
-        swapped on upgrades, install it into <code>/opt/sumimi</code> and point
-        the unit's <code>ExecStart</code> at <code>/opt/sumimi/sumimi</code>.
+        the same file.
       </p>
     </div>
     <p>
@@ -131,7 +170,255 @@ sudo cp -r js docs /opt/sumimi/</code></pre>
       <code>/sumimi.js</code> works whether or not you copy the directory across.
     </p>
 
-    <h2>3. Write the environment file</h2>
+    <h3>3. Start it</h3>
+    <p>
+      One command, with the domain the certificate is issued for:
+    </p>
+    <pre class="shell"><code>sudo -u sumimi sumimi service start \
+  --dir /var/lib/sumimi \
+  --domain stats.example.com \
+  --email you@example.com</code></pre>
+    <p>
+      The service is then managed with four commands:
+    </p>
+    <pre class="shell"><code>sumimi service status --dir /var/lib/sumimi
+sumimi service restart --dir /var/lib/sumimi
+sumimi service stop --dir /var/lib/sumimi</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>The command</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>start</code></td><td>Starts the supervisor, which starts the server. It refuses to start twice.</td></tr>
+          <tr><td><code>status</code></td><td>Whether it is running, for how long, how many times it has been restarted, where the log is.</td></tr>
+          <tr><td><code>stop</code></td><td>Asks the server to shut down gracefully — the writer flushes, the instance store is checkpointed — and waits for it.</td></tr>
+          <tr><td><code>restart</code></td><td>Stops it and starts it again, with the same arguments.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The server's output goes to <code>/var/lib/sumimi/service/log</code>, so
+      <code>tail -f</code> on it is the log:
+    </p>
+    <pre class="shell"><code>tail -f /var/lib/sumimi/service/log</code></pre>
+
+    <h3>4. What happens when it dies</h3>
+    <p>
+      The supervisor watches the server. If the server exits — the OOM killer, a segfault, an
+      unhandled error — the supervisor starts a new one, with a backoff: a second, then two,
+      then four, up to thirty. If the server dies five times in a row without ever staying up
+      for ten seconds, the supervisor gives up and says so, instead of restarting a broken
+      thing forever.
+    </p>
+    <div class="callout">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 13.5c0-1.5 2-2 2-3.5a2 2 0 1 0-4 0"/></svg>
+        Two processes, on purpose
+      </p>
+      <p>
+        A supervisor inside the same process would be useless: the process that is killed by
+        the kernel is gone, and nothing inside it can bring it back. That is why the server is
+        a child of a small supervisor, and why the supervisor is a separate executable that
+        survives it.
+      </p>
+    </div>
+    <p>
+      The state lives in three files inside the instance directory, so <code>status</code>
+      works without any privileges:
+    </p>
+    <pre class="shell"><code>/var/lib/sumimi/
+├── data.duckdb      the events
+├── instance.sqlite  the accounts, the log, the imports, the cache
+├── acme/            the TLS certificate cache
+├── jwt-secret       the signing secret
+└── service/
+    ├── status.json   the state, rewritten every heartbeat
+    ├── log           the server's output
+    └── stop          the stop request</code></pre>
+
+    <h2>TLS — the certificate</h2>
+    <p>
+      This is the part that usually takes the longest on a cheap VPS, so Sumimi does it
+      itself. There are two ways, and they are alternatives.
+    </p>
+
+    <h3 id="lets-sumimi-manage-tls-itself">Option A: let Sumimi manage TLS itself (the default)</h3>
+    <p>
+      With a domain, the server asks <strong>Let's Encrypt</strong> for a certificate over
+      ACME and renews it in the background. There is no certbot, no renewal cron job and no
+      reverse proxy whose only job is TLS — the challenge is TLS-ALPN-01, so port 443 has to
+      reach the Sumimi process directly.
+    </p>
+    <pre class="shell"><code><span class="cmt"># as a service (what the start command above does)</span>
+sumimi service start --dir /var/lib/sumimi \
+  --domain stats.example.com --email you@example.com
+
+<span class="cmt"># or in the foreground</span>
+sumimi serve --dir /var/lib/sumimi \
+  --ssl stats.example.com --ssl-email you@example.com</code></pre>
+    <p>
+      Two things have to be true: the domain has to point at the host, and port 443 has to
+      reach the process. A DNS record that has not propagated yet is the most common reason
+      for a failed first issuance — check with <code>dig +short stats.example.com</code>.
+    </p>
+    <p>
+      The certificate cache lives in <code>acme/</code> inside the instance directory — back it
+      up with the rest, or the server has to ask for a new one.
+    </p>
+
+    <h3 id="option-b-a-reverse-proxy-in-front">Option B: put a reverse proxy in front</h3>
+    <p>
+      If something else on the box already owns port 443, or you want a proxy for other
+      reasons, put one in front. The server binds to <code>127.0.0.1</code>, so nothing on
+      the internet can reach it directly; the proxy terminates TLS and forwards plain HTTP.
+    </p>
+    <h4>Caddy</h4>
+    <p>
+      Caddy obtains and renews a Let's Encrypt certificate on its own — no cron, no certbot.
+      This is the shortest correct configuration.
+    </p>
+    <pre class="shell"><code>sudo tee /etc/caddy/Caddyfile >/dev/null &lt;&lt;'EOF'
+stats.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3999
+}
+EOF
+sudo systemctl reload caddy</code></pre>
+    <h4>nginx</h4>
+    <pre class="shell"><code>sudo tee /etc/nginx/sites-available/sumimi &gt;/dev/null &lt;&lt;'EOF'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name stats.example.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name stats.example.com;
+    ssl_certificate     /etc/letsencrypt/live/stats.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/stats.example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    location / {
+        proxy_pass http://127.0.0.1:3999;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    <span class="cmt"># the tracker is a static file; let it cache briefly</span>
+    location = /sumimi.js {
+        proxy_pass http://127.0.0.1:3999;
+        proxy_set_header Host $host;
+        add_header Cache-Control "public, max-age=300";
+    }
+}
+EOF
+sudo ln -sf /etc/nginx/sites-available/sumimi /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx</code></pre>
+    <p>
+      With nginx, get the certificate with certbot:
+    </p>
+    <pre class="shell"><code>sudo certbot --nginx -d stats.example.com</code></pre>
+    <p>
+      certbot installs a timer that renews the certificate twice a day and reloads nginx.
+    </p>
+    <h4>ACME in general</h4>
+    <p>
+      Either way the certificate comes from Let's Encrypt over ACME, and renewal is automatic.
+      Two things are required for it to work: port 80 must be reachable from the internet, and
+      the domain must already point at your server's IP address.
+    </p>
+    <p>
+      If port 80 is closed, use the DNS-01 challenge instead (certbot with a DNS plugin, or
+      <code>acme.sh --dns</code>). That works with any DNS provider and needs no inbound port.
+      Sumimi's own certificate uses TLS-ALPN-01, which needs port 443.
+    </p>
+
+    <h2>The firewall</h2>
+    <p>
+      Only the proxy needs to be reachable. Everything else stays closed.
+    </p>
+    <pre class="shell"><code>sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+sudo ufw status</code></pre>
+    <p>
+      Port 3000 (or 3999) is deliberately not opened: with a reverse proxy, the server is
+      bound to loopback and is only reachable through the proxy.
+    </p>
+    <p>
+      If you let Sumimi manage TLS itself, port 443 has to reach the Sumimi process directly,
+      so bind the server to a public address and open the port:
+    </p>
+    <pre class="shell"><code><span class="cmt"># the service binds to every address by default; if you bound it</span>
+<span class="cmt"># to loopback, change that</span>
+sumimi service stop --dir /var/lib/sumimi
+sumimi service start --dir /var/lib/sumimi \
+  --domain stats.example.com --email you@example.com --host 0.0.0.0</code></pre>
+    <p>
+      Port 80 can stay closed — the ACME challenge Sumimi uses runs over port 443.
+    </p>
+
+    <h2>Backups</h2>
+    <p>
+      An instance is a <strong>directory</strong>, so a backup is one directory copy. It holds
+      the events (<code>data.duckdb</code>), the accounts, the log and the cache
+      (<code>instance.sqlite</code>), the signing secret (<code>jwt-secret</code>), the logs and
+      the TLS cache. Stop the service first so the copy is consistent — DuckDB's write-ahead
+      log means a live copy can otherwise be incomplete. There is no library to back up: the
+      executables are self-contained, so only the instance directory needs copying.
+    </p>
+    <pre class="shell"><code><span class="cmt"># a nightly snapshot</span>
+sudo tee /usr/local/bin/sumimi-backup &gt;/dev/null &lt;&lt;'EOF'
+#!/bin/sh
+set -eu
+DEST=/var/backups/sumimi
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$DEST"
+sumimi service stop --dir /var/lib/sumimi
+<span class="cmt"># the events, the accounts and the signing secret</span>
+cp -a /var/lib/sumimi/data.duckdb "$DEST/data-$STAMP.duckdb"
+cp -a /var/lib/sumimi/instance.sqlite "$DEST/instance-$STAMP.sqlite"
+<span class="cmt"># the write-ahead log, if the server was killed instead of stopped —</span>
+<span class="cmt"># it holds whatever was written since the last checkpoint</span>
+cp -a /var/lib/sumimi/instance.sqlite-wal "$DEST/" 2>/dev/null || true
+cp -a /var/lib/sumimi/jwt-secret "$DEST/" 2>/dev/null || true
+<span class="cmt"># the ACME account and certificates, if Sumimi manages TLS itself</span>
+cp -a /var/lib/sumimi/acme "$DEST/" 2>/dev/null || true
+sumimi service start --dir /var/lib/sumimi
+find "$DEST" -name 'data-*.duckdb' -mtime +30 -delete
+EOF
+sudo chmod 0755 /usr/local/bin/sumimi-backup</code></pre>
+    <pre class="shell"><code>sudo tee /etc/cron.d/sumimi-backup &gt;/dev/null &lt;&lt;'EOF'
+30 3 * * * root /usr/local/bin/sumimi-backup
+EOF
+sudo chmod 0644 /etc/cron.d/sumimi-backup</code></pre>
+    <p>
+      Keep the copies off the box as well — <code>rsync</code> to another machine, or
+      <code>restic</code> to object storage you control. A backup that lives on the same disk
+      is not a backup.
+    </p>
+    <h3>Restoring</h3>
+    <pre class="shell"><code>sumimi service stop --dir /var/lib/sumimi
+cp -a /var/backups/sumimi/data-20260115T033000Z.duckdb /var/lib/sumimi/data.duckdb
+cp -a /var/backups/sumimi/instance-20260115T033000Z.sqlite /var/lib/sumimi/instance.sqlite
+chown sumimi:sumimi /var/lib/sumimi/data.duckdb /var/lib/sumimi/instance.sqlite
+sumimi service start --dir /var/lib/sumimi
+curl -s http://127.0.0.1:3000/api/heartbeat</code></pre>
+
+    <h2>Option C: let systemd manage it</h2>
+    <p>
+      Some boxes are better left to the system. A systemd unit is four lines of configuration
+      and it gives you the log in <code>journalctl</code> and the restart policy in one place.
+      The server does not care which of the two you choose.
+    </p>
+    <h3>The environment file</h3>
     <p>
       Secrets do not belong in a unit file or in the repository. Put them in a file only the
       service user can read.
@@ -165,8 +452,8 @@ SUMIMI_DOCS_DIR=/opt/sumimi/docs
 <span class="cmt"># serve it from the backend's own js/ directory instead (air-gapped installs)</span>
 # SUMIMI_APP_URL=/app
 
-<span class="cmt"># only if Sumimi should manage TLS itself (see section 5, option B)</span>
-# SUMIMI_SSL_DOMAIN=example.com
+<span class="cmt"># let Sumimi manage TLS itself (see the TLS section above)</span>
+# SUMIMI_SSL_DOMAIN=stats.example.com
 # SUMIMI_SSL_EMAIL=you@example.com
 EOF
 
@@ -178,8 +465,8 @@ sudo chmod 0640 /etc/sumimi/sumimi.env</code></pre>
       (<code>/var/lib/sumimi/jwt-secret</code>, mode <code>0600</code>). That is
       fine, but setting it explicitly means the secret survives a move to another machine.
     </p>
-    <h2>4. Write the systemd unit</h2>
-    <pre class="shell"><code>sudo tee /etc/systemd/system/sumimi.service >/dev/null <<'EOF'
+    <h3>The unit</h3>
+    <pre class="shell"><code>sudo tee /etc/systemd/system/sumimi.service >/dev/null &lt;&lt;'EOF'
 [Unit]
 Description=Sumimi web analytics
 Documentation=https://sumimi.dev/docs/
@@ -217,13 +504,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sumimi
 sudo systemctl status sumimi</code></pre>
     <p>
-      The command line is intentionally empty of flags: everything comes from the environment
-      file, so <code>sudo systemctl edit sumimi</code> is enough to change a setting on a live
-      box.
-    </p>
-    <p>
-      The unit starts <code>sumimi serve</code>. If you prefer the explicit name, the
-      <code>sumimi-server</code> symlink works just as well.
+      The command line is intentionally empty of flags: everything comes from the
+      environment file, so <code>sudo systemctl edit sumimi</code> is enough to change a
+      setting on a live box.
     </p>
     <pre class="shell"><code>sudo journalctl -u sumimi -f</code></pre>
     <p>
@@ -235,420 +518,30 @@ sudo systemctl status sumimi</code></pre>
 [sumimi] password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
 [sumimi] store it now — it is not shown again</code></pre>
 
-    <h2>5. TLS</h2>
+    <h2>Upgrades</h2>
     <p>
-      There are two ways to put this box behind HTTPS, and they are alternatives — pick one.
-      A reverse proxy in front is the traditional setup and works with any proxy you like.
-      Or you can let Sumimi manage the certificate itself, with no proxy at all.
+      Replace the executable and restart. The database schema is additive — a new version
+      opens an old database without a migration step — and the data stays where it is.
     </p>
+    <pre class="shell"><code><span class="cmt"># download the new release</span>
+cd /tmp
+curl -fsSL https://github.com/sumimi-dev/sumimi/releases/latest/download/sumimi-linux-amd64.tar.gz | tar xz
 
-    <h3>Option A: put a reverse proxy in front</h3>
-    <p>
-      The server binds to <code>127.0.0.1</code>, so nothing on the internet can reach it
-      directly. A proxy terminates TLS and forwards plain HTTP to port 3999.
-    </p>
-
-    <h3>Caddy</h3>
-    <p>
-      Caddy obtains and renews a Let's Encrypt certificate on its own — no cron, no certbot.
-      This is the shortest correct configuration.
-    </p>
-    <pre class="shell"><code>sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
-analytics.example.com {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:3999
-}
-EOF
-
-sudo systemctl reload caddy</code></pre>
-
-    <h3>nginx</h3>
-    <pre class="shell"><code>sudo tee /etc/nginx/sites-available/sumimi >/dev/null <<'EOF'
-server {
-    listen 80;
-    listen [::]:80;
-    server_name analytics.example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name analytics.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/analytics.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/analytics.example.com/privkey.pem;
-
-    add_header Strict-Transport-Security "max-age=31536000" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer" always;
-
-    location / {
-        proxy_pass http://127.0.0.1:3999;
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    <span class="cmt"># the tracker is a static file; let it cache briefly</span>
-    location = /sumimi.js {
-        proxy_pass http://127.0.0.1:3999;
-        proxy_set_header Host $host;
-        add_header Cache-Control "public, max-age=300";
-    }
-}
-EOF
-
-sudo ln -sf /etc/nginx/sites-available/sumimi /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx</code></pre>
-    <p>
-      With nginx, get the certificate with certbot:
-    </p>
-    <pre class="shell"><code>sudo certbot --nginx -d analytics.example.com</code></pre>
-    <p>
-      certbot installs a timer that renews the certificate twice a day and reloads nginx.
-    </p>
-
-    <h3>ACME in general</h3>
-    <p>
-      Either way the certificate comes from Let's Encrypt over ACME, and renewal is automatic.
-      Two things are required for it to work: port 80 must be reachable from the internet, and
-      the domain must already point at your server's IP address. A DNS record that has not
-      propagated yet is the most common reason for a failed first issuance — check with
-      <code>dig +short analytics.example.com</code>.
-    </p>
-    <p>
-      If port 80 is closed, use the DNS-01 challenge instead (certbot with a DNS plugin, or
-      <code>acme.sh --dns</code>). That works with any DNS provider and needs no inbound port.
-    </p>
-
-    <h3 id="lets-sumimi-manage-tls-itself">Option B: let Sumimi manage TLS itself</h3>
-    <p>
-      If there is no other service on the box that needs port 443, you can skip the reverse
-      proxy entirely. Sumimi can obtain a Let's Encrypt certificate on its own over ACME and
-      renew it in the background — no certbot, no cron job, no proxy just to serve TLS.
-    </p>
-    <p>
-      Pass the domain and a contact address to the server:
-    </p>
-    <pre class="shell"><code>sumimi serve --ssl example.com --ssl-email you@example.com</code></pre>
-    <p>
-      In the systemd unit that means adding the flags to <code>ExecStart</code>:
-    </p>
-    <pre class="shell"><code>sudo tee /etc/systemd/system/sumimi.service >/dev/null <<'EOF'
-[Unit]
-Description=Sumimi web analytics
-Documentation=https://sumimi.dev/docs/
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=sumimi
-Group=sumimi
-EnvironmentFile=/etc/sumimi/sumimi.env
-ExecStart=/usr/local/bin/sumimi serve --ssl example.com --ssl-email you@example.com
-Restart=on-failure
-RestartSec=5
-
-<span class="cmt"># hardening: the service only ever needs to write its own data directory</span>
-NoNewPrivileges=yes
-PrivateTmp=yes
-PrivateDevices=yes
-ProtectSystem=strict
-ProtectHome=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=yes
-LockPersonality=yes
-ReadWritePaths=/var/lib/sumimi
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl restart sumimi</code></pre>
-    <p>
-      The same four settings are available as environment variables, so you can keep the unit
-      file free of flags if you prefer:
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>Flag</th><th>Environment variable</th><th>Default</th><th>Meaning</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>--ssl &lt;domain&gt;</code></td><td><code>SUMIMI_SSL_DOMAIN</code></td><td>none</td><td>The domain to serve HTTPS for. Without it the server speaks plain HTTP. <code>--ssl-domain</code> is accepted as an alias.</td></tr>
-          <tr><td><code>--ssl-email &lt;address&gt;</code></td><td><code>SUMIMI_SSL_EMAIL</code></td><td>none</td><td>Contact address registered with the ACME provider. Let's Encrypt sends expiry notices there.</td></tr>
-          <tr><td><code>--ssl-cache-dir &lt;path&gt;</code></td><td><code>SUMIMI_SSL_CACHE_DIR</code></td><td><code>&lt;directory of the database&gt;/acme</code></td><td>Directory holding the ACME account and the certificates.</td></tr>
-          <tr><td><code>--ssl-port &lt;port&gt;</code></td><td><code>SUMIMI_SSL_PORT</code></td><td><code>443</code></td><td>The port to listen on for HTTPS.</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="callout tip">
-      <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
-        Where the ACME cache lives by default
-      </p>
-      <p>
-        By default the cache directory is derived from the database path: it is an
-        <code>acme</code> directory next to the database file. With
-        <code>SUMIMI_DIR=/var/lib/sumimi</code> the cache is
-        <code>/var/lib/sumimi/acme</code>. That is an absolute path, so it does not depend on
-        the working directory of the service, and it lands inside the data directory the
-        hardening above already allows writes to. You do not need to set anything for this
-        to work.
-      </p>
-      <p>
-        Override it with <code>SUMIMI_SSL_CACHE_DIR</code> if you would rather keep the cache
-        somewhere else:
-      </p>
-      <pre class="shell"><code><span class="cmt"># in /etc/sumimi/sumimi.env</span>
-SUMIMI_SSL_CACHE_DIR=/var/lib/sumimi/acme</code></pre>
-    </div>
-    <div class="callout warn">
-      <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-        Port 443 has to reach Sumimi directly
-      </p>
-      <p>
-        The challenge used is TLS-ALPN-01: the ACME server connects to port 443 and negotiates
-        a special certificate over the TLS handshake itself. That means nothing may sit in
-        front of Sumimi on port 443 — no proxy, no load balancer, no port-forward to another
-        machine. If a reverse proxy terminates TLS in front of the server, use the proxy's own
-        ACME support instead (Caddy, or nginx with certbot) and leave <code>--ssl</code>
-        unset.
-      </p>
-      <p>
-        Port 80 does not need to be open: the certificate is validated over port 443 alone.
-        The domain's DNS record must already point at this server's IP address, or the first
-        issuance will fail.
-      </p>
-    </div>
-    <div class="callout warn">
-      <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-        Back up the ACME cache
-      </p>
-      <p>
-        <code>/var/lib/sumimi/acme</code> — the <code>acme</code> directory next to the
-        database, or whatever you set <code>SUMIMI_SSL_CACHE_DIR</code> to — holds the ACME
-        account and the issued certificates. It is small, but lose it and the server has to
-        register a new ACME account and re-issue the certificate — and Let's Encrypt
-        rate-limits repeated issuance for the same domain. Add it to the backup script next to
-        the database.
-      </p>
-    </div>
-
-    <h2>6. Firewall</h2>
-    <p>
-      Only the proxy needs to be reachable. Everything else stays closed.
-    </p>
-    <pre class="shell"><code>sudo ufw allow OpenSSH
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
-sudo ufw status</code></pre>
-    <p>
-      Port 3999 is deliberately not opened: the server is bound to loopback and is only
-      reachable through the proxy.
-    </p>
-    <p>
-      If you took Option B and let Sumimi manage TLS itself, port 443 has to reach the
-      Sumimi process directly, so bind the server to a public address and open the port:
-    </p>
-    <pre class="shell"><code><span class="cmt"># in /etc/sumimi/sumimi.env</span>
-SUMIMI_HOST=0.0.0.0
-
-<span class="cmt"># and open it</span>
-sudo ufw allow 443/tcp</code></pre>
-    <p>
-      Port 80 stays closed — the ACME challenge runs over port 443.
-    </p>
-
-    <h2>7. Backups</h2>
-    <p>
-      An instance is a <strong>directory</strong>, so a backup is one directory copy. It holds
-      the events (<code>data.duckdb</code>), the accounts, the log and the cache
-      (<code>instance.sqlite</code>), the signing secret (<code>jwt-secret</code>), the logs and
-      the TLS cache. Stop the service first so the copy is consistent — DuckDB's write-ahead
-      log means a live copy can otherwise be incomplete. There is no library to back up: the
-      executables are self-contained, so only the instance directory needs copying.
-    </p>
-    <pre class="shell"><code><span class="cmt"># a nightly snapshot</span>
-sudo tee /usr/local/bin/sumimi-backup &gt;/dev/null &lt;&lt;'EOF'
-#!/bin/sh
-set -eu
-DEST=/var/backups/sumimi
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-mkdir -p "$DEST"
-systemctl stop sumimi
-<span class="cmt"># the events, the accounts and the signing secret</span>
-cp -a /var/lib/sumimi/data.duckdb "$DEST/data-$STAMP.duckdb"
-cp -a /var/lib/sumimi/instance.sqlite "$DEST/instance-$STAMP.sqlite"
-<span class="cmt"># the write-ahead log, if the server was killed instead of stopped —</span>
-<span class="cmt"># it holds whatever was written since the last checkpoint</span>
-cp -a /var/lib/sumimi/instance.sqlite-wal "$DEST/" 2>/dev/null || true
-cp -a /var/lib/sumimi/jwt-secret "$DEST/" 2>/dev/null || true
-<span class="cmt"># the ACME account and certificates, if Sumimi manages TLS itself</span>
-cp -a /var/lib/sumimi/acme "$DEST/" 2>/dev/null || true
-systemctl start sumimi
-find "$DEST" -name 'data-*.duckdb' -mtime +30 -delete
-EOF
-sudo chmod 0755 /usr/local/bin/sumimi-backup</code></pre>
-    <pre class="shell"><code>sudo tee /etc/cron.d/sumimi-backup &gt;/dev/null &lt;&lt;'EOF'
-30 3 * * * root /usr/local/bin/sumimi-backup
-EOF
-sudo chmod 0644 /etc/cron.d/sumimi-backup</code></pre>
-    <p>
-      Keep the copies off the box as well — <code>rsync</code> to another machine, or
-      <code>restic</code> to object storage you control. A backup that lives on the same disk
-      is not a backup.
-    </p>
-    <h3>Restoring</h3>
-    <pre class="shell"><code>sudo systemctl stop sumimi
-sudo cp -a /var/backups/sumimi/data-20260115T033000Z.duckdb /var/lib/sumimi/data.duckdb
-sudo cp -a /var/backups/sumimi/instance-20260115T033000Z.sqlite /var/lib/sumimi/instance.sqlite
-sudo chown sumimi:sumimi /var/lib/sumimi/data.duckdb /var/lib/sumimi/instance.sqlite
-sudo systemctl start sumimi
-curl -s http://127.0.0.1:3999/api/heartbeat</code></pre>
-
-    <h2>8. Retention</h2>
-    <p>
-      Set <code>SUMIMI_RETENTION_DAYS</code> to a number of days and prune regularly. The
-      retention window is a first-class setting: it is stored per website, returned by
-      <code>GET /api/websites/:id</code>, and honoured by the CLI.
-    </p>
-    <pre class="shell"><code><span class="cmt"># stop the service, then prune the database in place</span>
-sudo systemctl stop sumimi
-sumimi prune --dir /var/lib/sumimi 3f2a...
-sudo systemctl start sumimi</code></pre>
-    <p>
-      Schedule it in the same cron file as the backup. Pruning before the backup keeps the
-      backup small. The service has to be stopped while it runs — DuckDB allows only one
-      writer per file.
-    </p>
-
-    <h2>9. Upgrades</h2>
-    <pre class="shell"><code>sudo systemctl stop sumimi
+<span class="cmt"># stop, replace, start</span>
+sumimi service stop --dir /var/lib/sumimi
 sudo install -m 0755 sumimi /usr/local/bin/
-sudo systemctl start sumimi
-sudo journalctl -u sumimi -n 20</code></pre>
+sumimi service start --dir /var/lib/sumimi</code></pre>
     <p>
-      Schema changes are additive and need no migration step, so upgrading in place is safe.
-      Take a backup first anyway.
+      Take a backup first — it costs nothing and it is the only thing you cannot get back.
     </p>
-
-    <h2>The dashboard frontend and the tracker</h2>
-    <p>
-      Two different JavaScript files are involved, and they are served in two different ways:
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>File</th><th>What it is</th><th>Served by</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>sumimi.js</code></td>
-            <td>The tracker you put on <em>your own</em> website. It sends the page views.</td>
-            <td>The backend itself, at <code>/sumimi.js</code>. It is compiled into the binary, so it is always available — no CDN, no configuration.</td>
-          </tr>
-          <tr>
-            <td><code>sumimi-app.js</code><br><code>sumimi.css</code></td>
-            <td>The dashboard frontend — the pages you log into to read your statistics.</td>
-            <td>A CDN by default. The backend serves only a tiny HTML shell at <code>/</code> that points at <code>&lt;base&gt;/sumimi-app.js</code>.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>Serving the dashboard frontend from a CDN</h3>
-    <p>
-      This is the <strong>default</strong> and you do not have to configure anything. The
-      backend serves a deliberately tiny HTML shell at <code>/</code> that references
-      <code>sumimi-app.js</code> and <code>sumimi.css</code> under a base URL — and that base
-      URL defaults to:
-    </p>
-    <pre class="shell"><code>SUMIMI_APP_URL=https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js</code></pre>
-    <p>
-      jsDelivr serves this public GitHub repository directly, so the dashboard frontend is
-      fetched from
-      <code>https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js/sumimi-app.js</code> and
-      <code>.../sumimi.css</code>. Two consequences: the backend ships no frontend code at all,
-      and the dashboard picks up frontend fixes without you upgrading the server.
-    </p>
-    <p>
-      You can point <code>SUMIMI_APP_URL</code> at any other base URL — your own CDN, a
-      self-hosted copy:
-    </p>
-    <pre class="shell"><code>SUMIMI_APP_URL=https://cdn.example.com/sumimi-app</code></pre>
-    <p>
-      The shell then references <code>https://cdn.example.com/sumimi-app/sumimi-app.js</code>
-      and <code>.../sumimi.css</code> instead.
-    </p>
-
-    <h3>Serving the dashboard frontend from the backend</h3>
-    <p>
-      On an air-gapped machine there is no CDN to fetch from. Set
-      <code>SUMIMI_APP_URL=/app</code> and the backend serves the two frontend files from its
-      own <code>js/</code> directory instead:
-    </p>
-    <pre class="shell"><code><span class="cmt"># in /etc/sumimi/sumimi.env</span>
-SUMIMI_APP_URL=/app
-SUMIMI_JS_DIR=/opt/sumimi/js</code></pre>
-    <p>
-      The shell then references <code>/app/sumimi-app.js</code> and <code>/app/sumimi.css</code>,
-      and the backend reads them from disk at request time — so you can update the frontend by
-      replacing the files in <code>js/</code>, without restarting the server. The files are also
-      served directly at <code>/app/sumimi-app.js</code> and <code>/app/sumimi.css</code>
-      either way, so that fallback path always works.
-    </p>
-    <p>
-      Whatever you set here, the <strong>tracker is unaffected</strong>: <code>sumimi.js</code>
-      is always served by the backend itself, because your own website has to be able to reach
-      it.
-    </p>
-
-    <h2>A note on Cloudflare</h2>
-    <p>
-      You do not need Cloudflare, and Sumimi is designed to work without it. If you happen to
-      put your site behind Cloudflare, the proxy can supply a country code header, which is
-      the only way Sumimi learns anything about geography:
-    </p>
-    <pre class="shell"><code>SUMIMI_COUNTRY_HEADER=CF-IPCountry</code></pre>
-    <p>
-      Without such a header, no geographic information is recorded at all — not even a
-      country. See the <a href="privacy.html">privacy page</a>.
-    </p>
-
-    <h2>Checklist</h2>
-    <ul>
-      <li>Executables installed on the PATH; DuckDB is compiled in, so there is no shared
-        library to install and no loader configuration to do.</li>
-      <li>Dashboard frontend reachable: from the CDN (the default), or from the backend with
-        <code>SUMIMI_APP_URL=/app</code> if the box has no outbound network access.</li>
-      <li>Environment file at <code>/etc/sumimi/sumimi.env</code>, mode <code>0640</code>.</li>
-      <li>Data directory owned by the <code>sumimi</code> user, mode <code>0750</code>.</li>
-      <li>systemd unit enabled and restarting on failure.</li>
-      <li>Proxy in front on 443, server bound to loopback only.</li>
-      <li>Certificate issued and auto-renewing (check the renewal log).</li>
-      <li>Backup running, and you have tested a restore.</li>
-      <li>If Sumimi manages TLS itself: port 443 reaches the Sumimi process directly, and
-        the ACME cache directory is included in the backups.</li>
-      <li>Retention window set, prune scheduled.</li>
-    </ul>
 
     <p class="footnote">
       Sumimi is an independent open-source project, an open-source alternative to Umami that
       implements the Umami v2 HTTP API. Apache-2.0 licensed.
     </p>
 
+      </article>
+    </div>
   </div>
 </main>
 
@@ -660,14 +553,10 @@ SUMIMI_JS_DIR=/opt/sumimi/js</code></pre>
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
     <ul>
-      <li><a href="install.html">Install</a></li>
-      <li><a href="self-host.html">Self-host</a></li>
-      <li><a href="tracker.html">Tracker</a></li>
-      <li><a href="api.html">API</a></li>
-      <li><a href="cli.html">CLI</a></li>
-      <li><a href="memory.html">Memory</a></li>
-      <li><a href="privacy.html">Privacy</a></li>
-      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="index.html">Docs</a></li>
+      <li><a href="../blog/">Blog</a></li>
+      <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
     </ul>
   </div>
 </footer>
