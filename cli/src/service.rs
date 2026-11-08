@@ -277,9 +277,9 @@ pub fn start(
         .arg(stop_file(&service))
         .arg("--log-file")
         .arg(log_file(&service));
-    if let Some(port) = args.port {
-        command_line.arg("--port").arg(port.to_string());
-    }
+    // The port the server listens on: with a domain it speaks HTTPS, so it is
+    // the TLS port — the plain one is not served at all.
+    command_line.arg("--port").arg(listening_port(args).to_string());
     if let Some(domain) = &args.domain {
         command_line.arg("--domain").arg(domain);
     }
@@ -435,9 +435,7 @@ pub fn status(dir: &Path) -> Result<()> {
     if let Some(port) = status.port {
         println!("port:      {port}");
     }
-    if let Some(domain) = &status.domain {
-        println!("domain:    https://{domain}/");
-    }
+    println!("dashboard: {}", dashboard_url_of(&status));
     println!("instance:  {}", dir.display());
     println!("log:       {}", status.log.display());
 
@@ -447,16 +445,18 @@ pub fn status(dir: &Path) -> Result<()> {
 /// Print the summary after a start.
 fn report(status: &Status, instance: &Path) {
     println!("started.");
-    println!(
-        "  dashboard:  http://127.0.0.1:{}/",
-        status.port.unwrap_or(3000)
-    );
-    if let Some(domain) = &status.domain {
-        println!("  domain:     https://{domain}/");
-    }
+    println!("  dashboard:  {}", dashboard_url_of(status));
     println!("  instance:   {}", instance.display());
     println!("  log:        {}", status.log.display());
     println!("  stop it:    sumimi service stop");
+}
+
+/// The address the dashboard is on, from the state.
+fn dashboard_url_of(status: &Status) -> String {
+    match &status.domain {
+        Some(domain) => format!("https://{domain}/"),
+        None => format!("http://127.0.0.1:{}/", status.port.unwrap_or(3000)),
+    }
 }
 
 /// The supervisor: the process that owns the server.
