@@ -26,11 +26,20 @@ COPY . .
 #
 # The debug symbols are most of the size of a DuckDB build, and nobody needs
 # them in a release.
-ENV CARGO_PROFILE_RELEASE_DEBUG=0
+#
+# **NUM_JOBS=1** compiles one C++ file at a time. DuckDB's amalgamation is
+# built with -O3, and a single one of its translation units wants a couple of
+# gigabytes — with the default parallelism the compiler is killed by the OOM
+# killer on a machine with less memory than that. The build is slower; it
+# finishes.
+ENV CARGO_PROFILE_RELEASE_DEBUG=0 \
+    NUM_JOBS=1 \
+    CARGO_BUILD_JOBS=2
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p sumimi --bin sumimi
+    cargo build --release --locked -p sumimi --bin sumimi \
+    && cp target/release/sumimi /sumimi
 
 # --------------------------------------------------------------- the runtime
 FROM debian:bookworm-slim
@@ -48,7 +57,10 @@ RUN useradd --system --create-home --uid 10001 sumimi
 # dashboard frontend and the documentation. The server finds the frontend
 # next to the executable, so they have to stay together.
 WORKDIR /app
-COPY --from=build /src/target/release/sumimi /app/sumimi
+# The executable is copied out of the build stage by hand: the target
+# directory is a **cache mount**, and a cache mount is not part of the image
+# layer — only what the build step copied into the layer is.
+COPY --from=build /sumimi /app/sumimi
 COPY js /app/js
 COPY service/docs /app/docs
 COPY LICENSE NOTICE /app/
