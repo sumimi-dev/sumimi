@@ -190,7 +190,11 @@ impl Writer {
     }
 
     /// Build the handle, without starting anything.
-    fn new(capacity: usize, max_batch: usize) -> Writer {
+    ///
+    /// **Public for the measurement** ✓ — `service/tests/allocations.rs`
+    /// measures what a push costs as the queue grows ✓ (that is the mechanism
+    /// behind "the memory follows the rate" ✓ — see `MEMORY.md` §6 ✓).
+    pub fn new(capacity: usize, max_batch: usize) -> Writer {
         Writer {
             max_batch: max_batch.max(1),
             buffer: Arc::new(Buffer::new()),

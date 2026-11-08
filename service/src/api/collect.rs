@@ -187,7 +187,12 @@ fn kind_name(kind: HitKind) -> &'static str {
 /// The field set mirrors Umami's: the page and its query string, the referrer (host,
 /// path and query), the marketing parameters, the ad click ids and the web vitals all
 /// come out of the payload.
-fn build_hit(
+/// Build the hit a collection request describes.
+///
+/// **Public for the measurement** ✓ — `service/tests/allocations.rs` prices
+/// this stage against the others ✓ (the collection path is where a request's
+/// memory goes ✓ — see `MEMORY.md` §6 ✓).
+pub fn build_hit(
     state: &AppState,
     headers: &HeaderMap,
     peer: Option<&ConnectInfo<SocketAddr>>,
