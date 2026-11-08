@@ -496,7 +496,38 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = stdin_closed() => {},
     }
 
     println!("[sumimi] shutting down");
+}
+
+/// Wait for the end of standard input.
+///
+/// The supervisor (`sumimi service start`) starts the server with a pipe on its
+/// standard input and closes it to ask for a graceful stop — the same path a
+/// SIGTERM takes, without anybody having to send a signal.
+///
+/// It is **opt-in**: with a terminal on standard input, an end-of-file would be a
+/// surprise, so the server only listens when `SUMIMI_EXIT_ON_STDIN_EOF` is set.
+async fn stdin_closed() {
+    if std::env::var_os("SUMIMI_EXIT_ON_STDIN_EOF").is_none() {
+        std::future::pending::<()>().await;
+    }
+
+    // The read blocks, so it goes onto a thread that is allowed to block.
+    let _ = tokio::task::spawn_blocking(|| {
+        use std::io::Read;
+        let mut stdin = std::io::stdin();
+        let mut buffer = [0u8; 256];
+        loop {
+            match stdin.read(&mut buffer) {
+                // The end of the pipe: the request to stop.
+                Ok(0) => return,
+                Ok(_) => continue,
+                Err(_) => return,
+            }
+        }
+    })
+    .await;
 }

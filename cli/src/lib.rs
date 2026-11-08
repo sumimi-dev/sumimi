@@ -10,6 +10,7 @@ mod gsc;
 pub mod mcp;
 mod output;
 pub mod seed;
+pub mod service;
 mod source;
 
 use std::path::PathBuf;
@@ -227,6 +228,36 @@ enum Command {
         #[arg(long, env = "SUMIMI_MCP_WEBSITE")]
         website: Option<String>,
     },
+    /// Check that a server answers.
+    ///
+    /// This is the health check of a container: it asks the server for its
+    /// heartbeat and says whether it answered.
+    Ping,
+    /// Run the server as a service — no systemd, no root.
+    ///
+    /// The server runs under a supervisor: a second process that owns it and
+    /// restarts it when it dies. Everything lives inside the instance directory,
+    /// so the service can run as the user who installed it.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+}
+
+/// The service commands.
+#[derive(Debug, Clone, Subcommand)]
+enum ServiceCommand {
+    /// Start the server under a supervisor.
+    Start(service::StartArgs),
+    /// Stop the running server.
+    Stop,
+    /// Show what the service is doing.
+    Status,
+    /// Stop the server and start it again, with the same arguments.
+    Restart(service::StartArgs),
+    /// Run the supervisor. Started by `sumimi service start`.
+    #[command(hide = true)]
+    Supervise(service::SuperviseArgs),
 }
 
 /// The Search Console commands.
@@ -384,13 +415,58 @@ pub fn run() -> Result<()> {
         ),
         Command::Prune { website } => cmd_prune(&cli, website.as_deref()),
         Command::Erase { website, yes } => cmd_erase(&cli, website, *yes),
+        Command::Ping => cmd_ping(&cli),
+        Command::Service { command } => match command {
+            ServiceCommand::Start(args) => {
+                service::start(&cli.dir, cli.db.as_deref(), &cli.backend, args)
+            }
+            ServiceCommand::Stop => service::stop(&cli.dir),
+            ServiceCommand::Status => service::status(&cli.dir),
+            ServiceCommand::Restart(args) => {
+                service::restart(&cli.dir, cli.db.as_deref(), &cli.backend, args)
+            }
+            ServiceCommand::Supervise(args) => service::supervise(args),
+        },
         command => cmd_report(&cli, command),
     }
 }
 
+/// Ask a server for its heartbeat.
+///
+/// The exit code is the answer: zero when the server answered, one when it did
+/// not. That is what a container's health check needs.
+fn cmd_ping(cli: &Cli) -> Result<()> {
+    let base = cli
+        .url
+        .clone()
+        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+    let url = format!("{}/api/heartbeat", base.trim_end_matches('/'));
+
+    let mut response = ureq::get(&url).call().map_err(|err| {
+        anyhow::anyhow!("{url} did not answer: {err}")
+    })?;
+
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|err| anyhow::anyhow!("{url} answered with something unreadable: {err}"))?;
+
+    let version = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("version")
+                .and_then(|version| version.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("{base} is up (version {version})");
+    Ok(())
+}
+
 /// Store the credentials for a server.
-fn cmd_login(url: &str, username: &str, password: Option<&str>) -> Result<()> {
-    let password = match password {
+fn cmd_login(url: &str, username: &str, password: Option<&str>) -> Result<()> {    let password = match password {
         Some(password) => password.to_string(),
         None => {
             print!("password for {username} at {url}: ");

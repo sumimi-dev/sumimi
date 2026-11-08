@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         _ => by_name.unwrap_or(false),
     };
 
-    if wants_server && !matches!(first, "summary" | "websites" | "pages" | "referrers" | "browsers" | "os" | "devices" | "countries" | "languages" | "screens" | "events" | "sessions" | "timeseries" | "export" | "prune" | "erase" | "login" | "seed" | "mcp" | "help" | "--help" | "-h") {
+    if wants_server && !matches!(first, "summary" | "websites" | "pages" | "referrers" | "browsers" | "os" | "devices" | "countries" | "languages" | "screens" | "events" | "sessions" | "timeseries" | "export" | "prune" | "erase" | "login" | "seed" | "mcp" | "ping" | "service" | "help" | "--help" | "-h") {
         tokio::runtime::Runtime::new()?.block_on(sumimi::service::server::run())
     } else {
         sumimi::cli::run()
