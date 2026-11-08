@@ -72,17 +72,17 @@ documentation next to the executable):
 
 | platform | file |
 | --- | --- |
-| macOS (Apple Silicon) | `sumimi-v0.4.0-Darwin-arm64.tar.gz` |
-| macOS (Intel) | `sumimi-v0.4.0-Darwin-x86_64.tar.gz` |
-| Linux (x86-64) | `sumimi-v0.4.0-Linux-x86_64.tar.gz` |
-| Linux (ARM64) | `sumimi-v0.4.0-Linux-aarch64.tar.gz` |
-| Windows (x86-64) | `sumimi-v0.4.0-Windows-x86_64.zip` |
-| Windows (ARM64) | `sumimi-v0.4.0-Windows-aarch64.zip` |
+| macOS (Apple Silicon) | `sumimi-v0.4.1-Darwin-arm64.tar.gz` |
+| macOS (Intel) | `sumimi-v0.4.1-Darwin-x86_64.tar.gz` |
+| Linux (x86-64) | `sumimi-v0.4.1-Linux-x86_64.tar.gz` |
+| Linux (ARM64) | `sumimi-v0.4.1-Linux-aarch64.tar.gz` |
+| Windows (x86-64) | `sumimi-v0.4.1-Windows-x86_64.zip` |
+| Windows (ARM64) | `sumimi-v0.4.1-Windows-aarch64.zip` |
 
 ```bash
 mkdir sumimi && cd sumimi
-curl -LO https://github.com/sumimi-dev/sumimi/releases/download/v0.4.0/sumimi-v0.4.0-Linux-x86_64.tar.gz
-tar xzf sumimi-v0.4.0-Linux-x86_64.tar.gz
+curl -LO https://github.com/sumimi-dev/sumimi/releases/download/v0.4.1/sumimi-v0.4.1-Linux-x86_64.tar.gz
+tar xzf sumimi-v0.4.1-Linux-x86_64.tar.gz
 ./sumimi serve --dir ./sumimi --port 3000
 ```
 

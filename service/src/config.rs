@@ -459,6 +459,19 @@ pub fn default_memory_limit() -> String {
 /// refuses, which is the honest answer: the traffic is arriving faster than
 /// the disk can take it.
 ///
+/// **The margin, and where it goes** ✓ — that 7.8 MB per 1 000 requests is
+/// **the allocator's retention of the churn** ✓, not the data ✓ (the payload
+/// is 134 bytes ✓): the same load with `MALLOC_MMAP_THRESHOLD_=65536` peaks
+/// **210 MB instead of 274 MB** ✓ ⇒ **the churn comes back to the kernel** ✓.
+/// Two consequences ✓:
+/// - over a **network** the traffic arrives in batches ✓ ⇒ the peak is ~20%
+///   higher than over loopback ✓ ⇒ at 20 000/s the minimum tier reached
+///   **261 MB on a 512 MB box** ✗ ⇒ **the promise was broken by 5 MB** ✗
+///   ([#17](https://github.com/sumimi-dev/sumimi/issues/17) ✓);
+/// - the *fix* is not a lower rate but **fewer/cheaper allocations per
+///   request** ✓ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓
+///   (where the 7.8 KB per request actually goes ✓).
+///
 /// The user can always set `SUMIMI_MAX_ADMIT_RPS` to something else — this is
 /// only what happens when they do not.
 pub fn recommended_rate(memory_limit: &str) -> u64 {
@@ -528,7 +541,15 @@ pub fn parse_size(value: &str) -> Option<u64> {
     Some((number * multiplier) as u64)
 }
 
-/// The machine's total RAM, if we can find it out.
+/// The memory this process may use, if we can find it out.
+///
+/// **Not always the machine's memory.** A container may use less than the
+/// machine has — `docker run --memory=512m` on a 7.7 GB box ⇒ 512 MB ✓ ⇒ and
+/// the budget has to be sized by **that** ✓ ⇒ otherwise a 512 MB container
+/// sizes its engine at 256 MB ✓, admits 40 000 requests a second ✓, and is
+/// killed by the OOM reaper ✗ ✗.
+///
+/// So: the smaller of the machine's memory and the cgroup's limit ✓ ✓.
 pub fn total_ram_bytes() -> Option<u64> {
     // Linux: /proc/meminfo.
     if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
@@ -540,7 +561,10 @@ pub fn total_ram_bytes() -> Option<u64> {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
                 if kb > 0 {
-                    return Some(kb * 1024);
+                    let machine = kb * 1024;
+                    return Some(
+                        crate::machine::cgroup_memory_limit().map_or(machine, |limit| machine.min(limit)),
+                    );
                 }
             }
         }

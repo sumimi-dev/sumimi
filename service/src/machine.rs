@@ -15,6 +15,7 @@
 //! model, how many CPUs the process may use, and the machine's memory.
 
 use serde::Serialize;
+use std::path::Path;
 
 /// What this machine is.
 #[derive(Debug, Default, Clone, Serialize)]
@@ -26,6 +27,13 @@ pub struct Machine {
     pub cores: Option<u32>,
     /// The machine's memory, in bytes.
     pub ram_bytes: Option<u64>,
+    /// How much of that memory this process may actually use, in bytes — the
+    /// limit of the cgroup it is in, when there is one.
+    ///
+    /// A container with `--memory=512m` runs on a machine with 7.7 GB, but it
+    /// may only touch 512 MB of it. The two numbers are both worth saying:
+    /// the first is the box, the second is the box *for us*.
+    pub ram_limit_bytes: Option<u64>,
     /// The operating system.
     pub os: Option<String>,
     /// The architecture.
@@ -38,9 +46,73 @@ pub fn machine() -> Machine {
         cpu: cpu_model(),
         cores: std::thread::available_parallelism().ok().map(|n| n.get() as u32),
         ram_bytes: ram_bytes(),
+        ram_limit_bytes: cgroup_memory_limit(),
         os: Some(std::env::consts::OS.to_string()),
         arch: Some(std::env::consts::ARCH.to_string()),
     }
+}
+
+/// The memory limit of the cgroup this process is in, if there is one.
+///
+/// **This is what a container sees** ✓: `docker run --memory=512m` puts the
+/// process in a cgroup with a 512 MB limit ✓ ⇒ the machine has 7.7 GB but the
+/// process may only use 512 MB of it ✓ ⇒ and a budget sized by the machine
+/// would be wrong ✗ ⇒ the engine would take 256 MB ✓, the gate would admit
+/// 40 000 requests a second ✓, and the OOM reaper would kill the process ✗.
+///
+/// cgroup v2: `<root>/<path>/memory.max` ✓ (`max` means "no limit" ✓)
+/// cgroup v1: `<root>/memory/<path>/memory.limit_in_bytes` ✓
+pub fn cgroup_memory_limit() -> Option<u64> {
+    // Where this process sits in the hierarchy.
+    if let Ok(contents) = std::fs::read_to_string("/proc/self/cgroup") {
+        for line in contents.lines() {
+            // v2: "0::/docker/abc"  ·  v1: "1:memory:/docker/abc"
+            let mut parts = line.splitn(3, ':');
+            let _id = parts.next();
+            let controller = parts.next();
+            let Some(relative) = parts.next() else {
+                continue;
+            };
+            let relative = relative.trim_start_matches('/');
+            if relative.is_empty() {
+                continue;
+            }
+            if controller == Some("") {
+                if let Some(limit) = read_cgroup_limit(&Path::new("/sys/fs/cgroup").join(relative), "memory.max")
+                {
+                    return Some(limit);
+                }
+            }
+            if controller == Some("memory") {
+                if let Some(limit) = read_cgroup_limit(
+                    &Path::new("/sys/fs/cgroup/memory").join(relative),
+                    "memory.limit_in_bytes",
+                ) {
+                    return Some(limit);
+                }
+            }
+        }
+    }
+
+    // The root of the hierarchy, when the process's own path says nothing.
+    read_cgroup_limit(Path::new("/sys/fs/cgroup"), "memory.max").or_else(|| {
+        read_cgroup_limit(Path::new("/sys/fs/cgroup/memory"), "memory.limit_in_bytes")
+    })
+}
+
+/// One cgroup limit file: `None` when there is no limit.
+fn read_cgroup_limit(directory: &Path, file: &str) -> Option<u64> {
+    let text = std::fs::read_to_string(directory.join(file)).ok()?;
+    let text = text.trim();
+    if text == "max" {
+        return None;
+    }
+    let value: u64 = text.parse().ok()?;
+    // A number this big is "no limit" in cgroup v1.
+    if value >= 1 << 60 {
+        return None;
+    }
+    Some(value)
 }
 
 /// The CPU's model name.
