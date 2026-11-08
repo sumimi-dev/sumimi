@@ -291,12 +291,15 @@ pub struct Payload {
 }
 
 impl Payload {
-    /// The `data` object (custom event properties).
-    pub fn data(&self) -> Option<String> {
-        match self.data.as_ref()? {
-            serde_json::Value::String(text) => Some(text.clone()),
-            serde_json::Value::Null => None,
-            other => Some(other.to_string()),
+    /// The `data` object (custom event properties) — **taken**, not copied.
+    ///
+    /// A string is moved out of the payload ✓ ⇒ ⇒ ⇒ no copy ✓; an object is
+    /// written as JSON ✓ (that is what the event column holds ✓).
+    pub fn take_data(&mut self) -> Option<String> {
+        match self.data.take() {
+            Some(serde_json::Value::String(text)) => Some(text),
+            Some(serde_json::Value::Null) | None => None,
+            Some(other) => Some(other.to_string()),
         }
     }
 }
@@ -868,12 +871,15 @@ mod tests {
     /// stays itself.
     #[test]
     fn the_data_is_read() {
-        let request: SendRequest =
-            serde_json::from_str(r#"{"payload":{"data":{"a":1}}}"#).unwrap();
-        assert_eq!(request.into_payload().data().as_deref(), Some(r#"{"a":1}"#));
+        let mut payload = serde_json::from_str::<SendRequest>(r#"{"payload":{"data":{"a":1}}}"#)
+            .unwrap()
+            .into_payload();
+        assert_eq!(payload.take_data().as_deref(), Some(r#"{"a":1}"#));
 
-        let request: SendRequest =
-            serde_json::from_str(r#"{"payload":{"data":"plain"}}"#).unwrap();
-        assert_eq!(request.into_payload().data().as_deref(), Some("plain"));
+        let mut payload =
+            serde_json::from_str::<SendRequest>(r#"{"payload":{"data":"plain"}}"#)
+                .unwrap()
+                .into_payload();
+        assert_eq!(payload.take_data().as_deref(), Some("plain"));
     }
 }

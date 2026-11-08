@@ -232,7 +232,7 @@ async fn the_price_of_a_push() {
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", AGENT.parse().unwrap());
 
-    let hit = api_build_hit(&state, &headers, &raw);
+    let hit = api_build_hit(&state, &headers, raw.clone());
 
     // The price of a push, at four queue lengths.
     const MEASURE: usize = 200;
@@ -257,7 +257,7 @@ async fn the_price_of_a_push() {
 fn api_build_hit(
     state: &sumimi_service::api::AppState,
     headers: &axum::http::HeaderMap,
-    raw: &sumimi_service::models::Payload,
+    raw: sumimi_service::models::Payload,
 ) -> sumimi_service::models::Hit {
     sumimi_service::api::collect::build_hit(
         state,
@@ -370,6 +370,13 @@ async fn the_price_with_a_backlog() {
 
 /// The body a page view sends.
 const BODY: &str = r#"{"website":"website-1","payload":{"url":"/hello","title":"Hello","referrer":"https://news.ycombinator.com/"}}"#;
+
+/// The body the **tracker** sends — every field it has.
+///
+/// The small body above measures the machinery; this one measures what a
+/// real page view costs ✓ (the tracker's own payload ✓ — see
+/// `js/sumimi.js` ✓).
+const REAL_BODY: &str = r#"{"type":"event","payload":{"website":"website-1","url":"/hello?utm_source=twitter&utm_medium=social","referrer":"https://news.ycombinator.com/","title":"Hello, world","hostname":"example.com","language":"en-US","screen":"1920x1080","lcp":"1200","inp":"34","cls":"0.02","fcp":"800","ttfb":"20"}}"#;
 /// The user agent a browser sends.
 const AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                      (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -386,12 +393,16 @@ fn rounds() -> usize {
 
 /// The price of the hit's own construction — the stage where the strings are
 /// made.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_price_of_building_the_hit() {
+///
+/// **Not a tokio test** ✓: the build needs no runtime ✓ ⇒ ⇒ ⇒ and a runtime
+/// has threads of its own ✓ ⇒ ⇒ ⇒ and they allocate ✓ ⇒ ⇒ ⇒ so the number
+/// would be the runtime's ✓ ⇒ ⇒ ⇒ ⇒ this one is **exact** ✓ (the same
+/// number every time ✓).
+#[test]
+fn the_price_of_building_the_hit() {
     let _measuring = measuring();
     use axum::http::HeaderMap;
     use std::sync::Arc;
-    use std::time::Duration;
     use sumimi_service::api::{self, AppState};
     use sumimi_service::config::{Config, Paths};
     use sumimi_service::pool::Db;
@@ -419,7 +430,9 @@ async fn the_price_of_building_the_hit() {
     .unwrap();
     config.jwt_secret = "test-secret".to_string();
 
-    let (writer, _handle) = Writer::spawn_with(db.clone(), Duration::from_secs(600), 200_000, 1_000);
+    // A writer **without a thread** ✓ — the measurement is about the build,
+    // not about the queue ✓ ⇒ ⇒ ⇒ and no runtime is needed ✓.
+    let writer = Writer::new(200_000, 1_000);
     let state = AppState::new(
         db.clone(),
         Arc::new(sumimi_service::instance::SqliteInstance::open_in_memory().unwrap()),
@@ -443,29 +456,85 @@ async fn the_price_of_building_the_hit() {
             None,
             "website-1",
             HitKind::Pageview,
-            &raw,
+            raw.clone(),
         )
         .unwrap();
         std::hint::black_box(hit);
     }
 
+    // The floor: what the **runtime** allocates while a loop runs ✓ — the
+    // worker threads are alive, and they allocate too ✓ ⇒ ⇒ every number
+    // below has it taken off ✓ ⇒ ⇒ ⇒ otherwise the measurement is the
+    // runtime's, not the server's ✓.
     let _before = allocated(); // the counter is reset by this reading
     for _ in 0..rounds() {
-        let hit = api::collect::build_hit(
-            &state,
-            &headers,
-            None,
-            "website-1",
-            HitKind::Pageview,
-            &raw,
-        )
-        .unwrap();
+        std::hint::black_box(());
+    }
+    let floor = allocated() / rounds() as u64;
+    println!("the floor: {floor} bytes per round");
+    record("floor", floor);
+
+    // The parse: the body becomes a payload ✓ — measured on its own ✓ ⇒ ⇒
+    // every round of the build needs its own payload ✓ ⇒ ⇒ ⇒ so the parse is
+    // measured on its own ✓ ⇒ ⇒ ⇒ and taken off ✓ ⇒ ⇒ ⇒ what is left is the
+    // build ✓ ⇒ ⇒ ⇒ **and no clone is involved** ✓ ⇒ ⇒ ⇒ so the build is
+    // measured exactly ✓ — whether the builder takes the payload by value or
+    // by reference ✓ ✓.
+    let _before = allocated(); // the counter is reset by this reading
+    for _ in 0..rounds() {
+        let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
+        let payload = request.into_payload();
+        std::hint::black_box(payload);
+    }
+    let parsing = allocated() / rounds() as u64;
+
+    let _before = allocated(); // the counter is reset by this reading
+    forget_histogram();
+    for _ in 0..rounds() {
+        let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
+        let payload = request.into_payload();
+        let hit = api_build_hit(&state, &headers, payload);
         std::hint::black_box(hit);
     }
-    let building = allocated() / rounds() as u64;
+    let with_the_build = allocated() / rounds() as u64;
+    let building = with_the_build.saturating_sub(parsing);
 
     println!("building the hit: {building} bytes per request");
     record("build_hit", building);
+    println!("  the parse costs        {parsing} bytes");
+    record("parse_only", parsing);
+    println!("  the biggest allocations per request:");
+    for (size, count, bytes) in histogram(rounds() as u64).into_iter() {
+        println!("    {size:>8} B x {count:>4} = {bytes:>7} B");
+    }
+
+    // The same, with the body the **tracker** sends ✓.
+    let _before = allocated(); // the counter is reset by this reading
+    for _ in 0..rounds() {
+        let request: sumimi_service::models::SendRequest =
+            serde_json::from_str(REAL_BODY).unwrap();
+        let payload = request.into_payload();
+        std::hint::black_box(payload);
+    }
+    let parsing_real = allocated() / rounds() as u64;
+
+    let _before = allocated(); // the counter is reset by this reading
+    forget_histogram();
+    for _ in 0..rounds() {
+        let request: sumimi_service::models::SendRequest =
+            serde_json::from_str(REAL_BODY).unwrap();
+        let payload = request.into_payload();
+        let hit = api_build_hit(&state, &headers, payload);
+        std::hint::black_box(hit);
+    }
+    let building_real = allocated() / rounds() as u64;
+    let building_real = building_real.saturating_sub(parsing_real);
+    println!("building the hit, with the tracker's payload: {building_real} bytes per request");
+    record("build_hit_real", building_real);
+    println!("  the biggest allocations per request:");
+    for (size, count, bytes) in histogram(rounds() as u64).into_iter() {
+        println!("    {size:>8} B x {count:>4} = {bytes:>7} B");
+    }
     println!(
         "  the hit itself is {} bytes",
         std::mem::size_of::<sumimi_service::models::Hit>()
@@ -711,6 +780,35 @@ async fn the_price_without_the_write_path() {
 
     println!("the collection path alone: {collection} bytes per request");
     record("collection_path", collection);
+
+    // The same path, with the body the **tracker** sends ✓ — every field a
+    // real page view has ✓ ⇒ ⇒ the small body above measures the machinery,
+    // this one measures the traffic ✓.
+    for _ in 0..20 {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(REAL_BODY))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let _before = allocated(); // the counter is reset by this reading
+    forget_histogram();
+    for _ in 0..rounds() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(REAL_BODY))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let real = allocated() / rounds() as u64;
+    println!("the collection path, with the tracker's payload: {real} bytes per request");
+    record("collection_path_real", real);
     println!("  the biggest allocations per request:");
     for (size, count, bytes) in histogram(rounds() as u64).into_iter() {
         println!("    {size:>8} B × {count:>4} = {bytes:>7} B");
@@ -777,7 +875,7 @@ async fn the_price_of_writing_a_row() {
     let rows = 1_000;
     let mut batch = Vec::with_capacity(rows);
     for _ in 0..rows {
-        batch.push(api_build_hit(&state, &headers, &raw));
+        batch.push(api_build_hit(&state, &headers, raw.clone()));
     }
 
     // The write: one batch of a thousand rows.

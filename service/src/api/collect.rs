@@ -31,18 +31,26 @@ pub async fn send(
             ApiError::BadRequest("invalid json body".into())
         }
     })?;
-    let raw = request.into_payload();
+    let mut raw = request.into_payload();
 
+    // The website comes out of the payload — **moved**, not copied ✓.
     let website_key = raw
         .website
-        .as_deref()
+        .take()
         .ok_or_else(|| ApiError::BadRequest("missing website".into()))?;
 
     // Umami v2 sends pageviews as `type: "event"` *without* a name; a custom event
     // carries a name. Both shapes are accepted here.
     let kind = resolve_kind(raw.kind.as_deref(), raw.name.is_some());
 
-    let hit = build_hit(&state, &headers, peer.as_ref().map(|p| &p.0), website_key, kind, &raw)?;
+    let hit = build_hit(
+        &state,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+        &website_key,
+        kind,
+        raw,
+    )?;
     let taken = state.writer.push(hit);
 
     // The server is over capacity: the event was **not** stored. The client is
@@ -96,7 +104,14 @@ pub async fn collect(
         ..Default::default()
     };
 
-    let hit = build_hit(&state, &headers, peer.as_ref().map(|p| &p.0), &website_key, kind, &raw)?;
+    let hit = build_hit(
+        &state,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+        &website_key,
+        kind,
+        raw,
+    )?;
     let taken = state.writer.push(hit);
 
     // The server is over capacity: the event was **not** stored. The client is
@@ -178,8 +193,8 @@ fn kind_name(kind: HitKind) -> &'static str {
 /// Build the hit a collection request describes.
 ///
 /// **The payload is typed** ✓ ⇒ ⇒ every field is already trimmed and already
-/// owned by the payload ✓ ⇒ ⇒ ⇒ and this function only has to **copy** the
-/// ones it keeps ✓ (see `MEMORY.md` §6 ✓).
+/// owned by the payload ✓ ⇒ ⇒ ⇒ and this function only has to **move** the
+/// ones it keeps ✓ ⇒ ⇒ ⇒ not one copy ✓ (see `MEMORY.md` §6 ✓).
 ///
 /// **Public for the measurement** ✓ — `service/tests/allocations.rs` prices
 /// this stage against the others ✓ (the collection path is where a request's
@@ -190,7 +205,7 @@ pub fn build_hit(
     peer: Option<&ConnectInfo<SocketAddr>>,
     website_key: &str,
     kind: HitKind,
-    raw: &Payload,
+    mut raw: Payload,
 ) -> Result<Hit, ApiError> {
     let meta = state.website_meta(website_key)?;
 
@@ -241,8 +256,12 @@ pub fn build_hit(
         created_at.and_utc().timestamp().div_euclid(3600)
     ));
 
+    // The custom event's data — moved out of the payload ✓ (it is taken
+    // first, because the fields below are moved out one by one ✓).
+    let data = raw.take_data();
+
     // The page: path and query, kept apart like Umami keeps them.
-    let (url, url_query, params) = match raw.url.as_deref() {
+    let (url, url_query, params) = match raw.url {
         Some(url) => split_url(url),
         None => (None, None, Vec::new()),
     };
@@ -250,17 +269,17 @@ pub fn build_hit(
     // marketing parameters live. `SUMIMI_KEEP_QUERY=0` keeps the parameters but
     // drops the raw query string.
     let url_query = if state.config.keep_query { url_query } else { None };
-    let param = |name: &str| -> Option<String> {
+    let param = |name: &str| -> Option<&str> {
         params
             .iter()
             .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| value.as_str())
     };
 
     // The referrer: host, path and query. The breakdown groups by the host, which
     // is what Umami shows; the path and the query are the extra we keep.
     // `SUMIMI_STORE_FULL_REFERRER=0` keeps the host alone.
-    let (referrer, referrer_path, referrer_query) = match raw.referrer.as_deref() {
+    let (referrer, referrer_path, referrer_query) = match raw.referrer {
         Some(referrer) => {
             let (host, path, query) = split_referrer(referrer);
             // The `www.` is dropped, the way the reference implementation drops
@@ -293,8 +312,8 @@ pub fn build_hit(
         .and_then(|header| headers.get(header.as_str()))
         .and_then(|v| v.to_str().ok())
         .and_then(crate::geo::country_from_header);
-    let mut region = raw.region.clone();
-    let mut city = raw.city.clone();
+    let mut region = raw.region;
+    let mut city = raw.city;
     let mut latitude = None;
     let mut longitude = None;
 
@@ -306,8 +325,12 @@ pub fn build_hit(
         });
         if let Some(location) = location {
             country = location.country;
-            region = region.or(location.region);
-            city = city.or(location.city);
+            if region.is_none() {
+                region = location.region;
+            }
+            if city.is_none() {
+                city = location.city;
+            }
             latitude = location.latitude;
             longitude = location.longitude;
         }
@@ -315,17 +338,48 @@ pub fn build_hit(
 
     // The channel: the bucket the visit falls into. It is worked out once,
     // here, and stored with the event.
-    let hostname = raw.hostname.clone();
+    let hostname = raw.hostname;
     let channel = Some(
         crate::channels::channel(&crate::channels::ChannelInput::new(
             referrer.as_deref(),
             url_query.as_deref(),
-            param("utm_medium").as_deref(),
-            param("utm_source").as_deref(),
+            param("utm_medium"),
+            param("utm_source"),
             hostname.as_deref(),
         ))
         .to_string(),
     );
+
+    // The marketing parameters and the ad click ids: **one pass** over the
+    // query, and the values are **moved** out of it — not copied out one by
+    // one ✓.
+    let mut utm_source = None;
+    let mut utm_medium = None;
+    let mut utm_campaign = None;
+    let mut utm_content = None;
+    let mut utm_term = None;
+    let mut gclid = None;
+    let mut fbclid = None;
+    let mut msclkid = None;
+    let mut ttclid = None;
+    let mut lifatid = None;
+    let mut twclid = None;
+    for (key, value) in params {
+        match key.as_str() {
+            "utm_source" => utm_source = Some(value),
+            "utm_medium" => utm_medium = Some(value),
+            "utm_campaign" => utm_campaign = Some(value),
+            "utm_content" => utm_content = Some(value),
+            "utm_term" => utm_term = Some(value),
+            "gclid" => gclid = Some(value),
+            "fbclid" => fbclid = Some(value),
+            "msclkid" => msclkid = Some(value),
+            "ttclid" => ttclid = Some(value),
+            "lifatid" => lifatid = Some(value),
+            "twclid" => twclid = Some(value),
+            _ => {}
+        }
+    }
 
     Ok(Hit {
         website_id: meta.id,
@@ -338,11 +392,7 @@ pub fn build_hit(
 
         url,
         url_query,
-        title: if state.config.store_titles {
-            raw.title.clone()
-        } else {
-            None
-        },
+        title: if state.config.store_titles { raw.title } else { None },
 
         referrer,
         referrer_path,
@@ -356,26 +406,26 @@ pub fn build_hit(
         os: info.os,
         os_version: info.os_version,
         device: info.device,
-        screen: raw.screen.clone(),
-        language: raw.language.clone(),
+        screen: raw.screen,
+        language: raw.language,
         country,
         region,
         city,
         latitude,
         longitude,
 
-        utm_source: param("utm_source"),
-        utm_medium: param("utm_medium"),
-        utm_campaign: param("utm_campaign"),
-        utm_content: param("utm_content"),
-        utm_term: param("utm_term"),
+        utm_source,
+        utm_medium,
+        utm_campaign,
+        utm_content,
+        utm_term,
 
-        gclid: param("gclid"),
-        fbclid: param("fbclid"),
-        msclkid: param("msclkid"),
-        ttclid: param("ttclid"),
-        lifatid: param("lifatid"),
-        twclid: param("twclid"),
+        gclid,
+        fbclid,
+        msclkid,
+        ttclid,
+        lifatid,
+        twclid,
 
         lcp: raw.lcp,
         inp: raw.inp,
@@ -383,31 +433,40 @@ pub fn build_hit(
         fcp: raw.fcp,
         ttfb: raw.ttfb,
 
-        name: raw.name.clone(),
-        tag: raw.tag.clone(),
-        data: raw.data(),
+        name: raw.name,
+        tag: raw.tag,
+        data,
     })
 }
 
 /// Split a URL into its path, its query string and its parameters.
-fn split_url(url: &str) -> (Option<String>, Option<String>, Vec<(String, String)>) {
-    let without_fragment = url.split('#').next().unwrap_or(url);
+///
+/// **The path is moved, not copied** ✓: a URL without a query and without a
+/// fragment *is* its path ⇒ ⇒ ⇒ so the string the tracker sent becomes the
+/// string the event carries ✓ ⇒ ⇒ ⇒ no copy ✓ (see `MEMORY.md` §6 ✓).
+fn split_url(url: String) -> (Option<String>, Option<String>, Vec<(String, String)>) {
+    let without_fragment = match url.split_once('#') {
+        Some((before, _)) => before,
+        None => url.as_str(),
+    };
     match without_fragment.split_once('?') {
         Some((path, query)) => (
             Some(path.to_string()),
             Some(query.to_string()),
             parse_query(query),
         ),
+        // No query and no fragment: the URL **is** the path ✓ ⇒ ⇒ ⇒ move it ✓.
+        None if without_fragment.len() == url.len() => (Some(url), None, Vec::new()),
         None => (Some(without_fragment.to_string()), None, Vec::new()),
     }
 }
 
 /// Split a referrer into its host, path and query.
-fn split_referrer(referrer: &str) -> (Option<String>, Option<String>, Option<String>) {
+fn split_referrer(referrer: String) -> (Option<String>, Option<String>, Option<String>) {
     let without_scheme = referrer
         .strip_prefix("https://")
         .or_else(|| referrer.strip_prefix("http://"))
-        .unwrap_or(referrer);
+        .unwrap_or(&referrer);
 
     let (host, rest) = match without_scheme.split_once('/') {
         Some((host, rest)) => (host, Some(rest)),
@@ -540,7 +599,7 @@ mod tests {
     fn splits_the_page_into_a_path_and_a_query() {
         // The query string is stored by default — Umami stores it, and it is where
         // the marketing parameters live. `SUMIMI_KEEP_QUERY=0` drops it later.
-        let (url, query, params) = split_url("/a/b?token=secret&utm_source=twitter");
+        let (url, query, params) = split_url("/a/b?token=secret&utm_source=twitter".to_string());
         assert_eq!(url.as_deref(), Some("/a/b"));
         assert_eq!(query.as_deref(), Some("token=secret&utm_source=twitter"));
         assert_eq!(
@@ -551,7 +610,7 @@ mod tests {
             ]
         );
 
-        let (url, query, params) = split_url("/a/b");
+        let (url, query, params) = split_url("/a/b".to_string());
         assert_eq!(url.as_deref(), Some("/a/b"));
         assert_eq!(query, None);
         assert!(params.is_empty());
