@@ -403,7 +403,37 @@ grow** ✓ ✓ ⇒ **the box is protected** ✓ ✓.
 ⇒ **and a container has one more trap** ✗ ✗ — the server reads `/proc/meminfo` ✓ ⇒
 the **host's** memory ✓ ⇒ in a `--memory=512m` container it thinks it has 7.7 GB ✓ ⇒
 it sizes the engine at 256 MB ✓ and the gate at 40 000/s ✓ ⇒ **the container gets
-OOM-killed** ✗ ⇒ [#16](https://github.com/sumimi-dev/sumimi/issues/16) ✓ ✓.
+OOM-killed** ✗ ⇒ [#16](https://github.com/sumimi-dev/sumimi/issues/16) ✓ ✓ ⇒
+**fixed in v0.4.1** ✓ ✓: the cgroup's limit is read too ✓ ⇒ the **smaller** of the
+two wins ✓ ⇒ a 512 MB container gets the minimum tier ✓ ✓.
+
+### Where the memory actually goes ✓ ✓ (measured, [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓)
+
+The rule in §6 — **7.8 MB per 1 000 requests a second** — is the **allocator's
+retention of the churn** ✓, not the data ✓ (the body is 109 bytes ✓). The
+**churn**, measured with a counting allocator ✓ (`service/tests/allocations.rs` ✓):
+
+| the stage | bytes per request |
+| --- | ---: |
+| the body itself | 109 B |
+| parsed into a `serde_json::Value` **tree** | 679 B |
+| … and **cloned** into a map (`into_hit()` ✓) | 713 B |
+| the user agent | 151 B |
+| building the hit (the struct is 1 000 B ✓) | 2 326 B |
+| the HTTP layer | 894 B |
+| **the whole request** | **26 347 B** |
+
+⇒ **26 KB per request**, while the table assumes 7.8 KB ✓ ⇒ ⇒ **there is room
+to optimise** ✓ ⇒ and the biggest lever found so far is **the queue** ✓:
+
+> **a push into a queue of 0 rows costs 2 631 B; into a queue of 1 000 rows it
+> costs 10 331 B** ✓ ✓ — the queue is a `VecDeque` ✓ and **growing it moves
+> every hit in it** ✓ ⇒ ⇒ **the queue's length is the link between the rate
+> and the churn** ✓ ✓ ✓ ⇒ which is *why* the memory follows the rate ✓ ✓.
+
+⇒ and the writer **writes as soon as the queue is not empty** ✓ ⇒ ⇒ **a request
+is usually a batch of one** ✓ ⇒ ⇒ the "10 000 rows a batch" never happens ✓ ⇒
+⇒ both the throughput ceiling ✓ and the churn ✓ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
 
 ### A measurement trap worth writing down ✓ ✓
 
