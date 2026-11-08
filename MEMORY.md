@@ -227,23 +227,48 @@ actually drain — not from a constant. The in-flight limits stay as the backsto
 ## 6. The deployment reference
 
 **What the memory costs, by the rate.** Measured with the sweep
-(`gate_sweep --curve`) on the **CI runner** (Linux, 2 vCPU ✓ — the peak is the exact
-high-water mark ✓), one page view per request (110 bytes ✓), 64 connections ✓, 20 s ✓,
-the **worst** of three runs ✓ — the promise is about the peak ✓, so the peak is what
-the table carries ✓.
+(`sumimi-gotest sweep` ✓ — the public tool ✓ ⇒ a second implementation ✓ ⇒ ⇒ it
+does not inherit the server's bugs ✓) on a **2 vCPU Linux box** ✓ (AMD EPYC-Genoa
+✓, 2 GB ✓) ⇒ ⇒ the peak is the server's own high-water mark ✓ (it reads
+`/proc/self/status`'s `VmHWM` ✓), one page view per request (110 bytes ✓),
+64 connections ✓, 20 s ✓, **a fresh server per point** ✓ ⇒ ⇒ ⇒ so every row is
+the peak of *that* point ✓ ⇒ ⇒ ⇒ ⇒ and the promise is about the peak ✓ ⇒ ⇒ ⇒
+so the peak is what the table carries ✓.
 
 | the rate offered | the peak RSS | the engine holds | what it fits |
 | --- | ---: | ---: | --- |
-| 5 000 /s | 84 MB | 2 MB | the **minimum** tier (256 MB) ✓ |
-| **10 000 /s** | **149 MB** | 2 MB | the **minimum** tier ✓ — 107 MB to spare ✓ |
-| 20 000 /s | 256 MB | 2 MB | the **minimum** tier's ceiling, exactly ✓ |
-| 30 000 /s | 309 MB | 4 MB | the **recommended** tier (512 MB) ✓ |
-| 38 000 /s (all the runner could offer ✓) | 370 MB | 12 MB | the recommended tier ✓ |
+| 5 000 /s | **110 MB** ✓ | 2 MB | the **minimum** tier (256 MB) ✓ — 146 MB to spare ✓ |
+| **10 000 /s** | **116 MB** ✓ | 2 MB | the **minimum** tier ✓ — 140 MB to spare ✓ |
+| **20 000 /s** | **187 MB** ✓ | 3 MB | the **minimum** tier ✓ — **69 MB to spare** ✓ |
+| 40 000 /s | **183 MB** ✓ | 3 MB | the **minimum** tier ✓ — and the box is at its ceiling ✓ |
 | 100 000 /s | **~850 MB** (by the rule ✓) — measured **~600 MB** on a bigger box ✓ | | **neither** ✓ |
 | 200 000 /s | **~600 MB, and it stops growing** ✓ | | the traffic is refused, not stored ✓ |
 
-The rule on that machine: **the peak ≈ 68 MB + 7.8 MB per 1 000 requests a second** ✓.
-**The engine is 2–12 MB of it** ✓ — the rest is the collection path and the allocator ✓.
+⇒ ⇒ **these numbers need `MALLOC_MMAP_THRESHOLD_=65536` in the environment**
+✓ ⇒ ⇒ ⇒ without it the same box peaks at 136 / 146 / **205** / **261 MB** ✓ ⇒
+⇒ ⇒ ⇒ ⇒ **−19% / −21% / −9% / −30%** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that one line is worth
+more than every table row** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (the Docker image sets it ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ a systemd deployment should ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ see the page ✓ ✓).
+
+⇒ ⇒ **and the rule changed** ✓ ⇒ ⇒ ⇒ it used to be **68 MB + 7.8 MB per 1 000
+requests a second** ✓ ⇒ ⇒ ⇒ ⇒ **now it is 68 MB + 1.2 MB per 1 000** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ **six times flatter** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that is the seven fixes**
+✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
+
+**And the box's ceiling rose** ✓ ✓ (the same box ✓, the same tool ✓, back to
+back ✓):
+
+| the rate offered | v0.4.1 | **v0.4.2** ✓ | v0.4.2 + the allocator ✓ |
+| --- | ---: | ---: | ---: |
+| 5 000 /s | 132 MB | 136 MB | **110 MB** ✓ |
+| 10 000 /s | 148 MB | 146 MB | **116 MB** ✓ |
+| 20 000 /s | 227 MB (**17 131/s** ✓) | 205 MB (**19 861/s** ✓) | **187 MB** (18 817/s ✓) |
+| 40 000 /s | 201 MB (**16 952/s** ✓) | 261 MB (**20 264/s** ✓) | **183 MB** (18 894/s ✓) |
+
+⇒ ⇒ **the CPU-bound box now serves 16% more traffic** ✓ ✓ ⇒ ⇒ ⇒ (the batching
+⇒ ⇒ ⇒ 1 000 transactions became 3 ✓ ⇒ ⇒ ⇒ ⇒ ⇒ the CPU was the ceiling ✓ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ **the ceiling moved** ✓ ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ and at the same rate the
+peak is **−18%** ✓ ✓.
 
 **And the rule stops applying at the top** ✓: on a bigger box, 100 000, 150 000 and
 200 000 requests a second all land at **~600 MB** ✓ ✓ — because the server parses
@@ -253,8 +278,15 @@ memory" regime, it is a **"most of it is turned away"** regime ✓ ✓ — a rea
 needs a stronger box and a faster write path ✓, not more RAM ✓ ✓.
 
 **That rule is where the default limit comes from** ✓: the rate is set where the box is
-**full but not over** ✓ ⇒ **20 000 a second per 128 MB of the engine's budget** ✓ ⇒
+**full but not over** ✓ ⇒ **20 000 a second per 128 MB of the engine's budget** ⇒
 **20 000/s on the minimum tier ✓, 40 000/s on the recommended one ✓** ✓.
+
+⇒ ⇒ **and the promise now holds with room to spare** ✓ ⇒ ⇒ ⇒ the minimum tier
+at its own recommended rate ⇒ **187 MB of 256 MB** ✓ ⇒ ⇒ ⇒ ⇒ (before: 256 MB of
+256 MB ✓ ⇒ ⇒ ⇒ ⇒ exactly the ceiling ✓ ⇒ ⇒ ⇒ ⇒ **now: 69 MB to spare** ✓ ✓) ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **that was [#17](https://github.com/sumimi-dev/sumimi/issues/17)'s
+complaint** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and it is answered** ✓ ✓ ✓.
+
 
 **The event size counts as much as the rate.** At 20 000 requests a second, changing
 only the size of one event:

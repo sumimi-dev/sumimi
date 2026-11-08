@@ -250,8 +250,14 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
     <h2>How much traffic does my site need?</h2>
     <p>
       The table a deployment is sized from, measured on a 2 vCPU Linux box (the exact
-      high-water mark, the worst of three runs — because the promise is about the
-      peak). One page view per request (110 bytes), 64 connections.
+      high-water mark — the server reads its own <code>/proc</code> figure, because
+      the promise is about the peak). One page view per request (110 bytes), 64
+      connections, a fresh server for every row.
+    </p>
+    <p>
+      <strong>These numbers want the allocator's line</strong> —
+      <code>MALLOC_MMAP_THRESHOLD_=65536</code>, below. Without it the same box peaks
+      at 136 / 146 / 205 / 261 MB instead: 19% to 30% more.
     </p>
     <div class="table-wrap">
       <table>
@@ -259,11 +265,10 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
           <tr><th>requests a second</th><th>the peak RSS</th><th>the engine's share</th><th>what it fits</th></tr>
         </thead>
         <tbody>
-          <tr><td>5 000</td><td>84 MB</td><td>2 MB</td><td>the minimum tier</td></tr>
-          <tr><td><strong>10 000</strong></td><td><strong>149 MB</strong></td><td>2 MB</td><td>the minimum tier, with 107 MB to spare</td></tr>
-          <tr><td>20 000</td><td>256 MB</td><td>2 MB</td><td>exactly the minimum tier's ceiling</td></tr>
-          <tr><td>30 000</td><td>309 MB</td><td>4 MB</td><td>the recommended tier</td></tr>
-          <tr><td>38 000 (all that box could offer)</td><td>370 MB</td><td>12 MB</td><td>the recommended tier</td></tr>
+          <tr><td>5 000</td><td><strong>110 MB</strong></td><td>2 MB</td><td>the minimum tier, with 146 MB to spare</td></tr>
+          <tr><td><strong>10 000</strong></td><td><strong>116 MB</strong></td><td>2 MB</td><td>the minimum tier, with 140 MB to spare</td></tr>
+          <tr><td><strong>20 000</strong></td><td><strong>187 MB</strong></td><td>3 MB</td><td>the minimum tier, with <strong>69 MB to spare</strong></td></tr>
+          <tr><td>40 000</td><td>183 MB</td><td>3 MB</td><td>the minimum tier — and the box is at its ceiling</td></tr>
           <tr><td>100 000</td><td>about 850 MB</td><td>—</td><td>neither — it needs a bigger box</td></tr>
           <tr><td>200 000</td><td>about 600 MB, and it stops growing</td><td>—</td><td>the traffic is refused, not stored</td></tr>
         </tbody>
@@ -315,18 +320,19 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
 
     <h2>Does this depend on the machine?</h2>
     <p>
-      The table above is from a 2 vCPU Xeon. The same sweep on a 10-core Apple M5:
+      The table above is from a 2 vCPU AMD EPYC box. The same sweep on a 10-core
+      Apple M5:
     </p>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>requests a second</th><th>the 2 vCPU Xeon</th><th>the 10-core M5</th></tr>
+          <tr><th>requests a second</th><th>the 2 vCPU EPYC</th><th>the 10-core M5</th></tr>
         </thead>
         <tbody>
-          <tr><td>5 000</td><td>116 MB</td><td>117 MB</td></tr>
-          <tr><td>10 000</td><td>148 MB</td><td>148 MB</td></tr>
-          <tr><td>20 000</td><td>253 MB</td><td>271 MB</td></tr>
-          <tr><td>30 000</td><td>309 MB</td><td>302 MB</td></tr>
+          <tr><td>5 000</td><td>110 MB</td><td>120 MB</td></tr>
+          <tr><td>10 000</td><td>116 MB</td><td>123 MB</td></tr>
+          <tr><td>20 000</td><td>187 MB</td><td>227 MB</td></tr>
+          <tr><td>40 000</td><td>183 MB</td><td>249 MB</td></tr>
           <tr><td><strong>what the machine could serve</strong></td><td>about 43 000 /s</td><td>about 113 000 /s</td></tr>
         </tbody>
       </table>
