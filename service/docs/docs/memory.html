@@ -224,6 +224,30 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
       file above, and a box that is short of memory should set it even if it
       could spare the 5%.
     </p>
+    <p>
+      The clearest proof that the pages really go back comes from a container,
+      because the kernel keeps two numbers for it: the high-water mark and what
+      it holds now. Measured in a container on an Apple M5, at 5 000 requests a
+      second:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>the allocator</th><th>the peak</th><th>what the container holds after the load</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>the image as it ships</td><td>106 MB</td><td><strong>23 MiB</strong></td></tr>
+          <tr><td>glibc as it comes</td><td>141 MB</td><td>56 MiB</td></tr>
+          <tr><td>never map anything</td><td>304 MB</td><td>178 MiB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Five times between the highest the container ever was and what it holds
+      once the load stops — that difference <em>is</em> the pages coming back.
+      And the same machine, in the same container, without that one environment
+      variable, peaks at 141 MB instead of 106 MB.
+    </p>
     <div class="callout tip">
       <p class="callout-title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
@@ -324,36 +348,48 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
     <h2>Does this depend on the machine?</h2>
     <p>
       The same sweep, the same release, the same tool, back to back — on a 2 vCPU
-      AMD EPYC box and on a 10-core Apple M5. **Neither column has the allocator's
-      line**, so the two are the same variant and can be compared with each other —
-      the table above is the one with it, and it is smaller.
+      AMD EPYC box, on a 10-core Apple M5, and on that same M5 with the server in
+      a Linux container (which is how most deployments run).
     </p>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>requests a second</th><th>the 2 vCPU EPYC</th><th>the 10-core M5</th></tr>
+          <tr><th>requests a second</th><th>the 2 vCPU EPYC</th><th>the 10-core M5</th><th>the M5, in a container</th></tr>
         </thead>
         <tbody>
-          <tr><td>5 000</td><td>138 MB</td><td>139 MB</td></tr>
-          <tr><td>10 000</td><td>145 MB</td><td>147 MB</td></tr>
-          <tr><td>20 000</td><td>208 MB (the box served 19 656/s)</td><td>246 MB</td></tr>
-          <tr><td>40 000</td><td>210 MB (served 19 281/s)</td><td>270 MB</td></tr>
-          <tr><td><strong>what the machine could serve</strong></td><td>about 19 700 /s</td><td>more than 40 000 /s</td></tr>
+          <tr><td>5 000</td><td>138 MB</td><td>139 MB</td><td><strong>106 MB</strong></td></tr>
+          <tr><td>10 000</td><td>145 MB</td><td>147 MB</td><td><strong>116 MB</strong></td></tr>
+          <tr><td>20 000</td><td>208 MB (the box served 19 656/s)</td><td>246 MB</td><td><strong>213 MB</strong></td></tr>
+          <tr><td>40 000</td><td>210 MB (served 19 281/s)</td><td>270 MB</td><td><strong>270 MB</strong> (served 39 107/s)</td></tr>
+          <tr><td><strong>what the machine could serve</strong></td><td>about 19 700 /s</td><td>more than 40 000 /s</td><td>40 000 /s</td></tr>
         </tbody>
       </table>
     </div>
     <p>
-      <strong>The memory a request costs is the same on both</strong> — at the rates the
-      small box can actually serve: 138 MB against 139 MB at 5 000 requests a second,
-      145 against 147 at 10 000. What differs is how much traffic the box can take: a
-      stronger CPU does not mean less memory, it means the same memory serves more
-      traffic. So sizing a box is two questions — how much traffic do you get, and can
-      this machine take it?
+      <strong>The memory a request costs is the same on every machine</strong> — at the
+      rates the small box can actually serve: 138 MB, 139 MB and 106 MB at 5 000
+      requests a second. What differs is how much traffic the box can take: a stronger
+      CPU does not mean less memory, it means the same memory serves more traffic. So
+      sizing a box is two questions — how much traffic do you get, and can this machine
+      take it?
     </p>
     <p>
-      Above the small box's ceiling the two columns stop being comparable: it never
-      served 20 000 requests a second, so it did less work, and its peak is lower
-      because it finished less — not because it was more frugal.
+      <strong>The container column is the image as it ships</strong>, with the
+      allocator's line; the other two have none, so they are the same variant and can
+      be compared with each other. That makes the second and third columns the same
+      Apple M5 with and without it — and the difference, <strong>139 MB against 106
+      MB</strong>, is what that one line of the environment file is worth. A Linux
+      container gets it for free; macOS does not have it at all (that is Apple's
+      allocator, not glibc's).
+    </p>
+    <p>
+      Above the small box's ceiling its column stops being comparable: it never served
+      20 000 requests a second, so it did less work, and its peak is lower because it
+      finished less — not because it was more frugal. Compare at the rates each
+      machine can serve: at 40 000 requests a second the container peaked at 270 MB
+      while serving 39 107/s, and the two-core box peaked at 182 MB while serving
+      18 400/s. <strong>The CPU decides how far up the rate axis you can go; the
+      memory decides what that costs.</strong>
     </p>
     <p class="footnote">
       Three things to keep in mind. These are <strong>two machines</strong>, not a law: a
@@ -362,11 +398,11 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
       measured over <strong>loopback</strong>, with no TLS: that does not change the
       memory a request costs, but a real deployment pays for the handshake and the
       encryption, so it can take fewer requests a second than the table suggests. And
-      the macOS column is the less trustworthy of the two: it is the kernel's
+      the macOS column is the less trustworthy of the three: it is the kernel's
       <code>ru_maxrss</code>, which counts the shared pages of the mapped binary and
       does not repeat from one round to the next (the same binary at 5 000 requests a
       second measured 104 MB in one round and 133 MB in the next), while the Linux
-      figure is the kernel's exact high-water mark and repeats to within 2 MB.
+      figures are the kernel's exact high-water mark and repeat to within 2 MB.
     </p>
 
     <h2>If the server is near its limit</h2>

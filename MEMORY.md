@@ -385,6 +385,67 @@ higher rate** ✓ ✓ (and at the ceiling the M5 uses *more* ✓ — it churns m
 the memory follows from it ✓ ✓ — **and now that a third machine says the same thing ✓,
 the table is "measured on three boxes" ✓, not a law on two ✓** ✓.
 
+### The three environments, one table ✓ ✓ ✓
+
+macOS 原生 ✓ ⇒ ⇒ ⇒ macOS 上的 container ✓ ⇒ ⇒ ⇒ VPS ✓ ⇒ ⇒ ⇒ ⇒ ⇒ **同一批
+发布出去的二进制 ✓ ⇒ ⇒ ⇒ 同一个工具 ✓ ⇒ ⇒ ⇒ 同一批速率 ✓ ⇒ ⇒ ⇒ 同样 64
+连接 ✓ ⇒ ⇒ ⇒ 每个点一台新服务器（新容器）✓ ✓**
+
+| the rate offered | **macOS, native** | **macOS, in a container** | **the VPS** |
+| --- | ---: | ---: | ---: |
+| 5 000 /s | 139 MB | **106 MB** | 110 MB |
+| 10 000 /s | 147 MB | **116 MB** | 115 MB |
+| 20 000 /s | 246 MB | **213 MB** | **182 MB** (served 18 600/s) |
+| 40 000 /s | 270 MB | **270 MB** (served 39 107/s) | **182 MB** (served 18 400/s) |
+
+⇒ ⇒ **the container is 20–24% below the native macOS at the same rates** ✓ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **and that is the allocator, not the container** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ the container has glibc (the variable works ✓) ⇒ ⇒ ⇒ the native macOS has
+Apple's allocator (the variable does nothing ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **same
+machine, same binary, different allocator, −20% of the peak** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ **and a Linux container gets it for free** ✓ ✓
+
+⇒ ⇒ **the cgroup's own number is the best proof** ✓ ⇒ ⇒ ⇒ ⇒ the container's
+high-water mark against what it holds once the load stops ✓ ⇒ ⇒ ⇒ ⇒ ⇒ 106 MB
+against **23 MiB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **five times** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **that difference IS the pages coming back** ✓ ✓
+
+⇒ ⇒ **the VPS column is lower, but not because it is thrifty** ✓ ⇒ ⇒ ⇒ ⇒ that
+box has **2 cores** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ at 20 000/s it only served ~18 600/s ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ it did less work ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **compare at the rates each machine
+can serve** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ at 40 000/s: the container **270 MB** serving
+39 107/s ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the VPS **182 MB** serving 18 400/s ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the CPU decides how far up the rate axis you can go; the
+memory decides what that costs** ✓ ✓
+
+⇒ ⇒ **the native macOS column is the least trustworthy of the three** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ its peak is the kernel's `ru_maxrss` ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and it
+moves by up to 30% between rounds** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the
+container and the VPS read `VmHWM`** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **take
+the numbers from those two** ✓ ✓
+
+⇒ ⇒ **the allocator, on the same machine, in the same container** ✓ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+| the rate offered | glibc as it comes | **the image as it ships** | never map anything |
+| --- | ---: | ---: | ---: |
+| 5 000 /s | 141 MB | **106 MB** ✓ | 304 MB |
+| 10 000 /s | 157 MB | **116 MB** ✓ | 364 MB |
+| 20 000 /s | 272 MB | **213 MB** ✓ | 389 MB |
+| 40 000 /s | 314 MB | **270 MB** ✓ | 443 MB |
+
+⇒ ⇒ **−25% / −26% / −22% / −14% against glibc's own default** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **and −65% / −68% / −45% / −39% against the worst case** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that one environment variable is worth more than every other
+line here** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and it is why the image ships it**
+✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and why the deployment reference table
+needs it** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the container already has it** ✓ ✓
+
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the report: `benchmarks/sweep-container-m5-2026-11-09.md`** ✓
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the three environments are in the docs
+page too** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the container column is what a
+deployment actually looks like** ✓ ✓
+
 ### The third machine says the same thing ✓ ✓ ✓
 
 The doubt had its own issue ([#15](https://github.com/sumimi-dev/sumimi/issues/15) ✓)
