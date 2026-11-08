@@ -19,17 +19,16 @@ FROM rust:1-bookworm AS build
 
 WORKDIR /src
 
-# The cargo caches are mounted, so a rebuild only compiles what changed.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo fetch --locked
-
 COPY . .
 
+# The cargo caches are mounted, so a rebuild only compiles what changed: the
+# dependencies and DuckDB stay in the cache between builds.
+#
 # The debug symbols are most of the size of a DuckDB build, and nobody needs
 # them in a release.
 ENV CARGO_PROFILE_RELEASE_DEBUG=0
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p sumimi --bin sumimi
 
@@ -55,6 +54,11 @@ COPY service/docs /app/docs
 COPY LICENSE NOTICE /app/
 
 # The instance directory: the database, the accounts, the certificates.
+#
+# It is created **before** the volume instruction, and owned by the user the
+# server runs as — a volume inherits the ownership of the directory it is
+# mounted on, and root-owned means the non-root server cannot write a byte.
+RUN mkdir -p /data && chown sumimi:sumimi /data
 VOLUME ["/data"]
 
 ENV SUMIMI_DIR=/data \
