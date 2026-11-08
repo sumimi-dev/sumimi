@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 
 use crate::api::AppState;
 use crate::error::ApiError;
-use crate::models::{Hit, HitKind, RawPayload, SendRequest};
+use crate::models::{normalise, Hit, HitKind, Payload, SendRequest};
 use crate::ua;
 
 /// Session time bucket (30 minutes), like Umami's session timeout.
@@ -31,17 +31,18 @@ pub async fn send(
             ApiError::BadRequest("invalid json body".into())
         }
     })?;
-    let raw = request.into_hit();
+    let raw = request.into_payload();
 
     let website_key = raw
-        .str("website")
+        .website
+        .as_deref()
         .ok_or_else(|| ApiError::BadRequest("missing website".into()))?;
 
     // Umami v2 sends pageviews as `type: "event"` *without* a name; a custom event
     // carries a name. Both shapes are accepted here.
-    let kind = resolve_kind(raw.kind.as_deref(), raw.str("name").is_some());
+    let kind = resolve_kind(raw.kind.as_deref(), raw.name.is_some());
 
-    let hit = build_hit(&state, &headers, peer.as_ref().map(|p| &p.0), &website_key, kind, &raw)?;
+    let hit = build_hit(&state, &headers, peer.as_ref().map(|p| &p.0), website_key, kind, &raw)?;
     let taken = state.writer.push(hit);
 
     // The server is over capacity: the event was **not** stored. The client is
@@ -64,48 +65,35 @@ pub async fn collect(
     State(state): State<AppState>,
     headers: HeaderMap,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
-    Query(params): Query<CollectParams>,
+    Query(mut params): Query<CollectParams>,
 ) -> Result<Response, ApiError> {
     let website_key = params
         .id
-        .clone()
+        .take()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::BadRequest("missing website id".into()))?;
 
     let kind = resolve_kind(params.r#type.as_deref(), params.name.is_some());
 
-    let mut fields = serde_json::Map::new();
-    for (key, value) in [
-        ("url", params.url),
-        ("referrer", params.referrer),
-        ("name", params.name),
-        ("hostname", params.hostname),
-        ("language", params.language),
-        ("screen", params.screen),
-        ("title", params.title),
-        ("sessionId", params.session_id),
-    ] {
-        if let Some(value) = value {
-            fields.insert(key.to_string(), serde_json::Value::String(value));
-        }
-    }
-    fields.insert(
-        "website".to_string(),
-        serde_json::Value::String(website_key.clone()),
-    );
-
-    // Legacy tracker sends `data` as base64-encoded JSON.
-    if let Some(data) = params.data {
-        if let Ok(decoded) = base64_decode(&data) {
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&decoded) {
-                fields.insert("data".to_string(), value);
-            }
-        }
-    }
-
-    let raw = RawPayload {
-        fields,
+    // The fields go straight into the payload ✓ ⇒ ⇒ no map is built, and no
+    // field is copied twice ✓ ⇒ ⇒ the same rule as the v2 endpoint: trimmed
+    // and empty is nothing ✓.
+    let raw = Payload {
+        url: normalise(params.url),
+        referrer: normalise(params.referrer),
+        name: normalise(params.name),
+        hostname: normalise(params.hostname),
+        language: normalise(params.language),
+        screen: normalise(params.screen),
+        title: normalise(params.title),
+        session_id: normalise(params.session_id),
+        // Legacy trackers send `data` as base64-encoded JSON.
+        data: params
+            .data
+            .and_then(|data| base64_decode(&data).ok())
+            .and_then(|decoded| serde_json::from_slice::<serde_json::Value>(&decoded).ok()),
         kind: Some(kind_name(kind).to_string()),
+        ..Default::default()
     };
 
     let hit = build_hit(&state, &headers, peer.as_ref().map(|p| &p.0), &website_key, kind, &raw)?;
@@ -189,6 +177,10 @@ fn kind_name(kind: HitKind) -> &'static str {
 /// come out of the payload.
 /// Build the hit a collection request describes.
 ///
+/// **The payload is typed** ✓ ⇒ ⇒ every field is already trimmed and already
+/// owned by the payload ✓ ⇒ ⇒ ⇒ and this function only has to **copy** the
+/// ones it keeps ✓ (see `MEMORY.md` §6 ✓).
+///
 /// **Public for the measurement** ✓ — `service/tests/allocations.rs` prices
 /// this stage against the others ✓ (the collection path is where a request's
 /// memory goes ✓ — see `MEMORY.md` §6 ✓).
@@ -198,7 +190,7 @@ pub fn build_hit(
     peer: Option<&ConnectInfo<SocketAddr>>,
     website_key: &str,
     kind: HitKind,
-    raw: &RawPayload,
+    raw: &Payload,
 ) -> Result<Hit, ApiError> {
     let meta = state.website_meta(website_key)?;
 
@@ -217,8 +209,8 @@ pub fn build_hit(
     //
     // Either way the id is a **UUID**: 16 bytes on disk, and the client's own
     // token is hashed rather than stored verbatim.
-    let session_id = match raw.str("sessionId") {
-        Some(client_id) if is_safe_session_id(&client_id) => ua::uuid_from_text(&client_id),
+    let session_id = match raw.session_id.as_deref() {
+        Some(client_id) if is_safe_session_id(client_id) => ua::uuid_from_text(client_id),
         _ => {
             let bucket = (chrono::Utc::now().timestamp() / SESSION_BUCKET_SECONDS) as u64;
             ua::derive_session_id(
@@ -250,8 +242,8 @@ pub fn build_hit(
     ));
 
     // The page: path and query, kept apart like Umami keeps them.
-    let (url, url_query, params) = match raw.str("url") {
-        Some(url) => split_url(&url),
+    let (url, url_query, params) = match raw.url.as_deref() {
+        Some(url) => split_url(url),
         None => (None, None, Vec::new()),
     };
     // The query string is stored by default — Umami stores it, and it is where the
@@ -268,9 +260,9 @@ pub fn build_hit(
     // The referrer: host, path and query. The breakdown groups by the host, which
     // is what Umami shows; the path and the query are the extra we keep.
     // `SUMIMI_STORE_FULL_REFERRER=0` keeps the host alone.
-    let (referrer, referrer_path, referrer_query) = match raw.str("referrer") {
+    let (referrer, referrer_path, referrer_query) = match raw.referrer.as_deref() {
         Some(referrer) => {
-            let (host, path, query) = split_referrer(&referrer);
+            let (host, path, query) = split_referrer(referrer);
             // The `www.` is dropped, the way the reference implementation drops
             // it: `www.example.com` and `example.com` are the same site, and
             // the referrer breakdown has to show one name for them.
@@ -301,8 +293,8 @@ pub fn build_hit(
         .and_then(|header| headers.get(header.as_str()))
         .and_then(|v| v.to_str().ok())
         .and_then(crate::geo::country_from_header);
-    let mut region = raw.str("region");
-    let mut city = raw.str("city");
+    let mut region = raw.region.clone();
+    let mut city = raw.city.clone();
     let mut latitude = None;
     let mut longitude = None;
 
@@ -323,7 +315,7 @@ pub fn build_hit(
 
     // The channel: the bucket the visit falls into. It is worked out once,
     // here, and stored with the event.
-    let hostname = raw.str("hostname");
+    let hostname = raw.hostname.clone();
     let channel = Some(
         crate::channels::channel(&crate::channels::ChannelInput::new(
             referrer.as_deref(),
@@ -334,9 +326,6 @@ pub fn build_hit(
         ))
         .to_string(),
     );
-
-    // The web vitals, if the tracker reported them.
-    let metric = |name: &str| -> Option<f64> { raw.number(name) };
 
     Ok(Hit {
         website_id: meta.id,
@@ -350,7 +339,7 @@ pub fn build_hit(
         url,
         url_query,
         title: if state.config.store_titles {
-            raw.str("title")
+            raw.title.clone()
         } else {
             None
         },
@@ -359,7 +348,7 @@ pub fn build_hit(
         referrer_path,
         referrer_query,
         referrer_name,
-        hostname: raw.str("hostname"),
+        hostname,
         channel,
 
         browser: info.browser,
@@ -367,8 +356,8 @@ pub fn build_hit(
         os: info.os,
         os_version: info.os_version,
         device: info.device,
-        screen: raw.str("screen"),
-        language: raw.str("language"),
+        screen: raw.screen.clone(),
+        language: raw.language.clone(),
         country,
         region,
         city,
@@ -388,14 +377,14 @@ pub fn build_hit(
         lifatid: param("lifatid"),
         twclid: param("twclid"),
 
-        lcp: metric("lcp"),
-        inp: metric("inp"),
-        cls: metric("cls"),
-        fcp: metric("fcp"),
-        ttfb: metric("ttfb"),
+        lcp: raw.lcp,
+        inp: raw.inp,
+        cls: raw.cls,
+        fcp: raw.fcp,
+        ttfb: raw.ttfb,
 
-        name: raw.str("name"),
-        tag: raw.str("tag"),
+        name: raw.name.clone(),
+        tag: raw.tag.clone(),
         data: raw.data(),
     })
 }

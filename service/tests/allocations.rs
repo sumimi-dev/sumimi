@@ -228,7 +228,7 @@ async fn the_price_of_a_push() {
     );
 
     let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
-    let raw = request.into_hit();
+    let raw = request.into_payload();
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", AGENT.parse().unwrap());
 
@@ -257,7 +257,7 @@ async fn the_price_of_a_push() {
 fn api_build_hit(
     state: &sumimi_service::api::AppState,
     headers: &axum::http::HeaderMap,
-    raw: &sumimi_service::models::RawPayload,
+    raw: &sumimi_service::models::Payload,
 ) -> sumimi_service::models::Hit {
     sumimi_service::api::collect::build_hit(
         state,
@@ -370,7 +370,6 @@ async fn the_price_with_a_backlog() {
 
 /// The body a page view sends.
 const BODY: &str = r#"{"website":"website-1","payload":{"url":"/hello","title":"Hello","referrer":"https://news.ycombinator.com/"}}"#;
-
 /// The user agent a browser sends.
 const AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                      (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -431,7 +430,7 @@ async fn the_price_of_building_the_hit() {
     let _router = api::router(state.clone());
 
     let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
-    let raw = request.into_hit();
+    let raw = request.into_payload();
 
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", AGENT.parse().unwrap());
@@ -481,32 +480,31 @@ async fn the_price_of_building_the_hit() {
 fn the_price_of_one_request() {
     let _measuring = measuring();
 
-    // 1. The parse: the body becomes a **tree** of `serde_json::Value`.
+    // 1. The tree: the body becomes a `serde_json::Value` — **the old way** ✓.
+    let _before = allocated(); // the counter is reset by this reading
+    for _ in 0..rounds() {
+        let tree: serde_json::Value = serde_json::from_str(BODY).unwrap();
+        std::hint::black_box(tree);
+    }
+    let tree = allocated() / rounds() as u64;
+
+    // 2. The typed struct: the body becomes **the fields the collector reads**
+    //    ✓ — no tree, no clone, no per-field copies ✓.
     let _before = allocated(); // the counter is reset by this reading
     for _ in 0..rounds() {
         let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
         std::hint::black_box(request);
     }
-    let parsed = allocated() / rounds() as u64;
+    let typed = allocated() / rounds() as u64;
 
-    // 2. The clone: `into_hit()` copies **the whole tree** into a new map.
+    // 3. … and the payload it hands over ✓.
     let _before = allocated(); // the counter is reset by this reading
     for _ in 0..rounds() {
         let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
-        let raw = request.into_hit();
+        let raw = request.into_payload();
         std::hint::black_box(raw);
     }
-    let with_clone = allocated() / rounds() as u64;
-
-    // 3. One field, copied out: `str()` returns an owned `String`.
-    let _before = allocated(); // the counter is reset by this reading
-    for _ in 0..rounds() {
-        let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
-        let raw = request.into_hit();
-        let url = raw.str("url");
-        std::hint::black_box(url);
-    }
-    let with_a_field = allocated() / rounds() as u64;
+    let with_payload = allocated() / rounds() as u64;
 
     // 4. The user agent.
     let _before = allocated(); // the counter is reset by this reading
@@ -516,48 +514,19 @@ fn the_price_of_one_request() {
     }
     let user_agent = allocated() / rounds() as u64;
 
-    // 5. What the same body would cost **parsed into a typed struct** — the
-    //    alternative to the tree: no `Value`, no clone, no per-field copies.
-    #[derive(serde::Deserialize)]
-    #[allow(dead_code)] // it exists to be parsed: that is the measurement
-    struct Typed {
-        #[serde(default)]
-        website: Option<String>,
-        #[serde(default)]
-        r#type: Option<String>,
-        #[serde(default)]
-        payload: Option<TypedPayload>,
-    }
-    #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
-    struct TypedPayload {
-        #[serde(default)]
-        url: Option<String>,
-        #[serde(default)]
-        title: Option<String>,
-        #[serde(default)]
-        referrer: Option<String>,
-    }
-    let _before = allocated(); // the counter is reset by this reading
-    for _ in 0..rounds() {
-        let typed: Typed = serde_json::from_str(BODY).unwrap();
-        std::hint::black_box(typed);
-    }
-    let typed = allocated() / rounds() as u64;
-
     println!("the price of one request:");
     println!("  the body is                    {} bytes", BODY.len());
     record("body", BODY.len() as u64);
-    println!("  parsed into a tree             {parsed} bytes");
-    record("parse_tree", parsed);
-    println!("  … and cloned into a map        {} bytes", with_clone.saturating_sub(parsed));
-    println!("  … and one field copied out     {} bytes", with_a_field.saturating_sub(with_clone));
-    println!("  the user agent                 {user_agent} bytes");
-    println!("  parsed into a typed struct     {typed} bytes");
+    println!("  parsed into a tree             {tree} bytes");
+    record("parse_tree", tree);
+    println!("  parsed into the typed struct   {typed} bytes");
     record("parse_typed", typed);
+    println!("  … and the payload              {with_payload} bytes");
+    record("parse_typed_payload", with_payload);
+    println!("  the user agent                 {user_agent} bytes");
     println!(
         "  the tree's share               {} bytes",
-        with_clone.saturating_sub(typed)
+        tree.saturating_sub(with_payload)
     );
 
     // The room the deployment reference assumes: 7.8 KB per request. The
@@ -743,9 +712,87 @@ async fn the_price_without_the_write_path() {
     println!("the collection path alone: {collection} bytes per request");
     record("collection_path", collection);
     println!("  the biggest allocations per request:");
-    for (size, count, bytes) in histogram(rounds() as u64).into_iter().take(8) {
+    for (size, count, bytes) in histogram(rounds() as u64).into_iter() {
         println!("    {size:>8} B × {count:>4} = {bytes:>7} B");
     }
+    writer.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The price of **writing** a row — the batch, the append, and everything the
+/// storage does with a hit.
+///
+/// This is the stage the collection path never reaches, and it is where the
+/// rest of the memory goes: the collection path costs 15 KB per request and
+/// the whole path 25 KB ⇒ ⇒ **10 KB per request is the write** ⇒ ⇒ ⇒ so
+/// this is the stage to price ✓ (see `MEMORY.md` §6 ✓).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_price_of_writing_a_row() {
+    let _measuring = measuring();
+    use axum::http::HeaderMap;
+    use std::sync::Arc;
+    use sumimi_service::api::AppState;
+    use sumimi_service::config::{Config, Paths};
+    use sumimi_service::pool::Db;
+    use sumimi_service::storage::Storage;
+    use sumimi_service::writer::Writer;
+
+    let dir = std::env::temp_dir().join(format!("sumimi-alloc-write-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sumimi.duckdb");
+    let db = Arc::new(Db::open(&path, "256MB").unwrap());
+    db.with_write(|conn| {
+        conn.execute(
+            "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+             VALUES ('website-1', 'Example', 'example.com', now(), now(), 0, NULL)",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let mut config = Config::from_env_and_flags(
+        Paths::new(Some(dir.clone()), Some(path.clone()), "duckdb"),
+        None, None, None, None, None, None,
+    )
+    .unwrap();
+    config.jwt_secret = "test-secret".to_string();
+
+    let writer = Writer::new(200_000, 1_000);
+    let state = AppState::new(
+        db.clone(),
+        Arc::new(sumimi_service::instance::SqliteInstance::open_in_memory().unwrap()),
+        writer.clone(),
+        Arc::new(config),
+        Arc::new("test-secret".to_string()),
+    );
+
+    let request: sumimi_service::models::SendRequest = serde_json::from_str(BODY).unwrap();
+    let raw = request.into_payload();
+    let mut headers = HeaderMap::new();
+    headers.insert("user-agent", AGENT.parse().unwrap());
+
+    // The rows: the same hit, a thousand times.
+    let rows = 1_000;
+    let mut batch = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        batch.push(api_build_hit(&state, &headers, &raw));
+    }
+
+    // The write: one batch of a thousand rows.
+    let _before = allocated(); // the counter is reset by this reading
+    forget_histogram();
+    db.write_batch(&batch).unwrap();
+    let per_row = allocated() / rows as u64;
+
+    println!("the write: {per_row} bytes per row");
+    record("write_row", per_row);
+    println!("  the biggest allocations per row:");
+    for (size, count, bytes) in histogram(rows as u64).into_iter() {
+        println!("    {size:>8} B × {count:>4} = {bytes:>7} B");
+    }
+
     writer.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -194,64 +194,237 @@ pub struct SendRequest {
     #[serde(default)]
     pub r#type: Option<String>,
     /// The hit payload.
-    #[serde(default)]
-    pub payload: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "optional_payload")]
+    pub payload: Option<Payload>,
 }
 
 impl SendRequest {
-    /// Extract the flat payload fields we care about.
+    /// The payload, with the website filled in.
     ///
-    /// **The map is moved, not copied** ✓: `payload` is a `serde_json::Value`
-    /// ✓ ⇒ an object is a `Map` inside it ✓ ⇒ taking it by value hands the
-    /// map over ✓ ⇒ ⇒ **the whole tree is not cloned** ✓ ⇒ ⇒ 713 bytes per
-    /// request that used to be spent on a copy nobody kept ✓ (see
-    /// `MEMORY.md` §6 ✓).
-    pub fn into_hit(self) -> RawPayload {
-        let mut flat = match self.payload {
-            Some(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        if let Some(w) = self.website {
-            flat.entry("website".to_string()).or_insert(w.into());
+    /// **There is no tree any more** ✓: the payload is deserialized
+    /// **straight into the fields** the collector reads ✓ ⇒ ⇒ the body is
+    /// parsed **once** ✓ ⇒ ⇒ the fields nobody reads are never built ✓ ⇒ ⇒
+    /// ⇒ 679 bytes per request of `serde_json::Value` tree — and every copy
+    /// out of it — are gone ✓ (see `MEMORY.md` §6 ✓).
+    pub fn into_payload(self) -> Payload {
+        let SendRequest {
+            website,
+            r#type,
+            payload,
+        } = self;
+        let mut payload = payload.unwrap_or_default();
+        if payload.website.is_none() {
+            payload.website = website;
         }
-        RawPayload { fields: flat, kind: self.r#type }
+        payload.kind = r#type;
+        payload
     }
 }
 
-/// Normalised payload fields (JSON object).
-pub struct RawPayload {
-    pub fields: serde_json::Map<String, serde_json::Value>,
+/// The payload of a collection request — **the fields, not a tree**.
+///
+/// Every field is the one the collector reads, and every field arrives
+/// **already normalised** ✓: trimmed ✓, empty dropped ✓ ⇒ ⇒ the collector
+/// never has to copy a field out to trim it ✓ ⇒ ⇒ ⇒ the fields that nobody
+/// reads are never even built ✓ ✓.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Payload {
+    /// The website the hit belongs to.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub website: Option<String>,
+    /// The path of the page.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub url: Option<String>,
+    /// The title of the page.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub title: Option<String>,
+    /// The referrer.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub referrer: Option<String>,
+    /// The event name.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub name: Option<String>,
+    /// The event tag.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub tag: Option<String>,
+    /// The hostname of the site.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub hostname: Option<String>,
+    /// The interface language.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub language: Option<String>,
+    /// The viewport size.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub screen: Option<String>,
+    /// The region of the visitor.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub region: Option<String>,
+    /// The city of the visitor.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub city: Option<String>,
+    /// The client's own session id.
+    #[serde(default, deserialize_with = "optional_text", rename = "sessionId")]
+    pub session_id: Option<String>,
+    /// Largest Contentful Paint, in milliseconds.
+    #[serde(default, deserialize_with = "optional_number")]
+    pub lcp: Option<f64>,
+    /// Interaction to Next Paint, in milliseconds.
+    #[serde(default, deserialize_with = "optional_number")]
+    pub inp: Option<f64>,
+    /// Cumulative Layout Shift.
+    #[serde(default, deserialize_with = "optional_number")]
+    pub cls: Option<f64>,
+    /// First Contentful Paint, in milliseconds.
+    #[serde(default, deserialize_with = "optional_number")]
+    pub fcp: Option<f64>,
+    /// Time to First Byte, in milliseconds.
+    #[serde(default, deserialize_with = "optional_number")]
+    pub ttfb: Option<f64>,
+    /// The custom event's data — free-form, so it stays a `Value`.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+    /// The kind of the hit.
+    ///
+    /// Not a payload field: it comes from the request's `type` ✓.
+    #[serde(skip)]
     pub kind: Option<String>,
 }
 
-impl RawPayload {
-    /// Read a string field.
-    pub fn str(&self, key: &str) -> Option<String> {
-        self.fields
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    }
-
-    /// Read the `data` object (custom event properties).
+impl Payload {
+    /// The `data` object (custom event properties).
     pub fn data(&self) -> Option<String> {
-        let value = self.fields.get("data")?;
-        match value {
-            serde_json::Value::String(s) => Some(s.clone()),
+        match self.data.as_ref()? {
+            serde_json::Value::String(text) => Some(text.clone()),
             serde_json::Value::Null => None,
             other => Some(other.to_string()),
         }
     }
+}
 
-    /// A number, whether it arrived as a JSON number or as a string.
-    pub fn number(&self, key: &str) -> Option<f64> {
-        match self.fields.get(key) {
-            Some(serde_json::Value::Number(number)) => number.as_f64(),
-            Some(serde_json::Value::String(text)) => text.trim().parse::<f64>().ok(),
-            _ => None,
+/// The rule for a text field: **trimmed**, and empty is nothing.
+///
+/// The rule is the same everywhere ✓ ⇒ ⇒ the collector never has to trim a
+/// field it has already got ✓ ⇒ ⇒ ⇒ and a blank title is no title ✓.
+pub fn normalise(text: Option<String>) -> Option<String> {
+    text.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else if trimmed.len() == text.len() {
+            Some(text)
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+/// A text field that arrives as a string — **or** as something else.
+///
+/// A field of the wrong type is **ignored**, not an error ✓: the trackers
+/// differ ✓ ⇒ ⇒ and one odd field must not lose the whole event ✓.
+fn optional_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(text)) => normalise(Some(text)),
+        _ => None,
+    })
+}
+
+/// A number that arrives as a JSON number **or** as a string.
+///
+/// The tracker sends the vitals as strings ✓ (`String(metrics.lcp)` ✓ — see
+/// `js/sumimi.js` ✓) ⇒ ⇒ ⇒ both are read ✓.
+fn optional_number<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::Number(number)) => number.as_f64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    })
+}
+
+/// The payload — **an object**, or nothing.
+///
+/// A payload that is not an object is **ignored**, not an error ✓: the
+/// request still says which website it is for ✓ ⇒ ⇒ and the event is worth
+/// keeping ✓.
+fn optional_payload<'de, D>(deserializer: D) -> Result<Option<Payload>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct PayloadVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for PayloadVisitor {
+        type Value = Option<Payload>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a payload object")
+        }
+
+        fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            // The struct, straight out of the map — **no tree in between** ✓.
+            serde::Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                .map(Some)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_string<E>(self, _: String) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(None)
         }
     }
+
+    deserializer.deserialize_option(PayloadVisitor)
 }
 
 /// A website as returned by the API (camelCase, like Umami).
@@ -623,4 +796,84 @@ pub struct ReportSpec {
     /// The window and the filters.
     #[serde(flatten)]
     pub query: StatsQuery,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fields are trimmed, and a blank one is nothing.
+    #[test]
+    fn the_fields_are_trimmed() {
+        let request: SendRequest =
+            serde_json::from_str(r#"{"payload":{"url":"  /hello  ","title":"   "}}"#).unwrap();
+        let payload = request.into_payload();
+        assert_eq!(payload.url.as_deref(), Some("/hello"));
+        assert_eq!(payload.title, None, "a blank title is no title");
+    }
+
+    /// A field of the wrong type is ignored — it does not lose the event.
+    #[test]
+    fn a_field_of_the_wrong_type_is_ignored() {
+        let request: SendRequest =
+            serde_json::from_str(r#"{"payload":{"url":123,"title":"Hello"}}"#).unwrap();
+        let payload = request.into_payload();
+        assert_eq!(payload.url, None);
+        assert_eq!(payload.title.as_deref(), Some("Hello"));
+    }
+
+    /// A payload that is not an object is ignored, not an error.
+    #[test]
+    fn a_payload_that_is_not_an_object_is_ignored() {
+        for body in [
+            r#"{"payload":"text","website":"example.com"}"#,
+            r#"{"payload":42,"website":"example.com"}"#,
+            r#"{"payload":[1,2],"website":"example.com"}"#,
+            r#"{"payload":null,"website":"example.com"}"#,
+        ] {
+            let request: SendRequest = serde_json::from_str(body).unwrap();
+            let payload = request.into_payload();
+            assert_eq!(payload.website.as_deref(), Some("example.com"), "{body}");
+        }
+    }
+
+    /// The vitals arrive as numbers **and** as strings — the tracker sends
+    /// strings.
+    #[test]
+    fn the_vitals_are_read_both_ways() {
+        let request: SendRequest = serde_json::from_str(
+            r#"{"payload":{"lcp":"1200","inp":34,"cls":0.02,"unknown":true}}"#,
+        )
+        .unwrap();
+        let payload = request.into_payload();
+        assert_eq!(payload.lcp, Some(1200.0));
+        assert_eq!(payload.inp, Some(34.0));
+        assert_eq!(payload.cls, Some(0.02));
+    }
+
+    /// The website comes from the payload, or from the request.
+    #[test]
+    fn the_website_comes_from_the_payload_or_the_request() {
+        let request: SendRequest =
+            serde_json::from_str(r#"{"website":"top.com","payload":{"website":"in.com"}}"#)
+                .unwrap();
+        assert_eq!(request.into_payload().website.as_deref(), Some("in.com"));
+
+        let request: SendRequest =
+            serde_json::from_str(r#"{"website":"top.com","payload":{}}"#).unwrap();
+        assert_eq!(request.into_payload().website.as_deref(), Some("top.com"));
+    }
+
+    /// The `data` of a custom event: an object becomes its JSON, a string
+    /// stays itself.
+    #[test]
+    fn the_data_is_read() {
+        let request: SendRequest =
+            serde_json::from_str(r#"{"payload":{"data":{"a":1}}}"#).unwrap();
+        assert_eq!(request.into_payload().data().as_deref(), Some(r#"{"a":1}"#));
+
+        let request: SendRequest =
+            serde_json::from_str(r#"{"payload":{"data":"plain"}}"#).unwrap();
+        assert_eq!(request.into_payload().data().as_deref(), Some("plain"));
+    }
 }
