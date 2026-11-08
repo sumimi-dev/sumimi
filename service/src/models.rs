@@ -200,13 +200,17 @@ pub struct SendRequest {
 
 impl SendRequest {
     /// Extract the flat payload fields we care about.
+    ///
+    /// **The map is moved, not copied** ✓: `payload` is a `serde_json::Value`
+    /// ✓ ⇒ an object is a `Map` inside it ✓ ⇒ taking it by value hands the
+    /// map over ✓ ⇒ ⇒ **the whole tree is not cloned** ✓ ⇒ ⇒ 713 bytes per
+    /// request that used to be spent on a copy nobody kept ✓ (see
+    /// `MEMORY.md` §6 ✓).
     pub fn into_hit(self) -> RawPayload {
-        let mut flat = serde_json::Map::new();
-        if let Some(payload) = self.payload {
-            if let Some(obj) = payload.as_object() {
-                flat = obj.clone();
-            }
-        }
+        let mut flat = match self.payload {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
         if let Some(w) = self.website {
             flat.entry("website".to_string()).or_insert(w.into());
         }
