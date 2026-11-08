@@ -1,0 +1,11 @@
+# The build context: only what the image needs.
+target
+dist
+.git
+.github
+benchmarks
+*.tar.gz
+*.zip
+Dockerfile
+docker-compose.yml
+.dockerignore

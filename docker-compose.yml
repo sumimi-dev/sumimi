@@ -1,0 +1,30 @@
+# The default install: one container, one volume, one command.
+#
+#   docker compose up -d
+#
+# The certificate is issued by Let's Encrypt for SUMIMI_SSL_DOMAIN — the domain
+# has to point at this host, and port 443 has to reach the container.
+
+services:
+  sumimi:
+    image: ghcr.io/sumimi-dev/sumimi:latest
+    # The container comes back when it dies. Outside Docker the same job is
+    # done by the supervisor: `sumimi service start`.
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      # Let's Encrypt's TLS-ALPN-01 challenge needs 443.
+      - "443:443"
+    volumes:
+      - sumimi-data:/data
+    environment:
+      # The domain the certificate is issued for. Leave it out for plain HTTP.
+      SUMIMI_SSL_DOMAIN: stats.example.com
+      # The contact address registered with Let's Encrypt.
+      SUMIMI_SSL_EMAIL: me@example.com
+    # The container sees its own limit, not the host's: the server reads the
+    # cgroup limit and sizes itself from that.
+    mem_limit: 512m
+
+volumes:
+  sumimi-data:
