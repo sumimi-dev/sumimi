@@ -735,11 +735,14 @@ pub mod rand_compat {
     impl ThreadRng {
         fn next_byte(&mut self) -> u8 {
             let mut st = self.0.borrow_mut();
-            if st.i == 0 {
+            // The buffer is refilled when it is **empty**, not when the index
+            // happens to be zero: the index starts at 32, so a `== 0` test never
+            // fired and every secret came out as thirty-two zero bytes.
+            if st.i >= 32 {
                 st.s = os_random();
                 st.i = 0;
             }
-            let b = st.s[st.i % 32];
+            let b = st.s[st.i];
             st.i += 1;
             b
         }
