@@ -385,6 +385,38 @@ higher rate** ✓ ✓ (and at the ceiling the M5 uses *more* ✓ — it churns m
 the memory follows from it ✓ ✓ — **and now that a third machine says the same thing ✓,
 the table is "measured on three boxes" ✓, not a law on two ✓** ✓.
 
+### CPU is the limit now — and no data is lost ✓ ✓
+
+**The server never lies about what it took** ✓ ⇒ ⇒ ⇒ the queue is full ⇒ **503 +
+`Retry-After`** ⇒ ⇒ ⇒ that one was **not** taken ✓ ⇒ ⇒ ⇒ the gate is over the
+rate ⇒ **503 + `Retry-After`** ⇒ ⇒ ⇒ that one's body was **not even read** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ **everything that got a `200` is in the queue** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so
+"acknowledged and lost" cannot happen** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ and **a resend cannot
+double-count** — what was not counted, counted once more, counts once ✓ ✓
+
+**But the tracker retries once, and only on a `503`** ✓ ⇒ ⇒ ⇒ a `503` ⇒ retried ✓
+⇒ ⇒ ⇒ ⇒ that class is not lost ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **a network timeout ⇒ not
+retried** ✗ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the page-view `sendBeacon` sends on the way out
+⇒ no status code ⇒ not retried** ✗ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒**
+⇒ ⇒ ⇒ **so the honest wording is: when the CPU is the limit, what is lost is not
+the data that was taken, but the data that was not — and those have one retry,
+and only the ones the server explicitly refused get it** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒**
+⇒ ⇒ ⇒ **⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **to not lose anything at all, one thing is missing** ✓ ⇒ ⇒ ⇒ **the
+tracker retries network errors too — several times, with a backoff** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **not done yet** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that is a change
+to the tracker, not to this issue** ✓ ✓
+
+⇒ ⇒ **and in the sweeps above nothing was lost** ✓ ⇒ ⇒ ⇒ at the ceiling **refused
+0, other 0** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ the **load generator** was the one that could not
+push the rate (40 000/s offered ⇒ 18 673/s sent ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the server
+refused nothing and timed out nothing** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the queue held only
+0–3 000 hits at the end** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the writer kept up ⇒ ⇒ ⇒ ⇒ the disk
+was never the constraint** ✓ ✓
+
 ### The three environments, one table ✓ ✓ ✓
 
 macOS 原生 ✓ ⇒ ⇒ ⇒ macOS 上的 container ✓ ⇒ ⇒ ⇒ VPS ✓ ⇒ ⇒ ⇒ ⇒ ⇒ **同一批
