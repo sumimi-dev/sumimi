@@ -24,7 +24,7 @@ on:
       tags:
         description: 'The releases to compare, comma separated'
         required: true
-        default: 'v0.4.1,v0.4.2'
+        default: 'v0.4.1,v0.4.3'
       rates:
         description: 'The rates to offer, comma separated'
         required: false
