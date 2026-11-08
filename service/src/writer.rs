@@ -59,13 +59,20 @@ impl Buffer {
     /// answers `503`, so the client knows and can send it again.
     ///
     /// That is the whole invariant: **what we acknowledged, we have.**
-    fn push(&self, hit: Hit) -> bool {
+    fn push(&self, hit: Hit, batch_size: usize) -> bool {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         if !queue.push_back(hit) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        self.signal.notify_one();
+        // Wake the writer only when a **batch** is ready. Waking it for every
+        // push would be a context switch per request for nothing: it would
+        // look, find one row, and go back to sleep.
+        let batch_ready = queue.len() >= batch_size;
+        drop(queue);
+        if batch_ready {
+            self.signal.notify_one();
+        }
         true
     }
 
@@ -213,7 +220,7 @@ impl Writer {
     /// — otherwise the client walks away thinking everything was stored, and
     /// the data is gone.
     pub fn push(&self, hit: Hit) -> bool {
-        self.buffer.push(hit)
+        self.buffer.push(hit, self.max_batch)
     }
 
     /// The most rows in one batch.
@@ -342,14 +349,26 @@ fn writer_loop(
             break;
         }
 
-        // Block until something arrives or the flush interval elapses.
+        // Block until there is a **batch** to write — or the interval elapses.
+        //
+        // The batch is the point: a DuckDB append per row is slow, and the
+        // memory it costs is per batch, not per row. So the writer waits for
+        // a full one and only gives up when the interval has passed.
+        //
+        // (It used to wait only when the queue was **empty**, so it wrote
+        // whatever was there — usually one row. That made every request its
+        // own transaction.)
         {
-            let queue = buffer.queue.lock().unwrap_or_else(|e| e.into_inner());
-            if queue.is_empty() && pending.is_empty() {
-                let _ = buffer
+            let mut queue = buffer.queue.lock().unwrap_or_else(|e| e.into_inner());
+            while pending.is_empty() && queue.len() < max_batch && !buffer.is_stopped() {
+                let (guard, timeout) = buffer
                     .signal
                     .wait_timeout(queue, flush_interval)
                     .unwrap_or_else(|e| e.into_inner());
+                queue = guard;
+                if timeout.timed_out() {
+                    break;
+                }
             }
         }
 
