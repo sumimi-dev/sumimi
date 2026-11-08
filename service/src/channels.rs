@@ -229,11 +229,17 @@ impl<'a> ChannelInput<'a> {
 /// 12. another site, and not this one → `referral`
 /// 13. nothing else → `direct`
 pub fn channel(input: &ChannelInput) -> &'static str {
-    let referrer = strip_www(input.referrer.unwrap_or("").trim());
-    let query = input.url_query.unwrap_or("").trim();
-    let medium = input.utm_medium.unwrap_or("").trim();
-    let source = input.utm_source.unwrap_or("").trim();
-    let hostname = input.hostname.unwrap_or("").trim();
+    // The originals — the comparison at the end is case-sensitive ✓.
+    let referrer_raw = strip_www(input.referrer.unwrap_or("").trim());
+    let hostname_raw = strip_www(input.hostname.unwrap_or("").trim());
+
+    // The lowercase versions — every lookup below is case-insensitive ✓ ⇒ ⇒
+    // ⇒ and each one is lowercased **once** ✓ ⇒ ⇒ ⇒ not once per domain ✓ ⇒
+    // ⇒ ⇒ the whole lookup allocates **nothing** ✓ (see `MEMORY.md` §6 ✓).
+    let referrer = referrer_raw.to_lowercase();
+    let query = input.url_query.unwrap_or("").trim().to_lowercase();
+    let medium = input.utm_medium.unwrap_or("").trim().to_lowercase();
+    let source = input.utm_source.unwrap_or("").trim().to_lowercase();
 
     // 1. Nothing came with the visit at all.
     if referrer.is_empty() && query.is_empty() {
@@ -241,27 +247,27 @@ pub fn channel(input: &ChannelInput) -> &'static str {
     }
 
     // 2. A paid click: the click id or the medium says so.
-    if contains_any(query, PAID_AD_PARAMS) {
+    if contains_any(&query, PAID_AD_PARAMS) {
         return "paidAds";
     }
 
     // 3. Somebody sent a link.
-    if contains_any(medium, REFERRAL_MEDIUMS) {
+    if contains_any(&medium, REFERRAL_MEDIUMS) {
         return "referral";
     }
 
     // 4. An affiliate.
-    if contains(medium, "affiliate") {
+    if contains(&medium, "affiliate") {
         return "affiliate";
     }
 
     // 5. A text message.
-    if contains(medium, "sms") || contains(source, "sms") {
+    if contains(&medium, "sms") || contains(&source, "sms") {
         return "sms";
     }
 
     // The bucket the referrer's domain belongs to — the longest match wins.
-    let domain = domain_bucket(referrer);
+    let domain = domain_bucket(&referrer);
 
     // 6. A chat assistant.
     if domain == Some("llm") {
@@ -269,7 +275,7 @@ pub fn channel(input: &ChannelInput) -> &'static str {
     }
 
     // 7. A search engine.
-    if domain == Some("Search") || contains(medium, "organic") {
+    if domain == Some("Search") || contains(&medium, "organic") {
         return "Search";
     }
 
@@ -279,22 +285,22 @@ pub fn channel(input: &ChannelInput) -> &'static str {
     }
 
     // 9. A mail client.
-    if domain == Some("email") || contains(medium, "mail") {
+    if domain == Some("email") || contains(&medium, "mail") {
         return "email";
     }
 
     // 10. A shop.
-    if domain == Some("Shopping") || contains(medium, "shop") {
+    if domain == Some("Shopping") || contains(&medium, "shop") {
         return "Shopping";
     }
 
     // 11. A video site.
-    if domain == Some("Video") || contains(medium, "video") {
+    if domain == Some("Video") || contains(&medium, "video") {
         return "Video";
     }
 
     // 12. Some other site — but not this one.
-    if !referrer.is_empty() && referrer != strip_www(hostname) {
+    if !referrer_raw.is_empty() && referrer_raw != hostname_raw {
         return "referral";
     }
 
@@ -306,6 +312,9 @@ pub fn channel(input: &ChannelInput) -> &'static str {
 ///
 /// **The longest match wins**, whatever list it is in: `mail.google.com` is a
 /// mail client (14 characters) and not a search engine (`google.`, 7).
+///
+/// The referrer is **already lowercase** ✓ ⇒ ⇒ ⇒ so the lookup allocates
+/// nothing ✓ ⇒ ⇒ ⇒ however many domains the lists hold ✓.
 fn domain_bucket(referrer: &str) -> Option<&'static str> {
     if referrer.is_empty() {
         return None;
@@ -343,11 +352,21 @@ pub fn strip_www(host: &str) -> &str {
 }
 
 /// A case-insensitive substring test.
-fn contains(haystack: &str, needle: &str) -> bool {
-    if haystack.is_empty() || needle.is_empty() {
+/// Does the **lowercase** text contain the needle?
+///
+/// **Nothing is allocated here** ✓: the needles are lowercase constants ✓
+/// (a test says so ✓) ⇒ ⇒ ⇒ and the haystack is lowercased **once**, by the
+/// caller ✓ ⇒ ⇒ ⇒ so the lookup is free ✓ ✓.
+///
+/// It used to lowercase **both** sides on **every** call ✓ ⇒ ⇒ ⇒ and the
+/// call is made once per domain in the lists ✓ ⇒ ⇒ ⇒ **over a hundred
+/// allocations per request** ⇒ ⇒ ⇒ **1 764 bytes** ⇒ ⇒ ⇒ measured with the
+/// counting allocator ✓ (see `MEMORY.md` §6 ✓).
+fn contains(lowercase: &str, needle: &str) -> bool {
+    if lowercase.is_empty() || needle.is_empty() {
         return false;
     }
-    haystack.to_lowercase().contains(&needle.to_lowercase())
+    lowercase.contains(needle)
 }
 
 /// Does the text contain any of the needles?
@@ -361,6 +380,37 @@ mod tests {
 
     fn channel_of(referrer: Option<&str>) -> &'static str {
         channel(&ChannelInput::new(referrer, None, None, None, None))
+    }
+
+    /// The needles are lowercase — the lookups rely on it.
+    ///
+    /// The haystack is lowercased once, by the caller ✓ ⇒ ⇒ ⇒ so the needles
+    /// have to be lowercase already ✓ ⇒ ⇒ ⇒ and a needle that is not would
+    /// **never match** ✓ ⇒ ⇒ ⇒ so this test says so ✓.
+    #[test]
+    fn the_needles_are_lowercase() {
+        for (bucket, domains) in DOMAIN_LISTS {
+            for domain in domains.iter() {
+                assert_eq!(
+                    *domain,
+                    domain.to_lowercase(),
+                    "the needle {domain} ({bucket}) is not lowercase"
+                );
+            }
+        }
+        for needle in PAID_AD_PARAMS.iter() {
+            assert_eq!(*needle, needle.to_lowercase(), "the needle {needle} is not lowercase");
+        }
+        for needle in REFERRAL_MEDIUMS.iter() {
+            assert_eq!(*needle, needle.to_lowercase(), "the needle {needle} is not lowercase");
+        }
+    }
+
+    /// The lookup is case-insensitive — as it was.
+    #[test]
+    fn the_lookup_ignores_the_case() {
+        assert_eq!(channel_of(Some("WWW.Google.COM")), "Search");
+        assert_eq!(channel_of(Some("news.ycombinator.com")), "Social");
     }
 
     #[test]
