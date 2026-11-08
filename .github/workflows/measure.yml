@@ -76,7 +76,7 @@ jobs:
               "https://github.com/sumimi-dev/sumimi/releases/download/$tag/sumimi-$tag-Linux-x86_64.tar.gz"
             mkdir -p "servers/$tag"
             tar xzf "servers/$tag.tar.gz" -C "servers/$tag"
-            "servers/$tag/sumimi" version
+            "servers/$tag/sumimi" --version
           done
 
       - name: The sweeps
