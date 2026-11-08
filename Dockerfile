@@ -75,7 +75,14 @@ VOLUME ["/data"]
 
 ENV SUMIMI_DIR=/data \
     SUMIMI_APP_URL=/app \
-    SUMIMI_PORT=3000
+    SUMIMI_PORT=3000 \
+    # The allocator gives the pages back ✓ — glibc keeps the pages of a large
+    # freed block instead of returning them ✓ ⇒ ⇒ and the peak never comes
+    # back down ✓ ⇒ ⇒ with this, anything over 64 KB is mapped and unmapped
+    # ⇒ ⇒ the pages go back to the OS right away ✓ ⇒ ⇒ **measured −23% of
+    # the peak** ✓ ⇒ ⇒ the cost is a syscall per large block ✓ ⇒ ⇒ which is
+    # nothing next to the memory ✓ ⇒ ⇒ (see `MEMORY.md` §6 ✓).
+    MALLOC_MMAP_THRESHOLD_=65536
 
 USER sumimi
 WORKDIR /data

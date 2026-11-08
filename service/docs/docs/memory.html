@@ -103,7 +103,7 @@
           <tr><td>DuckDB's other allocations</td><td>the appender's rows, the write-ahead log</td><td>nothing we set</td><td>not measured</td></tr>
           <tr><td>the collector</td><td>reading, parsing and queueing a request</td><td>the four limits below</td><td>the suspect</td></tr>
           <tr><td>the queue</td><td>the hits waiting to be written</td><td><code>SUMIMI_MAX_QUEUE</code> (rows)</td><td>~5 MB of structs per 10 000 rows, plus the strings</td></tr>
-          <tr><td>the allocator</td><td>the pages glibc took and did not give back</td><td>nothing</td><td>the peak does not come back down</td></tr>
+          <tr><td>the allocator</td><td>the pages glibc took and did not give back</td><td><code>MALLOC_MMAP_THRESHOLD_</code></td><td><strong>−23% of the peak</strong> when it is set</td></tr>
         </tbody>
       </table>
     </div>
@@ -182,7 +182,56 @@
     <pre class="shell"><code><span class="cmt"># /etc/sumimi/sumimi.env</span>
 SUMIMI_MAX_BODY_BYTES=65536
 SUMIMI_MAX_INFLIGHT_BYTES=4194304
-SUMIMI_MAX_ADMIT_RPS=20000</code></pre>
+SUMIMI_MAX_ADMIT_RPS=20000
+MALLOC_MMAP_THRESHOLD_=65536</code></pre>
+
+    <h2>The allocator gives the pages back</h2>
+    <p>
+      One line of the environment file is not a Sumimi setting, and it is worth
+      more than all the others together.
+    </p>
+    <p>
+      glibc keeps the pages of a freed <em>large</em> block instead of returning
+      them to the operating system — it does that because it expects to be asked
+      for the same size again, which is usually true and is not true here. The
+      server's peak is therefore a high-water mark that <strong>never comes back
+      down</strong>, even after the burst that caused it is over.
+    </p>
+    <p>
+      <code>MALLOC_MMAP_THRESHOLD_=65536</code> tells glibc to map anything over
+      64 KB instead of taking it from the heap: the pages go back to the OS as
+      soon as the block is freed. Measured on the same server, at the same rate,
+      on the same network, changing nothing else:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>the allocator</th><th>the peak</th><th>the change</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>the default</td><td>274 MB</td><td>—</td></tr>
+          <tr><td><code>MALLOC_MMAP_THRESHOLD_=65536</code></td><td><strong>210 MB</strong></td><td><strong>−23%</strong></td></tr>
+          <tr><td><code>MALLOC_TRIM_THRESHOLD_=65536</code></td><td>222 MB</td><td>−19%</td></tr>
+          <tr><td><code>MALLOC_ARENA_MAX=2</code></td><td>227 MB</td><td>−17%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The cost is a syscall per large block, which is nothing next to the memory
+      it gives back. The Docker image sets it already; a systemd deployment
+      should set it in the environment file above.
+    </p>
+    <div class="callout tip">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+        Linux only
+      </p>
+      <p>
+        These are glibc's own settings. On macOS and on the BSDs the allocator is
+        different and the variable does nothing — the server is fine there, it
+        just does not need the help.
+      </p>
+    </div>
     <div class="callout warn">
       <p class="callout-title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v5"/><path d="M12 17.5v.01"/><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6A2 2 0 0 0 22 18L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
