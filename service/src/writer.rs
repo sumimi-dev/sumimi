@@ -11,18 +11,18 @@
 //!     *oldest* hits are dropped and counted. Analytics may lose a few samples; the server
 //!     must not die — and it says so in the log, because a lost hit is a lost hit.
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::models::Hit;
+use crate::queue::ChunkedQueue;
 use crate::storage::Storage;
 
 /// Shared, bounded buffer between the request handlers and the writer thread.
 #[derive(Debug)]
 struct Buffer {
-    queue: Mutex<VecDeque<Hit>>,
+    queue: Mutex<ChunkedQueue<Hit>>,
     signal: Condvar,
     dropped: AtomicU64,
     /// Set when the writer should stop.
@@ -30,9 +30,9 @@ struct Buffer {
 }
 
 impl Buffer {
-    fn new() -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::new(ChunkedQueue::new(capacity)),
             signal: Condvar::new(),
             dropped: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -59,13 +59,12 @@ impl Buffer {
     /// answers `503`, so the client knows and can send it again.
     ///
     /// That is the whole invariant: **what we acknowledged, we have.**
-    fn push(&self, hit: Hit, capacity: usize) -> bool {
+    fn push(&self, hit: Hit) -> bool {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        if queue.len() >= capacity {
+        if !queue.push_back(hit) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        queue.push_back(hit);
         self.signal.notify_one();
         true
     }
@@ -73,15 +72,14 @@ impl Buffer {
     /// Take everything currently buffered.
     fn drain(&self) -> Vec<Hit> {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        queue.drain(..).collect()
+        queue.drain_all()
     }
 
     /// Take **at most** `max` rows from the front — the rest stay in the
     /// queue, in order, for the next batch.
     fn take_front(&self, max: usize) -> Vec<Hit> {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        let take = max.min(queue.len());
-        queue.drain(..take).collect()
+        queue.take_front(max)
     }
 }
 
@@ -89,7 +87,6 @@ impl Buffer {
 #[derive(Clone)]
 pub struct Writer {
     buffer: Arc<Buffer>,
-    capacity: usize,
     /// The version of the data.
     ///
     /// It changes whenever a batch is written, and the report cache carries it:
@@ -197,8 +194,7 @@ impl Writer {
     pub fn new(capacity: usize, max_batch: usize) -> Writer {
         Writer {
             max_batch: max_batch.max(1),
-            buffer: Arc::new(Buffer::new()),
-            capacity,
+            buffer: Arc::new(Buffer::new(capacity)),
             // The clock, so a restart invalidates the cache that is still on disk.
             version: Arc::new(AtomicU64::new(
                 chrono::Utc::now().timestamp_millis().max(0) as u64,
@@ -217,7 +213,7 @@ impl Writer {
     /// — otherwise the client walks away thinking everything was stored, and
     /// the data is gone.
     pub fn push(&self, hit: Hit) -> bool {
-        self.buffer.push(hit, self.capacity)
+        self.buffer.push(hit)
     }
 
     /// The most rows in one batch.

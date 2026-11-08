@@ -19,6 +19,7 @@ pub mod machine;
 pub mod memcheck;
 pub mod models;
 pub mod pool;
+pub mod queue;
 pub mod reports;
 pub mod rss;
 pub mod server;
