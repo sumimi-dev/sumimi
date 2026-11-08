@@ -284,63 +284,73 @@
       </table>
     </div>
     <p>
-      The memory a request costs is not a guess. The rule below was measured on
-      <strong>three machines with three different CPUs</strong>, so it is not one box's
-      quirk:
-    </p>
-    <div class="callout tip">
-      <p class="callout-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
-        The rule a deployment is sized from
-      </p>
-      <p>
-        <strong>The peak RSS ≈ 68 MB + 7.8 MB per 1 000 requests a second.</strong> The engine
-        is only 2–12 MB of it; the rest is the collection path and the allocator. Set
-        <code>SUMIMI_MAX_ADMIT_RPS</code> to your rate and the process stays at the size the
-        rule predicts, whatever the traffic does — a burst above the limit is refused with a
-        <code>Retry-After</code> instead of taking the box with it.
-      </p>
-    </div>
-    <p>
-      Measured inside a container, with the released binary and the minimum tier's 128 MB
-      engine — the closest thing to what a customer actually runs:
+      The table a deployment is sized from, measured on a 2 vCPU Linux box: the exact
+      high-water mark, read by the server from its own <code>/proc</code>, with a fresh
+      server for every row — because the promise is about the peak.
     </p>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>the rate offered</th><th>the peak RSS</th><th>refused</th><th>the queue</th></tr>
+          <tr><th>the rate offered</th><th>the peak RSS</th><th>the engine's share</th><th>what it fits</th></tr>
         </thead>
         <tbody>
-          <tr><td>5 000 /s</td><td>117 MB</td><td>0</td><td>0</td></tr>
-          <tr><td>10 000 /s</td><td>157 MB</td><td>0</td><td>0</td></tr>
-          <tr><td>15 000 /s</td><td>163 MB</td><td>0</td><td>0</td></tr>
-          <tr><td><strong>20 000 /s</strong> (the tier's default)</td><td><strong>208 MB</strong></td><td>0</td><td>0</td></tr>
-          <tr><td>30 000 /s</td><td>220 MB</td><td>180 313</td><td>0</td></tr>
+          <tr><td>5 000 /s</td><td><strong>110 MB</strong></td><td>2 MB</td><td>the minimum tier, with 146 MB to spare</td></tr>
+          <tr><td><strong>10 000 /s</strong></td><td><strong>115 MB</strong></td><td>2 MB</td><td>the minimum tier, with 141 MB to spare</td></tr>
+          <tr><td><strong>20 000 /s</strong> (the tier's default)</td><td><strong>182 MB</strong></td><td>3 MB</td><td>the minimum tier, with <strong>74 MB to spare</strong></td></tr>
+          <tr><td>40 000 /s</td><td>182 MB</td><td>3 MB</td><td>the minimum tier — and the box is at its ceiling</td></tr>
         </tbody>
       </table>
+    </div>
+    <div class="callout tip">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+        The curve turned out to be flat
+      </p>
+      <p>
+        For a long time the rule was <strong>68 MB + 7.8 MB per 1 000 requests a second</strong>
+        — the peak grew with the traffic, because the allocator kept the pages of every
+        request. Seven fixes later the curve is <strong>flat</strong>: 110 MB at 5 000 a
+        second, 115 MB at 10 000, and <strong>182 MB whether you offer 20 000 or 40 000</strong>.
+        The memory is no longer what limits a small box. <strong>The CPU is</strong> — past
+        what a core can parse, the traffic is refused with a <code>Retry-After</code> rather
+        than queued, and the peak does not move.
+      </p>
+    </div>
+    <div class="callout">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 13.5c0-1.5 2-2 2-3.5a2 2 0 1 0-4 0"/></svg>
+        One line of the environment file is worth more than every table row
+      </p>
+      <p>
+        <code>MALLOC_MMAP_THRESHOLD_=65536</code> tells glibc to give the pages of a large
+        block back to the operating system instead of keeping them. Measured on the same
+        server, at the same rate, changing nothing else: <strong>−12% to −21% of the peak</strong>.
+        The cost is a syscall per large block, which is <strong>about 5% of the throughput</strong>.
+        It is a knob, not a free win — the Docker image sets it, and a bare-metal deployment
+        should set it too.
+      </p>
     </div>
     <ul class="stats">
       <li>
         <span class="stat-value">15 000 /s</span>
-        <span class="stat-label">the safe rate on a <strong>512 MB</strong> box — 20 000/s is the memory ceiling, and the public internet costs about 20% more memory than loopback</span>
+        <span class="stat-label">the safe rate on a <strong>512 MB</strong> box — the memory holds 20 000/s with 74 MB to spare, and the public internet costs about 20% more memory than loopback</span>
       </li>
       <li>
         <span class="stat-value">30 000 /s</span>
         <span class="stat-label">the safe rate on a <strong>1 GB</strong> box — the budget doubles, so the ceiling doubles with it</span>
       </li>
       <li>
-        <span class="stat-value">8 000–20 000 /s</span>
-        <span class="stat-label">what <strong>one core</strong> really serves: our slowest box (2 slow EPYC cores) topped out at ~16 700/s, our fastest (10-core M5) at 113 000/s</span>
+        <span class="stat-value">~19 700 /s</span>
+        <span class="stat-label">what a <strong>2 vCPU EPYC</strong> box serves — the ceiling moved up 17% when the writer stopped making a transaction per request; one core is less</span>
       </li>
     </ul>
     <p>
       Two honest caveats. <strong>The core is the limit before the memory is</strong> — past
       what a box can parse, the server refuses the traffic rather than queueing it, and the
-      memory stops growing; that is the right answer, but it means the gate has to be set
-      below the machine's ceiling, not above it. And <strong>the disk fills long before
-      either</strong>: 15 000 page views a second is 1.3 million views a day, which is about
-      50 GB a year of rows. Keep the history you want, and let
-      <code>sumimi prune</code> and the retention window do the rest.
+      memory stays where it is. And <strong>the disk fills before either</strong>: 15 000 page
+      views a second is 1.3 million views a day, which is about 50 GB a year of rows. Keep
+      the history you want, and let <code>sumimi prune</code> and the retention window do
+      the rest.
     </p>
     <p>
       The whole method, the other machines and the numbers behind these tables are in the

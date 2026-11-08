@@ -82,6 +82,20 @@
     </p>
     <pre class="shell"><code>SUMIMI_DUCKDB_MEMORY_LIMIT=256MB</code></pre>
     <p>
+      And set this one too — it is not a Sumimi setting, and it is worth more than all the
+      others together:
+    </p>
+    <pre class="shell"><code>MALLOC_MMAP_THRESHOLD_=65536</code></pre>
+    <p>
+      glibc keeps the pages of a freed large block instead of returning them to the operating
+      system, so the peak never comes back down. This tells it to map anything over 64 KB
+      instead, and the pages go back as soon as the block is freed: measured on the same
+      server, at the same rate, <strong>−12% to −21% of the peak</strong>. The cost is a
+      syscall per large block, which is about 5% of the throughput — it is a knob, not a free
+      win. The <a href="install.html#1-docker--the-default">container image</a> sets it for
+      you. It is a glibc setting, so on macOS it does nothing.
+    </p>
+    <p>
       Other knobs worth knowing about on a small box:
     </p>
     <ul>
@@ -91,6 +105,9 @@
       <li><code>SUMIMI_FLUSH_INTERVAL_SECS</code> (default <code>2</code>) — how often the writer
         thread commits a batch. Two seconds keeps disk I/O low and means the dashboard lags by
         at most that.</li>
+      <li><code>SUMIMI_MAX_BATCH</code> (default <code>1000</code>) — how many events one
+        write may hold. The batch is what the write path costs in memory, so it is also what
+        the writer holds on purpose while it waits.</li>
     </ul>
 
     <h2>Option A: a container</h2>
@@ -443,6 +460,10 @@ SUMIMI_RETENTION_DAYS=365
 SUMIMI_DUCKDB_MEMORY_LIMIT=256MB
 SUMIMI_MAX_QUEUE=100000
 SUMIMI_FLUSH_INTERVAL_SECS=2
+
+<span class="cmt"># give the pages of a large block back to the OS instead of keeping them:</span>
+<span class="cmt"># -12% to -21% of the peak, for about 5% of the throughput (Linux only)</span>
+MALLOC_MMAP_THRESHOLD_=65536
 
 <span class="cmt"># directory holding the dashboard frontend and this docs site</span>
 SUMIMI_JS_DIR=/opt/sumimi/js

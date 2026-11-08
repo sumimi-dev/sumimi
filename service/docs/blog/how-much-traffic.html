@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>How much traffic can a 1 vCPU box take? — Sumimi</title>
-<meta name="description" content="The rule is 68 MB plus 7.8 MB per 1 000 requests a second — measured on three machines with three different CPUs, over loopback and over the public internet, with the measurement traps written down.">
+<meta name="description" content="The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven fixes the curve is flat, the memory promise holds with room to spare, and the CPU is what limits a small box.">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
@@ -34,12 +34,12 @@
   <div class="wrap">
 
     <div class="post-head">
-      <p class="post-meta"><time datetime="2026-11-08">8 November 2026</time><span>8 min read</span></p>
+      <p class="post-meta"><time datetime="2026-11-09">9 November 2026</time><span>9 min read</span></p>
       <h1 class="page-title">How much traffic can a 1 vCPU box take?</h1>
       <p class="page-lede">
-        The short answer is a rule with two numbers in it. The long answer is how the rule
-        was measured, what it does not cover, and the two traps that had to be removed from
-        the measurement before it could be believed.
+        For a long time the answer was a rule with two numbers in it: 68 MB, plus 7.8 MB per
+        1 000 requests a second. Then seven fixes turned the curve flat, and the answer
+        changed shape — the memory stopped being the limit, and the CPU took over.
       </p>
     </div>
 
@@ -68,7 +68,7 @@
         cannot disagree cannot find anything.
       </p>
       <p>
-        Two rules made the numbers comparable:
+        Three rules made the numbers comparable:
       </p>
       <ul>
         <li>
@@ -78,13 +78,15 @@
           measured, so a number without a machine is not a number.
         </li>
         <li>
-          <strong>The worst of three runs is the number.</strong> The promise is about the
-          peak, so the peak is what the table carries — not the average, and not the best
-          run.
+          <strong>A fresh server for every row.</strong> The promise is about the peak, so
+          every point is the peak of <em>that</em> point.
+        </li>
+        <li>
+          <strong>Two runs each.</strong> The number is not one lucky run.
         </li>
       </ul>
 
-      <h2>The rule</h2>
+      <h2>The rule, and then the curve</h2>
       <p>
         The first machine gave a clean line: <strong>the peak ≈ 68 MB + 7.8 MB per 1 000
         requests a second</strong>. The engine was only 2–12 MB of it. The rest was the
@@ -92,34 +94,156 @@
       </p>
       <p>
         One machine is an observation, not a law — two points cannot prove a rule, and the
-        two might be a coincidence. So we measured it on three machines with three
-        different CPUs:
+        two might be a coincidence. So we measured it on three machines with three different
+        CPUs, and the rule held on all of them. At the same rate, they cost the same memory.
+        A stronger CPU did not mean less memory; it meant <strong>the same memory reached a
+        higher rate</strong>.
+      </p>
+      <p>
+        Then we went looking for where the memory actually went, and found seven things. The
+        biggest was not where anyone would have guessed:
+      </p>
+      <ul>
+        <li>
+          <strong>The queue moved every hit in it.</strong> Growing a <code>VecDeque</code>
+          copies the whole queue, so the longer the queue was, the more each request
+          allocated — and the queue's length is exactly what the traffic rate decides. A
+          push into a queue of 1 000 rows cost <strong>10 331 bytes</strong>; into the new
+          one, <strong>1 054</strong>.
+        </li>
+        <li>
+          <strong>There was no batch.</strong> The writer only waited when the queue was
+          empty, so one request was usually one DuckDB transaction. Now it waits for a full
+          batch: <strong>1 000 requests are 3 transactions, not 1 000</strong> — and that
+          is where the 17% of extra throughput came from, because the ceiling had been the
+          CPU all along.
+        </li>
+        <li>
+          <strong>The payload was a tree.</strong> The body was parsed into a
+          <code>serde_json::Value</code> tree, copied into a map, and every field copied out
+          of it again: <strong>697 bytes</strong> of tree per request, now <strong>49</strong>.
+        </li>
+        <li>
+          <strong>The channel lookup lowercased the referrer once per domain</strong> — over
+          a hundred times over the same string. <strong>1 731 bytes</strong> per request, now
+          nothing.
+        </li>
+        <li>
+          <strong>The allocator kept the pages it took</strong> instead of giving them back.
+        </li>
+      </ul>
+      <p>
+        The result is the table a deployment is sized from — measured on a 2 vCPU Linux box,
+        the exact high-water mark, a fresh server per row:
       </p>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>the rate offered</th><th>EPYC, 2 vCPU</th><th>Xeon, 2 vCPU</th><th>Apple M5, 10 cores</th></tr>
+            <tr><th>the rate offered</th><th>the peak RSS</th><th>the engine holds</th><th>what it fits</th></tr>
           </thead>
           <tbody>
-            <tr><td>5 000 /s</td><td>100 MB</td><td>116 MB</td><td>117 MB</td></tr>
-            <tr><td>10 000 /s</td><td>143 MB</td><td>148 MB</td><td>148 MB</td></tr>
-            <tr><td>15 000 /s</td><td>207 MB</td><td>—</td><td>—</td></tr>
-            <tr><td>20 000 /s</td><td>236 MB</td><td>253 MB</td><td>271 MB</td></tr>
-            <tr><td>30 000 /s</td><td>223 MB</td><td>309 MB</td><td>302 MB</td></tr>
-            <tr><td><strong>what the machine could serve</strong></td><td><strong>~16 700 /s</strong></td><td>~43 000 /s</td><td>~113 000 /s</td></tr>
+            <tr><td>5 000 /s</td><td><strong>110 MB</strong></td><td>2 MB</td><td>the minimum tier, with 146 MB to spare</td></tr>
+            <tr><td><strong>10 000 /s</strong></td><td><strong>115 MB</strong></td><td>2 MB</td><td>the minimum tier, with 141 MB to spare</td></tr>
+            <tr><td><strong>20 000 /s</strong> (the tier's default)</td><td><strong>182 MB</strong></td><td>3 MB</td><td>the minimum tier, with <strong>74 MB to spare</strong></td></tr>
+            <tr><td>40 000 /s</td><td>182 MB</td><td>3 MB</td><td>the minimum tier — and the box is at its ceiling</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout tip">
+        <p class="callout-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+          The curve is flat
+        </p>
+        <p>
+          110 MB at 5 000 a second, 115 MB at 10 000, and <strong>182 MB whether you offer
+          20 000 or 40 000</strong>. The growth over that range is one megabyte per 1 000
+          requests a second — <strong>seven times flatter</strong> than the rule it replaced,
+          and it stops at the ceiling.
+        </p>
+        <p>
+          So the old rule was not a law that got more accurate. <strong>It was a description
+          of a bug</strong>: the peak grew with the traffic because the allocator kept every
+          request's pages, and because the queue moved itself every time it grew. Fix those
+          and the growth goes away.
+        </p>
+      </div>
+
+      <h2>One line of the environment file</h2>
+      <p>
+        glibc keeps the pages of a freed <em>large</em> block instead of returning them to
+        the operating system: it expects to be asked for the same size again, which is
+        usually true and is not true here. The peak was therefore a high-water mark that
+        <strong>never came back down</strong>, even after the burst that caused it was over.
+      </p>
+      <p>
+        <code>MALLOC_MMAP_THRESHOLD_=65536</code> tells glibc to map anything over 64 KB
+        instead of taking it from the heap, so the pages go back to the OS as soon as the
+        block is freed. Measured on the same server, at the same rate, changing nothing
+        else:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>the allocator</th><th>the peak</th><th>the change</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>the default</td><td>274 MB</td><td>—</td></tr>
+            <tr><td><code>MALLOC_MMAP_THRESHOLD_=65536</code></td><td><strong>210 MB</strong></td><td><strong>−23%</strong></td></tr>
+            <tr><td><code>MALLOC_TRIM_THRESHOLD_=65536</code></td><td>222 MB</td><td>−19%</td></tr>
+            <tr><td><code>MALLOC_ARENA_MAX=2</code></td><td>227 MB</td><td>−17%</td></tr>
           </tbody>
         </table>
       </div>
       <p>
-        Three machines, three CPUs, and at the same rate they cost the same memory. So
-        <strong>a stronger CPU does not mean less memory — it means the same memory reaches
-        a higher rate</strong>. The CPU decides how far up the rate axis you can go; the
-        memory follows from where you go.
+        The cost is a syscall per large block: the pages come back, but the CPU pays for
+        them. Measured on the 2 vCPU box, that is <strong>about 5% of the throughput</strong>
+        — 19 724 → 18 665 requests a second. It is a knob, not a free win. The Docker image
+        sets it; a bare-metal deployment should set it in the environment file.
+      </p>
+      <p>
+        On macOS it does nothing at all — that is Apple's allocator, not glibc's — and the
+        server is fine there, it just does not need the help. Which is also why
+        <strong>the table only believes Linux</strong>: the macOS peak is the kernel's
+        <code>ru_maxrss</code>, which counts the shared pages, and the same binary at
+        5 000 requests a second measured 104 MB in one round and 133 MB in the next. Linux
+        repeats to ±2 MB.
+      </p>
+
+      <h2>Does it depend on the machine?</h2>
+      <p>
+        The same sweep, the same release, the same tool, back to back — on a 2 vCPU AMD EPYC
+        box and on a 10-core Apple M5. Neither column has the allocator's line, so the two
+        are the same variant and can be compared with each other:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>the rate offered</th><th>the 2 vCPU EPYC</th><th>the 10-core M5</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>5 000 /s</td><td>138 MB</td><td>139 MB</td></tr>
+            <tr><td>10 000 /s</td><td>145 MB</td><td>147 MB</td></tr>
+            <tr><td>20 000 /s</td><td>208 MB (the box served 19 656/s)</td><td>246 MB</td></tr>
+            <tr><td>40 000 /s</td><td>210 MB (served 19 281/s)</td><td>270 MB</td></tr>
+            <tr><td><strong>what the machine could serve</strong></td><td>about 19 700 /s</td><td>more than 40 000 /s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        <strong>The memory a request costs is the same on both</strong> — 138 MB against 139
+        MB at 5 000 requests a second, 145 against 147 at 10 000. What differs is how much
+        traffic the box can take. So sizing a box is two questions: how much traffic do you
+        get, and can this machine take it?
+      </p>
+      <p>
+        Above the small box's ceiling the two columns stop being comparable: it never served
+        20 000 requests a second, so it did less work, and its peak is lower because it
+        finished less — not because it was more frugal.
       </p>
 
       <h2>The network is not free</h2>
       <p>
-        Every number above was loopback traffic. The controlled re-measurement — the same
+        Every number above was loopback traffic. The controlled measurement — the same
         container, the same server, the same rate, the server restarted every time, the
         generator inside the container and then out on the laptop over the public internet
         (39 ms of round trip):
@@ -143,16 +267,17 @@
         loopback.
       </p>
       <p>
-        This is why the default rates are <strong>15 000/s on the minimum tier and 30 000/s
-        on the recommended one</strong>: the memory numbers were taken over loopback, so
-        they carry no margin, and the network takes about a fifth of it.
+        This is why the numbers to run are <strong>15 000/s on the minimum tier and 30 000/s
+        on the recommended one</strong>: the memory figures were taken over loopback, so they
+        carry no margin, and the network takes about a fifth of it.
       </p>
 
       <h2>The gate: refusing is a feature</h2>
       <p>
         The server admits a fixed rate and turns the rest away with a <code>503</code> and a
         <code>Retry-After</code>. Measured in a container, with the released binary and the
-        minimum tier's 128 MB engine:
+        minimum tier's 128 MB engine — this one is from <strong>v0.4.0</strong>, before the
+        seven fixes, so its peaks are the old ones; the point of the table is the refusals:
       </p>
       <div class="table-wrap">
         <table>
@@ -171,8 +296,8 @@
       <p>
         Offering 30 000/s to a server limited to 20 000/s produces 180 313 refusals — and the
         memory does not grow. The box is protected. The same thing happens past a machine's
-        ceiling: the EPYC served 16 700/s and refused the rest, and its memory stopped
-        growing at 236 MB rather than climbing.
+        ceiling: the EPYC served 19 700/s and refused the rest, and its memory stopped
+        growing rather than climbing.
       </p>
 
       <h2>Two traps</h2>
@@ -200,8 +325,6 @@
       <p>
         The rule that came out of it: <strong>the server reports its own peak</strong>, in
         <code>/api/heartbeat</code>, and that is the number to believe.
-        <code>ru_maxrss</code> is only the fallback for the platforms with no
-        <code>/proc</code>.
       </p>
 
       <h2>So: how much traffic?</h2>
@@ -211,18 +334,17 @@
       <ul>
         <li>
           <strong>A 512 MB / 1 vCPU box</strong> holds 20 000 requests a second on memory
-          alone — measured, 208 MB peak in a container. Over a real network, run it at
-          <strong>15 000/s</strong>.
+          alone — measured, 182 MB of the 256 MB it is promised, 74 MB to spare. Over a real
+          network, run it at <strong>15 000/s</strong>.
         </li>
         <li>
           <strong>A 1 GB / 1 vCPU box</strong> has twice the budget, so the ceiling doubles
           to 40 000/s and the safe number over a real network is <strong>30 000/s</strong>.
         </li>
         <li>
-          <strong>The core is the limit before the memory is.</strong> Our slowest box (two
-          slow EPYC cores) topped out at ~16 700/s and refused everything above it; the
-          fastest (a 10-core M5) reached 113 000/s. A single core lands in between — expect
-          somewhere around 8 000–20 000 requests a second — and the gate has to be set
+          <strong>The CPU is the limit, not the memory.</strong> A 2 vCPU EPYC box served
+          about 19 700 requests a second and refused everything above it; the 10-core M5
+          served more than 40 000. One core lands in between — and the gate has to be set
           <em>below</em> the machine's ceiling, not above it.
         </li>
         <li>
@@ -234,14 +356,16 @@
       <p>
         The full method, the four limits and the tables are in the
         <a href="../docs/memory.html">memory and capacity</a> reference; the design behind
-        them is in <code>MEMORY.md</code> in the repository.
+        them is in <code>MEMORY.md</code> in the repository, and the reports themselves are
+        published in
+        <a href="https://github.com/sumimi-dev/sumimi/tree/main/benchmarks">benchmarks/</a>
+        — including the ones that did not come out the way we expected.
       </p>
 
       <p class="post-foot">
-        The measurement reports themselves are published, as they were taken, in the
-        repository's <a href="https://github.com/sumimi-dev/sumimi/tree/main/benchmarks">benchmarks/</a>
-        directory — including the ones that did not come out the way we expected. Or start
-        with <a href="leaving-umami.html">why this exists</a>.
+        This is the third post of three. The first is
+        <a href="leaving-umami.html">why this exists</a>; the second is
+        <a href="why-duckdb.html">why DuckDB</a>.
       </p>
 
     </article>
@@ -258,7 +382,7 @@
 <footer class="site-footer">
   <div class="wrap">
     <p class="footer-mark">
-      <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
+      <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3 .3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
       Sumimi 数咪咪
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
