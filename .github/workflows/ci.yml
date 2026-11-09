@@ -120,13 +120,13 @@ jobs:
       # **The version is pinned** ✓ ⇒ ⇒ ⇒ the report has to be the same every
       # time ✓ ⇒ ⇒ ⇒ (the tool's charts and its numbers are part of what is
       # published ✓ ⇒ ⇒ ⇒ so a moving pin would move the numbers under the
-      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.3.0 ✓ ⇒ ⇒ ⇒ the mixed charts and
+      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.3.1 ✓ ⇒ ⇒ ⇒ the mixed charts and
       # the limits ✓
       - name: The load generator
         run: |
           set -euo pipefail
           curl -sL --retry 5 -o gotest.tar.gz \
-            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.3.0/sumimi-gotest-linux-amd64.tar.gz"
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.3.1/sumimi-gotest-linux-amd64.tar.gz"
           tar xzf gotest.tar.gz
           sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
           sumimi-gotest version
