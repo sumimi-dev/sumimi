@@ -123,9 +123,15 @@
       DuckDB wins the disk and the latency by a wide margin and <strong>loses the
       memory</strong>: its ingestion is the peak, and a long aggregate grows with the
       range (73 MB for six months, 322 MB for three years) while SQLite's stays flat
-      at 54 MB. So the engine's <code>memory_limit</code> has to fit
-      <em>both</em> — the traffic and the reports — and SQLite buys its small
-      footprint with seconds instead of milliseconds.
+      at 54 MB. SQLite buys its small footprint with seconds instead of
+      milliseconds.
+
+      A query that does not fit is <strong>slow, not fatal</strong>: DuckDB spills to
+      disk, so the three-year summary answers at every engine limit — at a 64 MB
+      limit in 691 ms instead of 180 ms. What the limit decides is the speed and
+      the process's peak, and the peak is the limit plus about 60 MB. So the rule
+      for sizing a box is <strong>the engine's <code>memory_limit</code> plus about
+      60 MB</strong>, and not more than the tier.
     </p>
 
     <h3>Can I use the official Umami dashboard?</h3>

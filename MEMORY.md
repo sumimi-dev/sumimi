@@ -754,6 +754,56 @@ DuckDB wins the disk (8×) and the latency (95–238×) and loses the memory
 The trade is not "DuckDB is better": it is the disk and the latency against
 the memory — and the memory is the one the deployment promise is about.
 
+### The engines, four axes, and the limit's real job (measured, 2026-11-09)
+
+The same three-year history (6 227 088 page views) seeded into both backends on
+the same machine. The full numbers, the raw commands and the two lessons are in
+[`benchmarks/engine-trade-off-2026-11-09.md`](benchmarks/engine-trade-off-2026-11-09.md).
+
+| | **DuckDB** | **SQLite** |
+| --- | ---: | ---: |
+| the peak memory under load (20 000/s) | 214 MB | **33 MB** |
+| the data on disk (three years) | **372 MB** | 3 086 MB |
+| the summary of the last year | **145 ms** | 17 452 ms |
+| the summary of the last three years | **186 ms** | 24 162 ms |
+| the memory a 3-year summary needs | 322 MB | **54 MB** |
+
+What we had recorded — SQLite's disadvantages are the **disk space** and the
+**response time** — is right. The third axis was missing, and it is the one
+DuckDB loses: the **memory**. It was missing because the heartbeat read one
+arbitrary tag of `duckdb_memory()`; with that fixed, the axes are measurable.
+
+**The limit's real job.** The engine's `memory_limit` does **not** decide
+whether a report works — DuckDB spills to disk. At a 64 MB limit the three-year
+summary still answers, in 691 ms instead of 180 ms. What the limit decides is
+the **speed** (3.8x) and the **process's peak**, and the peak is the limit plus
+about 60 MB:
+
+| the engine's limit | the 3-year summary | the process's peak |
+| ---: | ---: | ---: |
+| 64 MB | 691.2 ms | 154.1 MB |
+| 96 MB | 693.2 ms | 183.9 MB |
+| 128 MB | 371.8 ms | 239.9 MB |
+| 160 MB | 388.8 ms | 283.6 MB |
+| 256 MB | **180.4 ms** | 319.1 MB |
+
+So **the rule: the engine's limit = the tier - 60 MB**. The minimum tier (a
+128 MB engine, a 256 MB process) **answers a three-year summary with 16 MB to
+spare**; the recommended tier (a 256 MB engine, a 512 MB process) peaks at
+319 MB. Both fit.
+
+**The threads** (at a 128 MB limit): one thread gives 691.8 ms, four threads
+210.0 ms, and the peak is the same (229.9 MB against 240.1 MB) — so for this
+query more threads are faster and cost no more memory. The rule in `config.rs`
+about a hash table per thread is about a parallel `COUNT(DISTINCT ...)`; the
+summary is not that.
+
+**Two lessons, both worth keeping.** A latency measurement on a freshly loaded
+database measures nothing (both backends answer in single-digit milliseconds on
+the few seconds a load test leaves behind) — it has to be a long range. And the
+engine's limit does not decide whether a report works: a query that does not fit
+is slow, not fatal.
+
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the bug this found** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the heartbeat reported
 DuckDB's memory as **one arbitrary tag** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (`duckdb_memory()` has
 one row per tag ✓ ⇒ ⇒ ⇒ `SELECT memory_usage_bytes …` read the first row ✓ ⇒
