@@ -724,6 +724,36 @@ box it runs on** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that is what the
 deployment page says** ✓ ✓ ✓.
 
+### The two engines, four axes ✓ ✓ ✓ (measured, 2026-11-09 ✓)
+
+Same machine; the same three-year history (6 227 088 page views + 1 026 291
+events) seeded into both; the same load for the ingestion.
+
+| | **DuckDB** | **SQLite** |
+| --- | ---: | ---: |
+| the peak memory under load (20 000/s) | 214 MB | **33 MB** |
+| the data on disk (three years) | **372 MB** | 3 086 MB |
+| the summary of the last year | **145 ms** | 17 452 ms |
+| the summary of the last three years | **186 ms** | 24 162 ms |
+| the memory a 3-year summary needs | 322 MB | **54 MB** |
+
+DuckDB wins the disk (8×) and the latency (95–238×) and loses the memory
+(6.6×). Two things follow:
+
+* **A latency measurement on a freshly loaded database measures nothing.** On
+  the few seconds of data a load test leaves behind both backends answer in
+  single-digit milliseconds; the difference only appears over a long range.
+  Measured on a fresh 400 000-event load, DuckDB answered the first report in
+  7.5 ms and SQLite in 195 ms — true, and worth nothing.
+* **The engine's `memory_limit` has to fit the reports, not just the
+  ingestion.** DuckDB's report memory grows with the range (73 MB at six
+  months, 218 MB at a year, 322 MB at three years — the hash tables of the
+  aggregate); SQLite's stays flat at 54 MB. So a three-year summary does not
+  fit a 256 MB box, and the deployment page has to say so.
+
+The trade is not "DuckDB is better": it is the disk and the latency against
+the memory — and the memory is the one the deployment promise is about.
+
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the bug this found** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the heartbeat reported
 DuckDB's memory as **one arbitrary tag** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (`duckdb_memory()` has
 one row per tag ✓ ⇒ ⇒ ⇒ `SELECT memory_usage_bytes …` read the first row ✓ ⇒

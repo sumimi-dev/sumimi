@@ -86,6 +86,23 @@ pub struct ServeArgs {
     /// file: it takes more space and is slower on the heavy aggregations, but it
     /// allows many readers next to one writer and it is what most other tools
     /// already know how to open.
+    ///
+    /// The trade has four axes, and they were measured on the same machine: the
+    /// same three-year history (6.2 million page views) seeded into both, and the
+    /// same load for the ingestion.
+    ///
+    /// | | DuckDB | SQLite |
+    /// | --- | ---: | ---: |
+    /// | the peak memory under load | 214 MB | **33 MB** |
+    /// | the data on disk (3 years) | **372 MB** | 3 086 MB |
+    /// | the summary of the last year | **145 ms** | 17 452 ms |
+    /// | the summary of the last three years | **186 ms** | 24 162 ms |
+    /// | the memory a 3-year summary needs | 322 MB | **54 MB** |
+    ///
+    /// So DuckDB wins the disk and the latency and **loses the memory**: its
+    /// ingestion is the peak, and a long aggregate grows with the range. The
+    /// engine's own `memory_limit` has to fit both — the traffic and the reports.
+    /// SQLite wins the memory and the concurrent readers.
     #[arg(long, env = "SUMIMI_BACKEND", default_value = "duckdb")]
     backend: String,
     /// Address to bind to.

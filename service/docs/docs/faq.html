@@ -100,6 +100,33 @@
       at the aggregate queries the statistics endpoints issue. PostgreSQL would need a second
       process to operate, which is exactly what this design is trying to avoid.
     </p>
+    <p>
+      The trade has <strong>four</strong> axes, and they were measured on the same
+      machine — the same three-year history (6.2 million page views) seeded into
+      both, and the same load for the ingestion.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th>DuckDB</th><th>SQLite</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>the peak memory under load</td><td>214 MB</td><td><strong>33 MB</strong></td></tr>
+          <tr><td>the data on disk (3 years)</td><td><strong>372 MB</strong></td><td>3 086 MB</td></tr>
+          <tr><td>the summary of the last year</td><td><strong>145 ms</strong></td><td>17 452 ms</td></tr>
+          <tr><td>the summary of the last three years</td><td><strong>186 ms</strong></td><td>24 162 ms</td></tr>
+          <tr><td>the memory a 3-year summary needs</td><td>322 MB</td><td><strong>54 MB</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      DuckDB wins the disk and the latency by a wide margin and <strong>loses the
+      memory</strong>: its ingestion is the peak, and a long aggregate grows with the
+      range (73 MB for six months, 322 MB for three years) while SQLite's stays flat
+      at 54 MB. So the engine's <code>memory_limit</code> has to fit
+      <em>both</em> — the traffic and the reports — and SQLite buys its small
+      footprint with seconds instead of milliseconds.
+    </p>
 
     <h3>Can I use the official Umami dashboard?</h3>
     <p>

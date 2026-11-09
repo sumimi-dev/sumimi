@@ -95,3 +95,53 @@ for the box it runs on; on a small box it is set explicitly.
 duckdb_memory()` read the first row. The heartbeat said 2.5 MB while the engine
 held more. It is now `sum(memory_usage_bytes)` — which is what makes the
 attribution above possible.
+
+---
+
+# 6. The four axes, measured
+
+**The ingestion peak** — 20 000/s, 20 s, 400 000 events, a Linux container, one
+fresh container per backend:
+
+| | **DuckDB** | **SQLite** |
+| --- | ---: | ---: |
+| the peak memory | 214.4 MB | **32.7 MB** |
+
+**The disk** — three years of history (6 227 088 page views + 1 026 291 events),
+the same data seeded into both:
+
+| | **DuckDB** | **SQLite** |
+| --- | ---: | ---: |
+| the data files | **372 MB** | 3 086 MB (8.3×) |
+
+**The report latency** — the same three-year dataset, the **first** call for each
+range (a cache miss; the page cache was warm for both):
+
+| the range | DuckDB `/stats` | SQLite `/stats` | DuckDB `/stats/pages` | SQLite `/stats/pages` |
+| --- | ---: | ---: | ---: | ---: |
+| 6 months | **96.8 ms** | 9 182.8 ms | **5.0 ms** | 1 042.2 ms |
+| 1 year | **145.4 ms** | 17 451.9 ms | **7.4 ms** | 1 881.4 ms |
+| 3 years | **185.7 ms** | 24 161.9 ms | **15.1 ms** | 3 599.3 ms |
+
+⇒ **DuckDB is 95–238× faster** ⇒ ⇒ ⇒ and it is the *long* range that shows it:
+on the few seconds of data a load test leaves behind, both are fast and the
+difference is a few milliseconds ⇒ ⇒ ⇒ ⇒ **a latency measurement on a freshly
+loaded database measures nothing** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **it has to be a long
+range** ✓ ✓.
+
+**The memory a report needs** — the process's resident set while the report runs,
+the same three-year dataset:
+
+| the range | DuckDB | SQLite |
+| --- | ---: | ---: |
+| 6 months | 73.0 MB | 54.0 MB |
+| 1 year | **217.7 MB** | 54.1 MB |
+| 3 years | **322.0 MB** | 54.1 MB |
+
+⇒ ⇒ ⇒ **DuckDB's report memory grows with the range** ✓ ⇒ ⇒ ⇒ ⇒ (the hash
+tables of the aggregate ✓) ⇒ ⇒ ⇒ ⇒ ⇒ **and SQLite's does not** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **so the engine's `memory_limit` has to fit the reports, not just the
+ingestion** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **a 3-year summary on a
+256 MB box does not fit** ✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **which is a promise the deployment page
+has to make** ✓ ✓.
