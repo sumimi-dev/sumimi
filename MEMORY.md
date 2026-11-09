@@ -885,13 +885,19 @@ renders there with nothing installed.
 
 **The tool makes the charts, not a person.** `sumimi-gotest` writes them into
 both of its reports (the axes and the sweep), so the picture and the table are
-the same numbers and cannot drift apart. The style is the x-cmd one
-(`t=evil`), and every chart has two URLs: the picture and the explorer, where
-the numbers can be hovered, changed and taken away.
+the same numbers and cannot drift apart. Every chart has two URLs: the picture
+and the explorer, where the numbers can be hovered, changed and taken away.
 
-Where they are used: the issue #18 comments, the v0.4.4 release notes (a
-release's notes can be edited, so the charts went into the release that was
-already published) and the deployment page.
+**The style is the default one, not `t=evil`** — with `t=evil` the combo drops
+every bar series but the first and never draws the second y-axis, so the line's
+numbers end up on the bars' scale: a chart that says the wrong number is worth
+less than a plain one (reported: https://github.com/x-cmd/draw/issues/6). The
+charts are **mixed** — bars for the sizes, a line for the latency — because the
+axes have three units and a line on the bars' scale would say nothing.
+
+Where they are used: the issue #18 comments, the v0.4.4 and v0.4.5 release
+notes (a release's notes can be edited, so the charts went into the release
+that was already published) and the deployment pages.
 
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the bug this found** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the heartbeat reported
 DuckDB's memory as **one arbitrary tag** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (`duckdb_memory()` has
@@ -923,6 +929,23 @@ export SUMIMI_ADMIN_PASSWORD=sumimi-gotest
 MALLOC_MMAP_THRESHOLD_=65536 sumimi-gotest sweep --binary ./sumimi \
   --rates 5000,10000,20000,40000 --seconds 20 --settle 5 --out report.md
 ```
+
+### Two traps in the measuring tool itself ✓ ✓
+
+**A timeout turns a slow answer into no answer** ✓ ⇒ ⇒ ⇒ the tool's HTTP client
+had a **30-second** timeout ✓ ⇒ ⇒ ⇒ ⇒ the SQLite backend answers a three-year
+summary in **24 seconds** on a fast machine ✓ ⇒ ⇒ ⇒ ⇒ and in **over two
+minutes** on a CI runner ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ so the routine job recorded a
+**failure** where there was a number ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the measurement's client
+now waits **15 minutes** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **a tool that treats slow as wrong is
+not measuring the time — it is measuring how impatient it is** ✓ ⇒ ⇒ ⇒ ⇒
+
+**The report cache survives the server that filled it** ✓ ⇒ ⇒ ⇒ it lives in the
+instance directory ✓ ⇒ ⇒ ⇒ ⇒ so the second server (a different engine limit)
+would answer from the first one's cache ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the report cache is
+emptied before every measurement** ✓ (`DELETE /api/cache` ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ **whenever the measurement changes the server and keeps the data, ask:
+will this server pick up the last one's answer?** ✓ ⇒ ⇒ ⇒ ⇒
 
 ### A measurement trap worth writing down ✓ ✓
 
