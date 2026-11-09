@@ -804,6 +804,41 @@ the few seconds a load test leaves behind) — it has to be a long range. And th
 engine's limit does not decide whether a report works: a query that does not fit
 is slow, not fatal.
 
+### The two engines are witnesses for each other (2026-11-09)
+
+**The rule**: the same events, written to both engines, and every report compared
+row by row. A difference is a bug, whichever engine is wrong.
+
+`service/tests/backends_agree.rs` does that: the summary, every dimension
+(pages, referrers, browsers, systems, devices, countries, languages, screens,
+channels, regions, cities, hosts, tags), the timeseries, the custom events, the
+query strings, the sessions and the event log — the same rows, in the same
+order.
+
+**It found three real bugs on the day it was written**, all of them visible to
+a user, and none of them covered by any other test:
+
+| the difference | what it broke | the fix |
+|---|---|---|
+| the SQLite timestamps were **seconds** | the API served a different precision than DuckDB, and **the window's boundary differed** — an event in the window's last second counted on one engine and not on the other | store **microseconds** (schema v7; the migration multiplies the old seconds by a million) |
+| `visit_duration` was in the wrong unit | **1000× too large** | the microsecond difference divided by a million |
+| the timeseries' `bucket` was NULL | the chart was empty | `strftime(..., 'unixepoch')` reads seconds, so the value is divided first |
+
+**The measurement is a test too.** The four axes are now one command —
+`sumimi-gotest axes` — which seeds a history with the same binary that serves
+(`sumimi seed`, so the history is the same shape on every machine), starts one
+server per backend, and measures the peak memory, the data on disk, what the
+engine says it holds, and the latency of the reports over a long range.
+
+**The range is a fraction of the history**, and that is the point: on the few
+seconds of data a load test leaves behind, both engines answer in single-digit
+milliseconds and the difference means nothing. Over a year or three it is two
+orders of magnitude.
+
+**Where it runs**: the CI runs it on **every push** (a year of history, about a
+minute) and the table goes into the job summary; `measure.yml` runs the
+three-year version on demand.
+
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the bug this found** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the heartbeat reported
 DuckDB's memory as **one arbitrary tag** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (`duckdb_memory()` has
 one row per tag ✓ ⇒ ⇒ ⇒ `SELECT memory_usage_bytes …` read the first row ✓ ⇒

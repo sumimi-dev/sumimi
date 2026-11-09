@@ -37,6 +37,10 @@ on:
         description: 'Also measure with the allocator giving the pages back'
         required: false
         default: 'yes'
+      axes:
+        description: 'Also measure the four axes (the two engines, three years of history)'
+        required: false
+        default: 'yes'
 
 permissions:
   contents: read
@@ -51,6 +55,7 @@ jobs:
       RATES: ${{ inputs.rates }}
       RUNS: ${{ inputs.runs }}
       ALLOCATOR: ${{ inputs.allocator }}
+      AXES: ${{ inputs.axes }}
       # The load generator's password. It is a throwaway: the server is
       # started per point, in a temporary directory, and thrown away with it.
       SUMIMI_ADMIN_PASSWORD: sumimi-gotest
@@ -108,6 +113,22 @@ jobs:
             done
           fi
 
+      # The four axes: the two engines, on the same history. **Three years**,
+      # because a short history says nothing (both engines answer in
+      # single-digit milliseconds) — the difference is in the long range.
+      - name: The axes
+        if: env.AXES == 'yes'
+        run: |
+          set -euo pipefail
+          SUMIMI_ADMIN_PASSWORD=sumimi-gotest sumimi-gotest axes \
+            --binary "servers/${TAGS##*,}/sumimi" \
+            --backends duckdb,sqlite \
+            --days 1095 \
+            --visitors 1000 \
+            --ranges 0.17,0.5,1 \
+            --out axes.md \
+            --json axes.json
+
       - name: The reports
         run: |
           for report in report-*.md; do
@@ -118,4 +139,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: the-sweeps
-          path: report-*
+          path: |
+            report-*
+            axes.*

@@ -91,6 +91,71 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   # ---------------------------------------------------------------------
+  # The four axes: DuckDB against SQLite, on the same history.
+  # ---------------------------------------------------------------------
+  axes:
+    name: The engines, four axes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-
+
+      # The public tool: a second implementation, so the measurement does not
+      # inherit the server's bugs.
+      - name: The load generator
+        run: |
+          set -euo pipefail
+          curl -sL --retry 5 -o gotest.tar.gz \
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.2.0/sumimi-gotest-linux-amd64.tar.gz"
+          tar xzf gotest.tar.gz
+          sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
+          sumimi-gotest version
+
+      # The **release** binary: a debug build's peak says nothing about the
+      # memory the product costs.
+      - name: The server
+        run: cargo build --release -p sumimi --bin sumimi
+
+      # The four axes on one year of history: the peak memory, the data on
+      # disk, and the latency of the reports over a long range. A year is
+      # enough to show the difference and small enough to run on every push.
+      - name: The axes
+        run: |
+          set -euo pipefail
+          SUMIMI_ADMIN_PASSWORD=sumimi-gotest sumimi-gotest axes \
+            --binary target/release/sumimi \
+            --backends duckdb,sqlite \
+            --days 365 \
+            --visitors 500 \
+            --ranges 0.17,0.5,1 \
+            --out axes.md \
+            --json axes.json
+
+      - name: The numbers
+        run: |
+          {
+            echo "### The engines, four axes"
+            echo
+            cat axes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: the-axes
+          path: axes.*
+
+  # ---------------------------------------------------------------------
   # The budget path: the two memory budgets, on Linux.
   # ---------------------------------------------------------------------
   budget:
