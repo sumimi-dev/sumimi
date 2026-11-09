@@ -804,6 +804,42 @@ the few seconds a load test leaves behind) — it has to be a long range. And th
 engine's limit does not decide whether a report works: a query that does not fit
 is slow, not fatal.
 
+### What the limit costs — the spill (measured, 2026-11-10)
+
+The limit above was measured for the **time** and the **peak**. The third thing it
+costs is **disk**, and that is the one a small box runs out of. One three-year
+history (6 227 088 page views, 372 MB on disk), one report — the whole three
+years — four engine limits. The full numbers:
+[`benchmarks/spill-cost-2026-11-10.md`](benchmarks/spill-cost-2026-11-10.md).
+
+| the engine's limit | the report | the peak memory | the spill on disk |
+| ---: | ---: | ---: | ---: |
+| 512 MB | **133 ms** | 571 MB | 0 |
+| 256 MB | 187 ms | 344 MB | 27 MB |
+| 128 MB | 384 ms | 225 MB | 97 MB |
+| 64 MB | 734 ms | **154 MB** | 140 MB |
+
+**The answer is the same at every limit** — the same page views, the same
+visitors, the same bounces, byte for byte. DuckDB spills to disk and answers
+anyway. So the limit is a **trade**: memory for time and disk. At 64 MB the
+report is 5.5× slower than at 512 MB, and the disk grows by 140 MB.
+
+**The limit does not bound the process**: the peak runs **60–97 MB over** the
+engine's limit (the code, the allocator's arenas and the query's own vectors
+are not the buffer manager's business). That is why the rule is **engine limit =
+tier − 60 MB**.
+
+**The spill is a peak, not growth** — DuckDB deletes the temporary directory
+when the query ends (`data.duckdb.tmp`, next to the database). But it is disk,
+and the server's own ceiling on it is `max_temp_directory_size`, **2 GB by
+default** (`SUMIMI_DUCKDB_TEMP_LIMIT`). On a 10 GB VPS that is a fifth of the
+disk in one query — and a spill that cannot fit is a **failed** report, not a
+slow one.
+
+**The tool measures it**: `sumimi-gotest axes --limits 512MB,256MB,128MB,64MB`.
+The spill has to be **watched** while the report runs — it is temporary, so it
+cannot be looked at afterwards.
+
 ### The two engines are witnesses for each other (2026-11-09)
 
 **The rule**: the same events, written to both engines, and every report compared

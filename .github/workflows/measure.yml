@@ -63,14 +63,14 @@ jobs:
       - uses: actions/checkout@v4
 
       # **The version is pinned** ✓ ⇒ ⇒ ⇒ same reason as the CI ✓ ⇒ ⇒ ⇒ the
-      # tool's charts are part of what is published ✓ ⇒ ⇒ ⇒ ⇒ v0.2.3 ✓ ⇒ ⇒ ⇒
+      # tool's charts are part of what is published ✓ ⇒ ⇒ ⇒ ⇒ v0.3.0 ✓ ⇒ ⇒ ⇒
       # (v0.1.2 predates the `axes` subcommand ✓ ⇒ ⇒ ⇒ ⇒ so this step could
       # not have run ✓ ⇒ ⇒ ⇒ ⇒)
       - name: The load generator
         run: |
           set -euo pipefail
           curl -sL --retry 5 -o gotest.tar.gz \
-            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.2.3/sumimi-gotest-linux-amd64.tar.gz"
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.3.0/sumimi-gotest-linux-amd64.tar.gz"
           tar xzf gotest.tar.gz
           sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
           sumimi-gotest version
@@ -120,6 +120,10 @@ jobs:
       # The four axes: the two engines, on the same history. **Three years**,
       # because a short history says nothing (both engines answer in
       # single-digit milliseconds) — the difference is in the long range.
+      #
+      # **And the limits** — the same history, several engine limits: the
+      # time, the peak and the spill. Three years is also what makes the
+      # engine spill at all.
       - name: The axes
         if: env.AXES == 'yes'
         run: |
@@ -130,6 +134,7 @@ jobs:
             --days 1095 \
             --visitors 1000 \
             --ranges 0.17,0.5,1 \
+            --limits 512MB,256MB,128MB,64MB \
             --out axes.md \
             --json axes.json
 

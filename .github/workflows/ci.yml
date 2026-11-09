@@ -96,7 +96,10 @@ jobs:
   axes:
     name: The engines, four axes
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The build of DuckDB from source is the slow part, and the measurement
+    # follows it. The job was at 19 minutes against a 20-minute limit, so the
+    # limit was the thing that decided the result.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -117,12 +120,13 @@ jobs:
       # **The version is pinned** ✓ ⇒ ⇒ ⇒ the report has to be the same every
       # time ✓ ⇒ ⇒ ⇒ (the tool's charts and its numbers are part of what is
       # published ✓ ⇒ ⇒ ⇒ so a moving pin would move the numbers under the
-      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.2.3 ✓ ⇒ ⇒ ⇒ the mixed charts ✓
+      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.3.0 ✓ ⇒ ⇒ ⇒ the mixed charts and
+      # the limits ✓
       - name: The load generator
         run: |
           set -euo pipefail
           curl -sL --retry 5 -o gotest.tar.gz \
-            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.2.3/sumimi-gotest-linux-amd64.tar.gz"
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.3.0/sumimi-gotest-linux-amd64.tar.gz"
           tar xzf gotest.tar.gz
           sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
           sumimi-gotest version
@@ -132,18 +136,25 @@ jobs:
       - name: The server
         run: cargo build --release -p sumimi --bin sumimi
 
-      # The four axes on one year of history: the peak memory, the data on
-      # disk, and the latency of the reports over a long range. A year is
-      # enough to show the difference and small enough to run on every push.
+      # The four axes, on three years of history: the peak memory, the data on
+      # disk, the latency of the reports over a long range — and the limit's
+      # trade (the time, the peak and the spill at several engine limits).
+      #
+      # **Three years, not one**: a one-year report fits in memory at every
+      # limit, so the spill would be "0" everywhere and the reader would learn
+      # nothing. Three years is what makes the engine spill, and the spill is
+      # what the limit costs. It is also the history the published benchmark
+      # uses, so the routine report and the document agree.
       - name: The axes
         run: |
           set -euo pipefail
           SUMIMI_ADMIN_PASSWORD=sumimi-gotest sumimi-gotest axes \
             --binary target/release/sumimi \
             --backends duckdb,sqlite \
-            --days 365 \
-            --visitors 500 \
+            --days 1095 \
+            --visitors 1000 \
             --ranges 0.17,0.5,1 \
+            --limits 512MB,256MB,128MB,64MB \
             --out axes.md \
             --json axes.json
 
