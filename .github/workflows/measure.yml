@@ -62,11 +62,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # **The version is pinned** ✓ ⇒ ⇒ ⇒ same reason as the CI ✓ ⇒ ⇒ ⇒ the
+      # tool's charts are part of what is published ✓ ⇒ ⇒ ⇒ ⇒ v0.2.3 ✓ ⇒ ⇒ ⇒
+      # (v0.1.2 predates the `axes` subcommand ✓ ⇒ ⇒ ⇒ ⇒ so this step could
+      # not have run ✓ ⇒ ⇒ ⇒ ⇒)
       - name: The load generator
         run: |
           set -euo pipefail
           curl -sL --retry 5 -o gotest.tar.gz \
-            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.1.2/sumimi-gotest-linux-amd64.tar.gz"
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.2.3/sumimi-gotest-linux-amd64.tar.gz"
           tar xzf gotest.tar.gz
           sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
           sumimi-gotest version

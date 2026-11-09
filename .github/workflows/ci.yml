@@ -113,11 +113,16 @@ jobs:
 
       # The public tool: a second implementation, so the measurement does not
       # inherit the server's bugs.
+      #
+      # **The version is pinned** ✓ ⇒ ⇒ ⇒ the report has to be the same every
+      # time ✓ ⇒ ⇒ ⇒ (the tool's charts and its numbers are part of what is
+      # published ✓ ⇒ ⇒ ⇒ so a moving pin would move the numbers under the
+      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.2.3 ✓ ⇒ ⇒ ⇒ the mixed charts ✓
       - name: The load generator
         run: |
           set -euo pipefail
           curl -sL --retry 5 -o gotest.tar.gz \
-            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.2.0/sumimi-gotest-linux-amd64.tar.gz"
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.2.3/sumimi-gotest-linux-amd64.tar.gz"
           tar xzf gotest.tar.gz
           sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
           sumimi-gotest version
