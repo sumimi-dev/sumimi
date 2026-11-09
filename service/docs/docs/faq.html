@@ -133,6 +133,41 @@
       for sizing a box is <strong>the engine's <code>memory_limit</code> plus about
       60 MB</strong>, and not more than the tier.
     </p>
+    <p>
+      The limit has a <strong>third</strong> cost, and it is the one a small box
+      runs out of: <strong>disk</strong>. The same three-year history and the same
+      report, at four engine limits:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>the engine's limit</th><th>the report</th><th>the peak memory</th><th>the spill on disk</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>512 MB</td><td><strong>133 ms</strong></td><td>571 MB</td><td>0</td></tr>
+          <tr><td>256 MB</td><td>187 ms</td><td>344 MB</td><td>27 MB</td></tr>
+          <tr><td>128 MB</td><td>384 ms</td><td>225 MB</td><td>97 MB</td></tr>
+          <tr><td>64 MB</td><td>734 ms</td><td><strong>154 MB</strong></td><td>140 MB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <strong>The answer is the same at every limit</strong> — the same page views,
+      the same visitors, the same bounces. DuckDB spills to disk and answers
+      anyway, so the limit is a <strong>trade</strong>: memory for time and disk.
+      At 64 MB the report is 5.5× slower than at 512 MB, and it needs 140 MB of
+      temporary disk to do it.
+    </p>
+    <p>
+      The spill is a <strong>peak, not growth</strong> — DuckDB deletes it when the
+      query ends. But it is disk, and the server's own ceiling on it is
+      <code>max_temp_directory_size</code>: <strong>2 GB by default</strong>
+      (<code>SUMIMI_DUCKDB_TEMP_LIMIT</code>). On a 10 GB VPS that is a fifth of
+      the disk in one query — and a spill that cannot fit is a
+      <strong>failed</strong> report, not a slow one. Set the ceiling to what the
+      disk can spare.
+    </p>
+    <p><img src="https://x-cmd.com/draw?h=520&labels=512MB%2C256MB%2C128MB%2C64MB&line=the+report+%28ms%29%3A133%2C187%2C384%2C734&series=the+peak+memory+%28MB%29%3A571.3%2C344.6%2C225.3%2C154.4&series=the+spill+on+disk+%28MB%29%3A0%2C27.3%2C97.8%2C140.6&title=The+limit+trades+memory+for+time+and+disk&type=combo&w=960" alt="The limit trades memory for time and disk" width="760"></p>
 
     <h3>Can I use the official Umami dashboard?</h3>
     <p>
