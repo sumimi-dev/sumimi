@@ -306,6 +306,7 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
         </tbody>
       </table>
     </div>
+    <p><img src="https://x-cmd.com/draw?type=line&t=evil&title=The+peak+against+the+rate&unit=MB&labels=5+000%2Fs%2C10+000%2Fs%2C20+000%2Fs%2C40+000%2Fs&series=v0.4.1%3A136%2C145%2C221%2C221&series=v0.4.2%3A138%2C145%2C208%2C210&series=v0.4.2+%2B+the+allocator%3A110%2C115%2C182%2C178" alt="The peak against the rate" width="760"></p>
     <p>
       The rule stops applying at the top: 100 000, 150 000 and 200 000 requests a
       second all land at about <strong>600 MB</strong>, because the server parses
@@ -329,6 +330,7 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
         RAM, capped at 256 MB — right for the box it runs on, and on a small box it
         is set explicitly.
       </p>
+    <p><img src="https://x-cmd.com/draw?type=line&t=evil&title=The+peak+against+the+engine%27s+limit&unit=MB&labels=64+MB%2C96+MB%2C128+MB%2C160+MB%2C256+MB&series=the+peak%3A154.1%2C183.9%2C239.9%2C283.6%2C319.1" alt="The peak against the engine's limit" width="760"></p>
     </div>
     <p>
       <strong>The size of an event counts as much as the number of them.</strong> At
