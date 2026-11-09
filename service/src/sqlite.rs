@@ -239,8 +239,15 @@ CREATE TABLE IF NOT EXISTS meta (
 }
 
 /// Epoch seconds of a timestamp.
+/// A timestamp, in **microseconds** since the epoch.
+///
+/// **Microseconds, not seconds.** The seconds lost the fraction of a second,
+/// and with it two things that have to be the same on both engines: the
+/// timestamp the API serves (DuckDB keeps the microseconds) and the boundary
+/// of a window — an event in the same second as the window's end fell
+/// outside it here and inside it there.
 fn ts(value: chrono::NaiveDateTime) -> i64 {
-    value.and_utc().timestamp()
+    value.and_utc().timestamp_micros()
 }
 
 /// Schema version of the SQLite database.
@@ -249,7 +256,8 @@ fn ts(value: chrono::NaiveDateTime) -> i64 {
 /// * v4 — the session and visitor ids are **UUIDs**: 16 bytes, not a string.
 /// * v5 — the traffic channel is stored with the event.
 /// * v6 — the visit id, the referrer's display name and the coordinates.
-const SCHEMA_VERSION: i64 = 6;
+/// * v7 — the timestamps are **microseconds**, not seconds.
+const SCHEMA_VERSION: i64 = 7;
 
 /// Teach SQLite how to turn an old text id into a UUID.
 ///
@@ -294,6 +302,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         .flatten()
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
+
+    if version > 0 && version < 7 {
+        // The timestamps were **seconds**; they are microseconds now — the
+        // precision DuckDB keeps. Every stored timestamp is multiplied by a
+        // million: the row keeps its moment, and it keeps the fraction of a
+        // second it always had.
+        conn.execute_batch(
+            "UPDATE event SET created_at = created_at * 1000000;
+             UPDATE revenue SET created_at = created_at * 1000000;
+             UPDATE website SET created_at = created_at * 1000000,
+                                updated_at = updated_at * 1000000;",
+        )?;
+    }
 
     if version > 0 && version < 6 {
         // The visit id, the referrer's display name and the coordinates were
@@ -384,7 +405,7 @@ fn read_uuid_opt(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Opti
 
 /// A timestamp from epoch seconds.
 fn from_ts(value: i64) -> chrono::NaiveDateTime {
-    chrono::DateTime::from_timestamp(value, 0)
+    chrono::DateTime::from_timestamp_micros(value)
         .map(|d| d.naive_utc())
         .unwrap_or_default()
 }
@@ -908,8 +929,8 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
              SELECT session_id,
                     COUNT(*) FILTER (WHERE {pageviews}) AS n,
                     MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
-                    MAX(created_at) FILTER (WHERE {pageviews})
-                        - MIN(created_at) FILTER (WHERE {pageviews}) AS d
+                    (MAX(created_at) FILTER (WHERE {pageviews})
+                        - MIN(created_at) FILTER (WHERE {pageviews})) / 1000000.0 AS d
              FROM event WHERE {filters}
              GROUP BY session_id
          )",
@@ -1011,7 +1032,9 @@ fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow
     };
 
     let sql = format!(
-        "SELECT strftime('{format}', created_at, 'unixepoch') AS bucket, COUNT(*) AS value
+        // `strftime` with the `unixepoch` modifier reads **seconds**; the
+        // timestamps are microseconds.
+        "SELECT strftime('{format}', created_at / 1000000.0, 'unixepoch') AS bucket, COUNT(*) AS value
          FROM event WHERE {where_clause} AND {pageviews}
          GROUP BY bucket
          ORDER BY bucket ASC",
