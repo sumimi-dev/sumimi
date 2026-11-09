@@ -604,6 +604,11 @@ to optimise** ✓ ⇒ and the biggest lever found so far is **the queue** ✓:
 is usually a batch of one** ✓ ⇒ ⇒ the "10 000 rows a batch" never happens ✓ ⇒
 ⇒ both the throughput ceiling ✓ and the churn ✓ ⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
 
+⇒ ⇒ ⇒ **but the churn is not what the peak is made of** ✓ ⇒ ⇒ ⇒ the peak is
+**DuckDB's ingestion** ✓ ⇒ ⇒ ⇒ ⇒ **the SQLite backend does the same 20 000/s
+in 32.8 MB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **see below** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓ ✓.
+
 ### The seven fixes ✓ ✓ (v0.4.2 ✓, [#18](https://github.com/sumimi-dev/sumimi/issues/18) ✓)
 
 Each one was measured with the same ruler ✓ (the counting allocator ✓, the
@@ -638,6 +643,93 @@ is yes** ✓ ✓ ✓.
 the DuckDB crate ✓ ⇒ ⇒ ⇒ but they are **churn, not residency** ✓ ⇒ ⇒ ⇒ the
 allocator hands the same pages back for the next row ✓ ⇒ ⇒ ⇒ ⇒ so it costs
 **CPU**, not memory ✓ ⇒ ⇒ ⇒ [#19](https://github.com/sumimi-dev/sumimi/issues/19) ✓ ✓.
+
+### The memory is DuckDB's ingestion, not the request path ✓ ✓ ✓ (2026-11-09 ✓)
+
+**The question this answers**: *where does the peak actually go?* ⇒ ⇒ ⇒ The
+ruler: the server's own heartbeat ✓ (it reports DuckDB's accounting ✓, the
+queue's depth ✓ and the process's RSS ✓) sampled every 100 ms ✓, plus
+`/proc/<pid>/status` and `/proc/<pid>/smaps` ✓ in a Linux container ✓ ⇒ ⇒ ⇒
+so the peak is the exact high-water mark ✓ and the mapping table says **which
+mapping** holds it ✓ ✓.
+
+**At the peak, at 20 000/s** ✓ (the container ✓, the M5 ✓):
+
+| what | how much | how it was measured |
+| --- | ---: | --- |
+| the whole process | **212 MB** ✓ | `VmHWM` ✓ |
+| **DuckDB's own accounting** | **22.6 MB** ✓ | `sum(memory_usage_bytes) FROM duckdb_memory()` ✓ |
+| … of which the in-memory table | 20.1 MB ✓ | `IN_MEMORY_TABLE` ✓ |
+| the queue | **1–3 MB** ✓ | `queued` × 1 000 B (the struct is 1 000 B ✓) ✓ — the writer keeps up ✓ |
+| the in-flight bodies | **~0** ✓ | `inflightBytes` ✓ |
+| the binary's code pages | 32.4 MB ✓ | the `/app/sumimi` mapping ✓ |
+| **the rest** | **~150 MB** ✓ | anonymous mappings ✓ — and **DuckDB does not account for it** ✓ |
+
+⇒ ⇒ ⇒ **the engine's accounting is a sawtooth** ✓ ⇒ 2 → 13 → 22 MB → **back to
+2 MB** ✓ ⇒ ⇒ ⇒ that is the WAL filling up and the checkpoint writing it out ✓
+⇒ ⇒ ⇒ **the checkpoint is what the peak is made of** ✓ ✓ (the WAL reaches
+15.2 MB — DuckDB's `checkpoint_threshold` is 16 MB ✓ — and the high-water mark
+jumps at exactly that moment ✓) ✓ ✓.
+
+⇒ ⇒ ⇒ **and the decisive A/B** ✓ — the same load, the same box, the only
+difference the backend ✓:
+
+| the engine's memory limit | the peak | the rate served |
+| --- | ---: | --- |
+| the default (244 MB on this box ✓) | **215 MB** ✓ | 20 000/s ✓ |
+| 128 MB | **178.8 MB** ✓ | 20 000/s ✓ |
+| 96 MB | **148.6 MB** ✓ | 20 000/s ✓ (85 247 refused — the gate follows the limit ✓) |
+| 64 MB | **108.0 MB** ✓ | 10 000/s ✓ (the gate ✓) |
+| 16 MB | **69.2 MB** ✓ | 2 500/s ✓ (the gate ✓) |
+| **the SQLite backend** ✓ | **32.8 MB** ✓ | **20 000/s** ✓ ✓ |
+
+⇒ ⇒ ⇒ ⇒ **the whole request path — the queue ✓, the writer ✓, the parsing ✓,
+the HTTP layer ✓ — costs almost nothing** ✓ ⇒ ⇒ ⇒ ⇒ (32.8 MB **including the
+binary's code pages** ✓) ⇒ ⇒ ⇒ ⇒ ⇒ **the ~180 MB is DuckDB's ingestion** ✓ ✓ ✓
+⇒ ⇒ ⇒ ⇒ ⇒ and it is **bounded by the engine's memory limit** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+**the peak ≈ the engine's limit + ~50 MB** ✓ ✓ ✓.
+
+⇒ ⇒ ⇒ ⇒ ⇒ **the rule this replaces** ✓ ⇒ ⇒ ⇒ ⇒ the old *"7.8 MB per 1 000
+requests a second is the allocator's retention of the churn"* ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+**the number was right and the reason was wrong** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the churn is
+real ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ but it is small ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the slope is DuckDB's
+ingestion** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the request path is not the bottleneck —
+the engine is** ✓ ✓ ✓.
+
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the knobs that do NOT move it** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (all measured, the
+same box ✓): the allocator's arenas ✓ (`MALLOC_ARENA_MAX=1` ✓ ⇒ 210 MB ✓), its
+trimming ✓ (`MALLOC_TRIM_THRESHOLD_` ✓ ⇒ 213 MB ✓), the mmap threshold ✓
+(16 KB ✓ ⇒ 211 MB ✓), the checkpoint threshold ✓ (**over 60 s** ✓ ⇒ 16 MB:
+232 MB ✓, 32 MB: 239 MB ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **it does not matter** ✓ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **a 20-second run said 32 MB halved the peak —
+that was the measurement window, not the truth** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **a checkpoint that lands outside the window is not seen**
+✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **so: measure long enough** ✓ ✓ ✓),
+`preserve_insertion_order=false` ✓ (213 MB ✓ ⇒ DuckDB's own advice for the
+ingestion memory does not apply here ✓) ✓, one thread ✓ (212 MB ✓) ✓ ✓.
+
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **what this means for a deployment** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the tier's
+promise is about the **whole process** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ so the engine's limit
+has to be **the tier minus ~50 MB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the documented
+minimum tier ✓ (a 128 MB engine ✓, a 256 MB process ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+**measures 178.8 MB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and still serves 20 000/s**
+✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **the promise holds** ✓ ✓ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ and the recommended tier ✓ (a 256 MB engine ✓,
+a 512 MB process ✓) ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **measures ~235 MB** ✓ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the box's ceiling is the engine's limit,
+not the traffic** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ **the default (a quarter of the RAM, capped at 256 MB ✓) is right for the
+box it runs on** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ **but on a small box it must be set** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **that is what the
+deployment page says** ✓ ✓ ✓.
+
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the bug this found** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the heartbeat reported
+DuckDB's memory as **one arbitrary tag** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (`duckdb_memory()` has
+one row per tag ✓ ⇒ ⇒ ⇒ `SELECT memory_usage_bytes …` read the first row ✓ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **2.5 MB while the engine held more** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **fixed** ✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **which is what makes the attribution above possible** ✓ ✓.
 
 ### How to repeat the measurement
 

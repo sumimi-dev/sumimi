@@ -258,6 +258,11 @@ impl Db {
             settings.temp_limit
         ))?;
         // A small WAL keeps a crash from losing the last flush, without huge files.
+        //
+        // Measured (2026-11-09): the threshold does **not** move the peak — over a
+        // 60-second run 16 MB and 32 MB both peak at ~235 MB, because the peak is
+        // the ingestion's own memory and the WAL's size only decides how often it
+        // is written. See `MEMORY.md` §6.
         conn.execute_batch("SET checkpoint_threshold='16MB'")?;
 
         // Threads are derived from the memory budget: a parallel DISTINCT aggregate

@@ -100,8 +100,8 @@
         <tbody>
           <tr><td>the binary</td><td>the executable's text and data, the thread stacks</td><td>nothing — it is what it is</td><td>42 MB idle</td></tr>
           <tr><td>DuckDB's buffer</td><td>the engine's buffer manager</td><td><code>memory_limit</code></td><td>0.5–7 MB</td></tr>
-          <tr><td>DuckDB's other allocations</td><td>the appender's rows, the write-ahead log</td><td>nothing we set</td><td>not measured</td></tr>
-          <tr><td>the collector</td><td>reading, parsing and queueing a request</td><td>the four limits below</td><td>the suspect</td></tr>
+          <tr><td><strong>DuckDB's ingestion</strong></td><td>the appender's rows, the write-ahead log, the checkpoint</td><td><code>memory_limit</code></td><td><strong>the peak itself: ~150 MB at 20 000/s</strong></td></tr>
+          <tr><td>the collector</td><td>reading, parsing and queueing a request</td><td>the four limits below</td><td>measured: <strong>almost nothing</strong> — the SQLite backend does the same 20 000/s in 32.8 MB</td></tr>
           <tr><td>the queue</td><td>the hits waiting to be written</td><td><code>SUMIMI_MAX_QUEUE</code> (rows)</td><td>~5 MB of structs per 10 000 rows, plus the strings</td></tr>
           <tr><td>the allocator</td><td>the pages glibc took and did not give back</td><td><code>MALLOC_MMAP_THRESHOLD_</code></td><td><strong>−12% to −21% of the peak</strong> when it is set</td></tr>
         </tbody>
@@ -113,10 +113,12 @@
         A number that is easy to misread
       </p>
       <p>
-        <code>/api/heartbeat</code> reports <code>duckdbMemoryBytes</code> — that is
-        DuckDB's <strong>buffer manager only</strong>. It is not the engine's total
-        and it is not the process's. A server can report 2 MB there while the
-        process sits at 600 MB: the difference is the collector and the allocator.
+        <code>/api/heartbeat</code> reports <code>duckdbMemoryBytes</code> — the sum
+        of every tag in DuckDB's own ledger. It is still <strong>not</strong> the
+        engine's real footprint: the ledger counts what the engine is holding, not
+        what its ingestion is using. At the peak of a 20 000/s load the ledger says
+        22.6 MB while the process sits at 212 MB — and the difference is DuckDB's
+        own, bounded by <code>memory_limit</code>.
       </p>
     </div>
 
@@ -135,12 +137,15 @@
       </table>
     </div>
     <p>
-      Two things are true here. The engine is <strong>not</strong> the problem — it
-      holds single-digit megabytes in every run. And the burst <em>is</em> our
-      problem: at the peak the queue is empty and the engine holds 2 MB, so the
-      rest is the collection path's own allocations and the pages the allocator
-      kept. The two burst rows also show why one measurement is not enough: the
-      same shape gave 636 MB and 1560 MB.
+      Two things are true here. The engine's <em>ledger</em> holds single-digit
+      megabytes in every run — and the burst <em>is</em> the engine: at the peak
+      the queue is empty and the collector's own allocations are almost nothing.
+      The A/B settles it — <strong>the same 20 000/s on the SQLite backend peaks
+      at 32.8 MB</strong>, code pages included. What is left is DuckDB's
+      ingestion, and it is bounded by <code>memory_limit</code>: 244 MB of limit
+      gives a 215 MB peak, 128 MB gives 178.8 MB, 64 MB gives 108 MB. The two
+      burst rows also show why one measurement is not enough: the same shape gave
+      636 MB and 1560 MB.
     </p>
 
     <h2>The four limits</h2>
@@ -309,6 +314,22 @@ MALLOC_MMAP_THRESHOLD_=65536</code></pre>
       regime, it is a <strong>"most of it is turned away"</strong> regime: a real
       200 000 needs a stronger box and a faster write path, not more RAM.
     </p>
+    <div class="callout tip">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+        The peak is the engine's limit, plus about 50 MB
+      </p>
+      <p>
+        The peak is not the traffic's memory — it is DuckDB's ingestion, and the
+        engine's own limit bounds it. Measured at 20 000/s: a 244 MB limit peaks at
+        215 MB, 128 MB at 178.8 MB, 96 MB at 148.6 MB, 64 MB at 108 MB. So the
+        rule for sizing a box is
+        <strong>the engine's <code>memory_limit</code> plus about 50 MB, and not
+        more than the tier</strong>. The default limit is a quarter of the machine's
+        RAM, capped at 256 MB — right for the box it runs on, and on a small box it
+        is set explicitly.
+      </p>
+    </div>
     <p>
       <strong>The size of an event counts as much as the number of them.</strong> At
       20 000 requests a second, changing only the size of one event:

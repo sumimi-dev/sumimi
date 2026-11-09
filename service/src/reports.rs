@@ -156,14 +156,17 @@ impl Storage for Db {
         })?;
 
         let (memory_bytes, memory_limit, threads) = self.with_read(|conn| {
-            let mut usage = 0i64;
-            let mut stmt = conn.prepare("SELECT memory_usage_bytes FROM duckdb_memory()")?;
-            let mut rows = stmt.query([])?;
-            if let Some(row) = rows.next()? {
-                usage = row.get(0).unwrap_or(0);
-            }
-            drop(rows);
-            drop(stmt);
+            // `duckdb_memory()` has **one row per tag** — the buffer manager, the
+            // hash tables, the string heap, … — so reading one row reads one
+            // tag, not the total. The sum is the number that answers "how much
+            // does the engine hold?".
+            let usage: i64 = conn
+                .query_row(
+                    "SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_memory()",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
 
             let limit: String = conn
                 .query_row(
