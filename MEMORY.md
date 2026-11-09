@@ -839,6 +839,24 @@ orders of magnitude.
 minute) and the table goes into the job summary; `measure.yml` runs the
 three-year version on demand.
 
+### The charts in the reports are links (2026-11-10)
+
+**x-cmd's draw service renders an SVG from the query string** — the data lives
+in the URL, and the SVG carries it in a `<metadata>` element, so the numbers can
+be read back out of the picture. A URL carries its own provenance, so a chart
+can be pasted into an issue, a release note or a documentation page and it
+renders there with nothing installed.
+
+**The tool makes the charts, not a person.** `sumimi-gotest` writes them into
+both of its reports (the axes and the sweep), so the picture and the table are
+the same numbers and cannot drift apart. The style is the x-cmd one
+(`t=evil`), and every chart has two URLs: the picture and the explorer, where
+the numbers can be hovered, changed and taken away.
+
+Where they are used: the issue #18 comments, the v0.4.4 release notes (a
+release's notes can be edited, so the charts went into the release that was
+already published) and the deployment page.
+
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **and the bug this found** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ the heartbeat reported
 DuckDB's memory as **one arbitrary tag** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ (`duckdb_memory()` has
 one row per tag ✓ ⇒ ⇒ ⇒ `SELECT memory_usage_bytes …` read the first row ✓ ⇒
