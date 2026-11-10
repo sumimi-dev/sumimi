@@ -100,6 +100,10 @@ jobs:
     # follows it. The job was at 19 minutes against a 20-minute limit, so the
     # limit was the thing that decided the result.
     timeout-minutes: 45
+    permissions:
+      contents: read
+      # The audit opens an issue — that is the record of the run.
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -120,13 +124,13 @@ jobs:
       # **The version is pinned** ✓ ⇒ ⇒ ⇒ the report has to be the same every
       # time ✓ ⇒ ⇒ ⇒ (the tool's charts and its numbers are part of what is
       # published ✓ ⇒ ⇒ ⇒ so a moving pin would move the numbers under the
-      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.3.1 ✓ ⇒ ⇒ ⇒ the mixed charts and
+      # reader's feet ✓ ⇒ ⇒ ⇒) ⇒ ⇒ ⇒ ⇒ v0.3.2 ✓ ⇒ ⇒ ⇒ the mixed charts,
       # the limits ✓
       - name: The load generator
         run: |
           set -euo pipefail
           curl -sL --retry 5 -o gotest.tar.gz \
-            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.3.1/sumimi-gotest-linux-amd64.tar.gz"
+            "https://github.com/sumimi-dev/sumimi-gotest/releases/download/v0.3.2/sumimi-gotest-linux-amd64.tar.gz"
           tar xzf gotest.tar.gz
           sudo mv sumimi-gotest-linux-amd64 /usr/local/bin/sumimi-gotest
           sumimi-gotest version
@@ -165,6 +169,55 @@ jobs:
             echo
             cat axes.md
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The audit: **one issue per run** — the numbers, and the versions that
+      # produced them.
+      #
+      # A measurement is only worth something if somebody can find it again
+      # **with the version it belongs to**. So every run leaves a record: an
+      # issue, labelled `audit`, carrying the report and the versions. The
+      # labels are what make it findable.
+      #
+      # `always()` — a run that failed is also a record, and a gap in the
+      # ledger is worse than a failed entry.
+      #
+      # Only on a push to `main`: a pull request's numbers are about a branch,
+      # not about the product.
+      - name: The audit
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh label create audit --color 0e8a16 \
+            --description "A measurement: the numbers, and the versions that produced them" || true
+          gh label create measurement --color 1d76db \
+            --description "The engines, four axes — the routine report" || true
+          {
+            echo "## The engines, four axes — the audit of \`${{ github.sha }}\`"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| the commit | \`${{ github.sha }}\` |"
+            echo "| the server | $(jq -r '.serverVersion // "?"' axes.json 2>/dev/null || echo '?') |"
+            echo "| the tool | sumimi-gotest $(sumimi-gotest version 2>/dev/null || echo '?') |"
+            echo "| the runner | ${{ runner.os }} |"
+            echo "| the run | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+            echo
+            echo "**This issue is the record of one run.** The numbers below were measured"
+            echo "by the public tool on the release binary, on the runner above. The same"
+            echo "report is in the run's summary and in its artifact."
+            echo
+            echo "---"
+            echo
+            if [ -f axes.md ]; then cat axes.md; else
+              echo "**The measurement did not finish.** The run's log says why."
+            fi
+          } > audit.md
+          gh issue create \
+            --title "The audit — the engines, four axes — $(date -u +%Y-%m-%d) · ${GITHUB_SHA::7}" \
+            --body-file audit.md \
+            --label audit --label measurement
 
       - uses: actions/upload-artifact@v4
         with:
