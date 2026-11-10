@@ -899,15 +899,25 @@ less than a plain one (reported: https://github.com/x-cmd/draw/issues/6).
 1. **The unit is in the legend, in parentheses** — `the peak memory (MB)`,
    `the report (ms)`. A combo **never draws the unit** (nor the title: the card
    is painted over it), so the legend is the only place the reader can find it.
-2. **One chart, one question.** The peak memory, the data on disk, the report
-   over a range, the limit's trade — four charts. On one axis the small bars
-   vanish, and **with them the value labels**: the service labels a layer only
-   if every label fits.
-3. **The unit is chosen so the two axes differ by at least five times** — that
-   is when the service draws a second axis at all. Below that the line's
-   numbers are read on the bars' scale, which is a lie. So the disk is in
-   **gigabytes** (3 148 MB would be written "3.1k", and "1k MB" reads like
-   "kilo-megabyte"), and the limit's line is in **seconds**.
+**Three rules, all of them from what the service actually draws** (measured,
+2026-11-10 — https://github.com/x-cmd/draw/issues/10):
+
+1. **The unit is in the legend, in parentheses** — `the peak memory (GB)`,
+   `the report (ms)`. A combo **never draws the unit** (nor the title: the card
+   is painted over it), so the legend is the only place the reader can find it.
+2. **The same unit stays together.** The peak memory and the data on disk are
+   both **bytes**, so one axis is honest — and the trade-off between them is
+   the thing to see: DuckDB's memory is the bigger number and its disk the
+   smaller one, SQLite's is the other way round. Split into two charts that
+   trade-off disappears. (The cost: a short bar makes the **whole** layer of
+   value labels vanish — the service labels a layer only if every label fits.
+   The numbers are in the table.)
+3. **The two axes must differ by at least five times** — that is when the
+   service draws a second axis at all. Below that the line's numbers are read
+   on the bars' scale, which is a lie. Bytes and milliseconds differ by a
+   thousandfold, so that one is safe; a chart with the peak memory in MB and
+   the latency in ms is **not** — the numbers get read in the wrong unit, and
+   nobody can tell (reported: https://github.com/x-cmd/draw/issues/13).
 
 Where they are used: the issue #18 comments, the v0.4.4 and v0.4.5 release
 notes (a release's notes can be edited, so the charts went into the release
