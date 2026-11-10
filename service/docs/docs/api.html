@@ -354,7 +354,7 @@
       <dt>pageviews</dt>
       <dd>Total page views.</dd>
       <dt>visitors</dt>
-      <dd>Unique visitors, counted with a daily-rotating, non-reversible id. "Unique" means unique per day, not unique forever.</dd>
+      <dd>Unique visitors, counted with a non-reversible id that is <strong>stable across days</strong> (Umami's <code>distinct_id</code>). "Unique" means unique within the requested window; the same visitor on two different days is counted once per window they appear in.</dd>
       <dt>views</dt>
       <dd>The number of sessions (visits).</dd>
       <dt>bounces</dt>

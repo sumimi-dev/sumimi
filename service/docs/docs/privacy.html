@@ -434,7 +434,7 @@ curl -X DELETE https://analytics.example.com/api/websites/3f2a... \
           <tr><td><code>localStorage</code> identifiers</td><td><span class="pill no">never used</span></td></tr>
           <tr><td>Fingerprinting</td><td><span class="pill no">never attempted</span></td></tr>
           <tr><td>Raw IP addresses</td><td><span class="pill no">never stored or logged</span></td></tr>
-          <tr><td>Visitor identifier</td><td>rotating, non-reversible HMAC over a coarse IP prefix</td></tr>
+          <tr><td>Visitor identifier</td><td>non-reversible HMAC over a coarse IP prefix; <strong>stable across days</strong> (it is not rotated)</td></tr>
           <tr><td>Session identifier</td><td>rotating every 30 minutes, scoped to one website</td></tr>
           <tr><td>URL query strings</td><td>stripped by default, opt-in per site</td></tr>
           <tr><td>Do Not Track</td><td><span class="pill yes">honoured — nothing is sent</span></td></tr>
