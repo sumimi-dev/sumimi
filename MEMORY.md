@@ -891,9 +891,23 @@ and the explorer, where the numbers can be hovered, changed and taken away.
 **The style is the default one, not `t=evil`** — with `t=evil` the combo drops
 every bar series but the first and never draws the second y-axis, so the line's
 numbers end up on the bars' scale: a chart that says the wrong number is worth
-less than a plain one (reported: https://github.com/x-cmd/draw/issues/6). The
-charts are **mixed** — bars for the sizes, a line for the latency — because the
-axes have three units and a line on the bars' scale would say nothing.
+less than a plain one (reported: https://github.com/x-cmd/draw/issues/6).
+
+**Three rules, all of them from what the service actually draws** (measured,
+2026-11-10 — https://github.com/x-cmd/draw/issues/10):
+
+1. **The unit is in the legend, in parentheses** — `the peak memory (MB)`,
+   `the report (ms)`. A combo **never draws the unit** (nor the title: the card
+   is painted over it), so the legend is the only place the reader can find it.
+2. **One chart, one question.** The peak memory, the data on disk, the report
+   over a range, the limit's trade — four charts. On one axis the small bars
+   vanish, and **with them the value labels**: the service labels a layer only
+   if every label fits.
+3. **The unit is chosen so the two axes differ by at least five times** — that
+   is when the service draws a second axis at all. Below that the line's
+   numbers are read on the bars' scale, which is a lie. So the disk is in
+   **gigabytes** (3 148 MB would be written "3.1k", and "1k MB" reads like
+   "kilo-megabyte"), and the limit's line is in **seconds**.
 
 Where they are used: the issue #18 comments, the v0.4.4 and v0.4.5 release
 notes (a release's notes can be edited, so the charts went into the release
@@ -905,6 +919,19 @@ one row per tag ✓ ⇒ ⇒ ⇒ `SELECT memory_usage_bytes …` read the first r
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **2.5 MB while the engine held more** ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **fixed** ✓ ✓ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **which is what makes the attribution above possible** ✓ ✓.
+
+### The audit: one issue per run
+
+**Every run of the CI opens an issue** — labelled `audit` and `measurement` —
+carrying the report and **the versions that produced it**: the commit, the
+server's version, the tool's version, the runner and the run's link.
+
+**A measurement is only worth something if somebody can find it again with the
+version it belongs to.** A number without a version is a number without a
+subject.
+
+**A run that failed is also a record** — the step runs `always()`, because a gap
+in the ledger is worse than a failed entry.
 
 ### How to repeat the measurement
 
