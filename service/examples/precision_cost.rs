@@ -46,6 +46,15 @@ const UNITS: [(&str, &str); 4] = [
     ("BIGINT s", "us // 1000000"),
 ];
 
+
+/// The id the report works out for itself when the pair is stored instead of
+/// an id: a 128-bit hash of the visitor and the window start, as a UUID.
+const MD5_KEY: &str = "CAST(substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 1, 8) \
+ || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 9, 4) \
+ || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 13, 4) \
+ || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 17, 4) \
+ || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 21, 12) AS UUID)";
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("all");
@@ -313,13 +322,24 @@ fn variants(path: &Path) -> Result<()> {
             time: true,
         },
         Variant {
-            // The same pair, as 16 bytes + 8 bytes.
-            name: "visitor+second blob",
+            // The pair, not stored as an id: the report works the id out
+            // itself, with a 128-bit hash (the same width as today's UUID).
+            name: "pair + md5 key",
             select: format!(
-                "* EXCLUDE ({session_col}), decode(replace(visitor_id::VARCHAR, '-', ''), 'hex') \
-                          || decode(printf('%016x', hash({session_col})), 'hex') AS visit_id"
+                "* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS window_start"
             ),
-            key: Some("visit_id".to_string()),
+            key: Some(MD5_KEY.to_string()),
+            bucket: "created_at",
+            time: true,
+        },
+        Variant {
+            // The same pair, with a 64-bit hash as the key: the cheapest
+            // aggregate, but a hash that can collide.
+            name: "pair + hash key",
+            select: format!(
+                "* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS window_start"
+            ),
+            key: Some("hash(visitor_id, window_start)".to_string()),
             bucket: "created_at",
             time: true,
         },
