@@ -40,6 +40,11 @@ fn main() -> Result<()> {
         synthetic(rows)?;
     }
 
+    if mode == "compute" || mode == "all" {
+        let rows: i64 = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(20_000_000);
+        compute(rows)?;
+    }
+
     if mode == "real" || mode == "all" {
         let path = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
             PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -187,4 +192,91 @@ fn real(path: &Path) -> Result<()> {
     let _ = std::fs::remove_dir_all(&dir);
     println!("\ncolumns: {columns:?}");
     Ok(())
+}
+
+/// What the timestamp's **unit** costs on the CPU, not on the disk.
+///
+/// The same rows are written twice — once as a `TIMESTAMP` (microseconds, what
+/// we have) and once as a `BIGINT` of milliseconds — and the queries the
+/// reports actually run are timed on both.
+fn compute(rows: i64) -> Result<()> {
+    let dir = std::env::temp_dir().join("sumimi-precision-compute");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+
+    let conn = Connection::open(dir.join("t.duckdb"))?;
+    conn.execute_batch(&format!(
+        "CREATE TABLE ts AS
+         SELECT i AS id, make_timestamp(1704067200000000::BIGINT
+                              + (hash(i) % 94608000000000)::BIGINT) AS created_at
+         FROM range({rows}) t(i);
+         CREATE TABLE ms AS
+         SELECT i AS id, (1704067200000000::BIGINT
+                              + (hash(i) % 94608000000000)::BIGINT) // 1000 AS created_at
+         FROM range({rows}) t(i);"
+    ))?;
+
+    // (name, sql on TIMESTAMP, sql on BIGINT ms)
+    let queries: [(&str, &str, &str); 4] = [
+        (
+            "scan",
+            "SELECT count(*), sum(id) FROM ts",
+            "SELECT count(*), sum(id) FROM ms",
+        ),
+        (
+            "duration",
+            "SELECT max(created_at) - min(created_at) FROM ts",
+            "SELECT max(created_at) - min(created_at) FROM ms",
+        ),
+        (
+            "day buckets",
+            "SELECT date_trunc('day', created_at) d, count(*) FROM ts GROUP BY 1",
+            "SELECT date_trunc('day', to_timestamp(created_at / 1000.0)) d, count(*)
+             FROM ms GROUP BY 1",
+        ),
+        (
+            "hour range",
+            "SELECT date_trunc('hour', created_at) h, count(*) FROM ts
+             WHERE created_at >= TIMESTAMP '2025-01-01' AND created_at < TIMESTAMP '2025-04-01'
+             GROUP BY 1",
+            "SELECT date_trunc('hour', to_timestamp(created_at / 1000.0)) h, count(*)
+             FROM ms
+             WHERE created_at >= 1735689600000 AND created_at < 1743465600000
+             GROUP BY 1",
+        ),
+    ];
+
+    println!("== {rows} rows: TIMESTAMP (us) vs BIGINT (ms) ==\n");
+    println!("{:<14} {:>12} {:>12} {:>10}", "query", "TIMESTAMP us", "BIGINT ms", "ratio");
+    for (name, q_ts, q_ms) in queries {
+        let a = time_query(&conn, q_ts);
+        let b = time_query(&conn, q_ms);
+        println!(
+            "{name:<14} {:>10.1} ms {:>10.1} ms {:>9.2}x",
+            a,
+            b,
+            b / a.max(0.001)
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The fastest of three runs, in milliseconds.
+fn time_query(conn: &Connection, sql: &str) -> f64 {
+    let mut best = f64::MAX;
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        let mut stmt = conn.prepare(sql).expect("prepare");
+        let mut rows = stmt.query_map([], |_r| Ok(())).expect("query");
+        while rows.next().is_some() {}
+        drop(rows);
+        drop(stmt);
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        if ms < best {
+            best = ms;
+        }
+    }
+    best
 }
