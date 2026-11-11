@@ -97,9 +97,9 @@ impl SqliteBackend {
 CREATE TABLE IF NOT EXISTS event (
     id              INTEGER PRIMARY KEY,
     website_id      TEXT NOT NULL,
-    session_id      BLOB NOT NULL,
+    visit_id        BLOB NOT NULL,
     visitor_id      BLOB NOT NULL,
-    visit_id        BLOB,
+    user_id         BLOB,
     created_at      INTEGER NOT NULL,
 
     url             TEXT,
@@ -155,7 +155,7 @@ CREATE INDEX IF NOT EXISTS event_website_created ON event (website_id, created_a
 CREATE TABLE IF NOT EXISTS revenue (
     id          INTEGER PRIMARY KEY,
     website_id  TEXT NOT NULL,
-    session_id  BLOB,
+    visit_id    BLOB,
     event_id    INTEGER,
     event_name  TEXT,
     currency    TEXT NOT NULL DEFAULT 'USD',
@@ -304,6 +304,29 @@ fn migrate(conn: &Connection) -> Result<()> {
         .unwrap_or(0);
 
     if version > 0 && version < 7 {
+        // The ids are the ones the reference implementation has, under our own
+        // names: `visit_id` is what we used to call the session id, `visitor_id`
+        // is the visitor, and `user_id` is the identity the site owner knows
+        // the visitor by (new, empty). The old `visit_id` — a half-hour window
+        // inside the session — is dropped.
+        //
+        // This runs **before** the older blocks below, because one of them
+        // rewrites the id columns and must know the new name.
+        if has_column(conn, "event", "visit_id")? {
+            conn.execute_batch("ALTER TABLE event DROP COLUMN visit_id;")?;
+        }
+        if has_column(conn, "event", "session_id")? {
+            conn.execute_batch("ALTER TABLE event RENAME COLUMN session_id TO visit_id;")?;
+        }
+        if !has_column(conn, "event", "user_id")? {
+            conn.execute_batch("ALTER TABLE event ADD COLUMN user_id BLOB;")?;
+        }
+        if has_column(conn, "revenue", "session_id")? {
+            conn.execute_batch("ALTER TABLE revenue RENAME COLUMN session_id TO visit_id;")?;
+        }
+    }
+
+    if version > 0 && version < 7 {
         // The timestamps were **seconds**; they are microseconds now — the
         // precision DuckDB keeps. Every stored timestamp is multiplied by a
         // million: the row keeps its moment, and it keeps the fraction of a
@@ -344,14 +367,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         // The session and visitor ids were 36-character strings; they are now
         // 16-byte UUIDs. The conversion is deterministic, so no session is split
         // in two.
-        conn.execute_batch(
+        let visit = if has_column(conn, "event", "visit_id")? {
+            "visit_id"
+        } else {
+            "session_id"
+        };
+        conn.execute_batch(&format!(
             "UPDATE event
-                SET session_id = sumimi_uuid(session_id),
+                SET {visit} = sumimi_uuid({visit}),
                     visitor_id = sumimi_uuid(visitor_id);
              UPDATE revenue
-                SET session_id = sumimi_uuid(session_id)
-                WHERE session_id IS NOT NULL;",
-        )?;
+                SET {visit} = sumimi_uuid({visit})
+                WHERE {visit} IS NOT NULL;"
+        ))?;
     }
 
     conn.execute(
@@ -686,7 +714,7 @@ impl Storage for SqliteBackend {
             let mut insert = tx.prepare_cached(
                 r#"
 INSERT INTO event (
-    id, website_id, session_id, visitor_id, visit_id, created_at,
+    id, website_id, visit_id, visitor_id, user_id, created_at,
     url, url_query, title,
     referrer, referrer_path, referrer_query, referrer_name, hostname, channel,
     browser, browser_version, os, os_version, device, screen, language,
@@ -710,9 +738,9 @@ INSERT INTO event (
             for hit in &kept {
                 insert.execute(params![
                     hit.website_id,
-                    hit.session_id.as_bytes().as_slice(),
+                    hit.visit_id.as_bytes().as_slice(),
                     hit.visitor_id.as_bytes().as_slice(),
-                    hit.visit_id.map(|id| id.as_bytes().to_vec()),
+                    hit.user_id.map(|id| id.as_bytes().to_vec()),
                     ts(hit.created_at),
                     hit.url,
                     hit.url_query,
@@ -771,13 +799,13 @@ INSERT INTO event (
         self.with(|conn| {
             let tx = conn.transaction()?;
             let mut insert = tx.prepare_cached(
-                "INSERT INTO revenue (id, website_id, session_id, event_id, event_name, currency, revenue, created_at)
+                "INSERT INTO revenue (id, website_id, visit_id, event_id, event_name, currency, revenue, created_at)
                  VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for record in records {
                 insert.execute(params![
                     record.website_id,
-                    record.session_id.map(|id| id.as_bytes().to_vec()),
+                    record.visit_id.map(|id| id.as_bytes().to_vec()),
                     record.event_id,
                     record.event_name,
                     record.currency,
@@ -908,7 +936,7 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
     let sql = format!(
         "SELECT COUNT(*) FILTER (WHERE {pageviews}),
                 COUNT(DISTINCT visitor_id),
-                COUNT(DISTINCT session_id)
+                COUNT(DISTINCT visit_id)
          FROM event WHERE {filters}",
         pageviews = PAGEVIEWS,
         filters = filters.clause()
@@ -926,13 +954,13 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
         "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
                 COALESCE(AVG(d), 0)
          FROM (
-             SELECT session_id,
+             SELECT visit_id,
                     COUNT(*) FILTER (WHERE {pageviews}) AS n,
                     MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
                     (MAX(created_at) FILTER (WHERE {pageviews})
                         - MIN(created_at) FILTER (WHERE {pageviews})) / 1000000.0 AS d
              FROM event WHERE {filters}
-             GROUP BY session_id
+             GROUP BY visit_id
          )",
         pageviews = PAGEVIEWS,
         filters = filters.clause()
@@ -1088,7 +1116,7 @@ fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
     let filters = Filters::new(query);
 
     let sql = format!(
-        "SELECT id, website_id, session_id, created_at, event_name, url, hostname, channel, data,
+        "SELECT id, website_id, visit_id, created_at, event_name, url, hostname, channel, data,
                 referrer, referrer_path, referrer_query, country, city, browser, os,
                 utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
          FROM event WHERE {where_clause}
@@ -1140,7 +1168,7 @@ fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
 fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
     let filters = Filters::new(query);
     let sql = format!(
-        "SELECT id, session_id, visitor_id, created_at, url, title, referrer, referrer_path,
+        "SELECT id, visit_id, visitor_id, created_at, url, title, referrer, referrer_path,
                 hostname, channel, browser, os, device, country, region, city, language, screen
          FROM event WHERE {where_clause}
          ORDER BY created_at DESC, id DESC
@@ -1155,7 +1183,7 @@ fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<V
     while let Some(row) = rows.next()? {
         out.push(SessionEvent {
             id: row.get(0)?,
-            session_id: read_uuid(row, 1)?,
+            visit_id: read_uuid(row, 1)?,
             visitor_id: read_uuid_opt(row, 2)?,
             created_at: from_ts(row.get(3)?),
             url: row.get(4)?,
@@ -1182,7 +1210,7 @@ fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<Revenue>> {
     let filters = Filters::new(query);
 
     let sql = format!(
-        "SELECT id, website_id, session_id, event_id, event_name, currency, revenue, created_at
+        "SELECT id, website_id, visit_id, event_id, event_name, currency, revenue, created_at
          FROM revenue WHERE {where_clause}
          ORDER BY created_at DESC, id DESC
          LIMIT {limit} OFFSET {offset}",
@@ -1197,7 +1225,7 @@ fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<Revenue>> {
     while let Some(row) = rows.next()? {
         out.push(Revenue {
             website_id: row.get(1)?,
-            session_id: read_uuid_opt(row, 2)?,
+            visit_id: read_uuid_opt(row, 2)?,
             event_id: row.get(3)?,
             event_name: row.get(4)?,
             currency: row.get(5)?,

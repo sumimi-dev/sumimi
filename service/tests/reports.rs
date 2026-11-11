@@ -105,7 +105,6 @@ fn hit(
         } else {
             HitKind::Pageview
         })
-        .visit(&format!("visit-{session}"))
         .url(url)
         .url_query(if query.is_empty() {
             None

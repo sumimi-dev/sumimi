@@ -310,8 +310,8 @@ pub struct WebsitePatch {
 pub struct SessionEvent {
     /// The row id — the tiebreaker when two events share a timestamp.
     pub id: i64,
-    /// The session the event belongs to.
-    pub session_id: Uuid,
+    /// The visit the event belongs to.
+    pub visit_id: Uuid,
     /// The rotating visitor id.
     pub visitor_id: Option<Uuid>,
     /// When it happened.
@@ -383,14 +383,14 @@ pub fn group_sessions(
         std::collections::HashMap::new();
     for event in events {
         by_session
-            .entry(event.session_id)
+            .entry(event.visit_id)
             .or_default()
             .push(event);
     }
 
     let mut rows: Vec<SessionRow> = by_session
         .into_iter()
-        .map(|(session_id, mut group)| {
+        .map(|(visit_id, mut group)| {
             group.sort_by(|a, b| {
                 a.created_at
                     .cmp(&b.created_at)
@@ -410,7 +410,7 @@ pub fn group_sessions(
             };
 
             SessionRow {
-                id: session_id.to_string(),
+                id: visit_id.to_string(),
                 website_id: website_id.to_string(),
                 created_at: first.created_at,
                 updated_at: last.created_at,

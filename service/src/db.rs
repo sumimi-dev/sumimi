@@ -42,7 +42,11 @@ use duckdb::Connection;
 /// * v6 — the fields the reference implementation has and we did not: the
 ///   **visit** id (a visit inside a session), the referrer's **display name**
 ///   and the **coordinates**. The channel's value set is aligned with it too.
-pub const SCHEMA_VERSION: i64 = 6;
+/// * v7 — the ids are named after what they are: `visit_id` is the visit (what
+///   we used to call the session id), `visitor_id` is the visitor, and
+///   `user_id` is the identity the site owner knows the visitor by (Umami's
+///   `distinct_id` column). The hour-long visit id of v6 is gone.
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The columns of the `event` table.
 ///
@@ -51,9 +55,9 @@ pub const SCHEMA_VERSION: i64 = 6;
 pub const EVENT_COLUMNS: &str = "
     id              BIGINT NOT NULL,
     website_id      VARCHAR NOT NULL,
-    session_id      UUID NOT NULL,
+    visit_id        UUID NOT NULL,
     visitor_id      UUID NOT NULL,
-    visit_id        UUID,
+    user_id         UUID,
     created_at      TIMESTAMP NOT NULL,
 
     url             VARCHAR,
@@ -108,7 +112,7 @@ pub const EVENT_COLUMNS: &str = "
 pub const REVENUE_COLUMNS: &str = "
     id          BIGINT NOT NULL,
     website_id  VARCHAR NOT NULL,
-    session_id  UUID,
+    visit_id    UUID,
     event_id    BIGINT,
     event_name  VARCHAR,
     currency    VARCHAR NOT NULL DEFAULT 'USD',
@@ -269,9 +273,9 @@ pub fn event_row<'a>(
     vec![
         id,
         &hit.website_id,
-        &hit.session_id,
-        &hit.visitor_id,
         &hit.visit_id,
+        &hit.visitor_id,
+        &hit.user_id,
         &hit.created_at,
         &hit.url,
         &hit.url_query,
@@ -344,18 +348,29 @@ fn migration_select_list(conn: &Connection, table: &str, names: &[String]) -> St
     names
         .iter()
         .map(|name| {
+            // The old `visit_id` was a half-hour window inside the session; the
+            // new `visit_id` is that session itself, which the old file stored
+            // as `session_id`. The old hour-long window is dropped.
+            let source = match (table, name.as_str()) {
+                ("event", "visit_id") | ("revenue", "visit_id") => "session_id",
+                _ => name.as_str(),
+            };
             // A column the old database never had stays empty.
-            if !column_exists(conn, table, name) {
+            if !column_exists(conn, table, source) {
                 return "NULL".to_string();
             }
             let is_id = matches!(
-                (table, name.as_str()),
-                ("event", "session_id") | ("event", "visitor_id") | ("revenue", "session_id")
+                (table, source),
+                ("event", "session_id")
+                    | ("event", "visit_id")
+                    | ("event", "visitor_id")
+                    | ("revenue", "session_id")
+                    | ("revenue", "visit_id")
             );
             if is_id {
-                uuid_from_text(name)
+                uuid_from_text(source)
             } else {
-                name.clone()
+                source.to_string()
             }
         })
         .collect::<Vec<_>>()

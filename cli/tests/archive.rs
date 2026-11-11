@@ -42,7 +42,7 @@ CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
     substr(sha256(s), 21, 12) AS UUID);
 
 INSERT INTO event (
-    id, website_id, session_id, visitor_id, created_at, url, url_query, title,
+    id, website_id, visit_id, visitor_id, created_at, url, url_query, title,
     referrer, referrer_path, referrer_query, hostname,
     browser, browser_version, os, os_version, device, screen, language,
     country, region, city,
@@ -69,7 +69,7 @@ FROM generate_series(1, 50000) t(i);
 "#,
         )?;
         conn.execute(
-            "INSERT INTO event (id, website_id, session_id, visitor_id, created_at, url, hostname,
+            "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url, hostname,
                     event_type, event_name, tag, data)
              VALUES (999999, 'w1', uuid_of('s1'), uuid_of('v1'), now()::TIMESTAMP, '/signup',
                      'example.com', 'event', 'signup', 'cta', '{}')",

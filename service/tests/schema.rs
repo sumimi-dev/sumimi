@@ -123,7 +123,7 @@ fn the_ids_are_unique_without_a_constraint() {
     for i in 0..500 {
         db.with_write(|conn| {
             conn.execute(
-                "INSERT INTO event (id, website_id, session_id, visitor_id, created_at, url)
+                "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url)
                  VALUES (?1, 'w', ?2, ?3, now(), '/x')",
                 duckdb::params![
                     i as i64,
@@ -293,7 +293,7 @@ fn deleting_a_website_removes_its_events() {
         )?;
         for (id, website) in [(1i64, "w1"), (2, "w1"), (3, "w2")] {
             conn.execute(
-                "INSERT INTO event (id, website_id, session_id, visitor_id, created_at, url)
+                "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url)
                  VALUES (?1, ?2, ?3, ?4, now(), '/x')",
                 duckdb::params![
                     id,
@@ -371,7 +371,7 @@ fn a_v3_database_is_migrated_to_uuids() {
 
         // The ids are UUIDs now.
         let ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT DISTINCT session_id::VARCHAR FROM event")?;
+            let mut stmt = conn.prepare("SELECT DISTINCT visit_id::VARCHAR FROM event")?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(row) = rows.next()? {
@@ -389,12 +389,12 @@ fn a_v3_database_is_migrated_to_uuids() {
 
         // The same old id always becomes the same UUID.
         let first: String = conn.query_row(
-            "SELECT session_id::VARCHAR FROM event WHERE id = 1",
+            "SELECT visit_id::VARCHAR FROM event WHERE id = 1",
             [],
             |row| row.get(0),
         )?;
         let second: String = conn.query_row(
-            "SELECT session_id::VARCHAR FROM event WHERE id = 2",
+            "SELECT visit_id::VARCHAR FROM event WHERE id = 2",
             [],
             |row| row.get(0),
         )?;
@@ -500,7 +500,7 @@ fn a_v3_sqlite_database_is_migrated_to_uuids() {
     // And the ids are UUIDs now.
     let ids: Vec<String> = backend
         .with_connection(|conn| {
-            let mut stmt = conn.prepare("SELECT DISTINCT session_id FROM event")?;
+            let mut stmt = conn.prepare("SELECT DISTINCT visit_id FROM event")?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(row) = rows.next()? {
@@ -825,7 +825,7 @@ fn a_v3_database_is_migrated_all_the_way() {
     let db = Db::open(&path, "256MB").unwrap();
     db.with_read(|conn| {
         let ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT DISTINCT session_id::VARCHAR FROM event")?;
+            let mut stmt = conn.prepare("SELECT DISTINCT visit_id::VARCHAR FROM event")?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(row) = rows.next()? {
@@ -897,7 +897,7 @@ fn a_v3_sqlite_database_is_migrated_all_the_way() {
                 );
             }
             // And the ids are UUIDs.
-            let mut stmt = conn.prepare("SELECT DISTINCT session_id FROM event")?;
+            let mut stmt = conn.prepare("SELECT DISTINCT visit_id FROM event")?;
             let mut rows = stmt.query([])?;
             let mut sessions = 0;
             while let Some(row) = rows.next()? {
@@ -926,4 +926,139 @@ fn the_event_row_has_a_value_for_every_column() {
     let row = sumimi_service::db::event_row(&1, &hit, &kind);
 
     assert_eq!(row.len(), sumimi_service::db::event_columns().len());
+}
+
+/// A v6 file — the one with the hour-long `visit_id` — becomes the current
+/// one: the visit id is what used to be the session id, the identity the site
+/// owner knows the visitor by is new and empty, and no row is lost.
+#[test]
+fn a_v6_database_is_migrated_to_the_visit_and_user_ids() {
+    let path = temp_db("migrate-v6-to-v7");
+    // v6 is v4 plus the channel, the hour-long visit id, the referrer's display
+    // name and the coordinates.
+    let columns = V4_COLUMNS
+        .replace(
+            "    hostname        VARCHAR,",
+            "    hostname        VARCHAR,\n    channel         VARCHAR,\n    visit_id        UUID,\n    referrer_name   VARCHAR,\n    latitude        DOUBLE,\n    longitude       DOUBLE,",
+        );
+    write_old_database(&path, 6, &columns);
+
+    // The session the old file had, and the hour-long visit inside it.
+    let session = sumimi_service::ua::uuid_from_text("session-a").to_string();
+    let hour = sumimi_service::ua::uuid_from_text("hour-a").to_string();
+    // The hour-long visit id is set on the **old** file — with a raw connection,
+    // because opening it through `Db` would migrate it right here.
+    {
+        let raw = duckdb::Connection::open(&path).unwrap();
+        raw.execute(
+            "UPDATE event SET visit_id = ?::UUID WHERE id = 1",
+            duckdb::params![hour],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path, "256MB").unwrap();
+    db.with_read(|conn| {
+        let count: i64 = conn.query_row("SELECT count(*) FROM event", [], |row| row.get(0))?;
+        assert_eq!(count, 3, "no row may be lost in the migration");
+
+        // The visit id is the old session id.
+        let visit: String = conn.query_row(
+            "SELECT visit_id::VARCHAR FROM event WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            visit, session,
+            "the visit id must be what the old file called the session id"
+        );
+
+        // The identity the site owner knows the visitor by is new: empty.
+        let user: Option<String> =
+            conn.query_row("SELECT user_id::VARCHAR FROM event WHERE id = 1", [], |row| {
+                row.get(0)
+            })?;
+        assert!(user.is_none(), "the old file has no user id");
+
+        // The visitor is where it was.
+        let visitor: String = conn.query_row(
+            "SELECT visitor_id::VARCHAR FROM event WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            visitor,
+            sumimi_service::ua::uuid_from_text("visitor-a").to_string(),
+            "the visitor id must survive the migration"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .unwrap();
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// The same for SQLite: the visit id is the old session id, the user id is
+/// new and empty.
+#[test]
+fn a_v6_sqlite_database_is_migrated_to_the_visit_and_user_ids() {
+    use sumimi_service::sqlite::SqliteBackend;
+
+    let dir = std::env::temp_dir().join(format!(
+        "sumimi-schema-sqlite-v6-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("data.sqlite");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            r#"{V3_SQLITE_EVENT}
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO meta VALUES ('schema_version', '6');
+            ALTER TABLE event ADD COLUMN visit_id BLOB;
+            INSERT INTO event (id, website_id, session_id, visitor_id, visit_id, created_at, url)
+            VALUES (1, 'w1', 'session-a', 'visitor-a', X'00000000000000000000000000000001', 1700000000, '/one'),
+                   (2, 'w1', 'session-a', 'visitor-a', X'00000000000000000000000000000002', 1700000060, '/two'),
+                   (3, 'w1', 'session-b', 'visitor-a', X'00000000000000000000000000000003', 1700000120, '/three');
+            "#
+        ))
+        .unwrap();
+    }
+
+    let backend = SqliteBackend::open(&path).unwrap();
+
+    let count: i64 = backend
+        .with_connection(|conn| {
+            let count: i64 = conn.query_row("SELECT count(*) FROM event", [], |row| row.get(0))?;
+            Ok(count)
+        })
+        .unwrap();
+    assert_eq!(count, 3, "no row may be lost in the migration");
+
+    let (visit, user_is_null) = backend
+        .with_connection(|conn| {
+            let visit: String = conn.query_row(
+                "SELECT hex(visit_id) FROM event WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )?;
+            let user_is_null: bool = conn.query_row(
+                "SELECT user_id IS NULL FROM event WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok((visit, user_is_null))
+        })
+        .unwrap();
+    assert_eq!(
+        visit,
+        "73657373696F6E2D61".to_uppercase(),
+        "the visit id must be what the old file called the session id"
+    );
+    assert!(user_is_null, "the old file has no user id");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

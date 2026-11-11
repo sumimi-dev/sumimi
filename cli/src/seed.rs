@@ -231,11 +231,9 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
 
                 hits.push(Hit {
                     website_id: website_id.clone(),
-                    session_id,
+                    visit_id: session_id,
                     visitor_id,
-                    visit_id: Some(sumimi_service::ua::uuid_from_text(&format!(
-                        "visit-{session_id}"
-                    ))),
+                    user_id: None,
                     retention_days: 0,
                     kind: HitKind::Pageview,
                     created_at: at,
@@ -299,11 +297,9 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                 let name = rng.weighted(EVENTS);
                 hits.push(Hit {
                     website_id: website_id.clone(),
-                    session_id,
+                    visit_id: session_id,
                     visitor_id,
-                    visit_id: Some(sumimi_service::ua::uuid_from_text(&format!(
-                        "visit-{session_id}"
-                    ))),
+                    user_id: None,
                     retention_days: 0,
                     kind: HitKind::Event,
                     created_at: started + chrono::Duration::seconds(rng.between(30, 600)),

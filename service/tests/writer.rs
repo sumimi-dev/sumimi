@@ -260,7 +260,7 @@ fn a_batch_never_exceeds_the_cap() {
     for index in 0..100_000 {
         writer.push(sumimi_service::models::Hit {
             website_id: "w1".to_string(),
-            session_id: sumimi_service::ua::uuid_from_text("s"),
+            visit_id: sumimi_service::ua::uuid_from_text("s"),
             visitor_id: sumimi_service::ua::uuid_from_text("v"),
             created_at: now,
             url: Some(format!("/p-{index}")),

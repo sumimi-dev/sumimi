@@ -219,16 +219,17 @@ pub fn build_hit(
     let ip = client_ip(headers, peer);
     let ip_prefix = ua::ip_prefix(&ip);
 
-    // Session id: use the client's when provided (Umami compatibility), otherwise derive
-    // a rotating one. The raw IP is never stored — only a prefix feeds the HMAC.
+    // Visit id: a window of activity. The client may say where the boundary is
+    // (our `sessionId`); otherwise it is derived from the request. The raw IP
+    // is never stored — only a prefix feeds the HMAC.
     //
     // Either way the id is a **UUID**: 16 bytes on disk, and the client's own
     // token is hashed rather than stored verbatim.
-    let session_id = match raw.session_id.as_deref() {
-        Some(client_id) if is_safe_session_id(client_id) => ua::uuid_from_text(client_id),
+    let visit_id = match raw.session_id.as_deref() {
+        Some(client_id) if is_safe_client_id(client_id) => ua::uuid_from_text(client_id),
         _ => {
             let bucket = (chrono::Utc::now().timestamp() / SESSION_BUCKET_SECONDS) as u64;
-            ua::derive_session_id(
+            ua::derive_visit_id(
                 state.jwt_secret.as_bytes(),
                 &ip_prefix,
                 &user_agent,
@@ -240,7 +241,7 @@ pub fn build_hit(
 
     // Visitor id: the same derivation without a time bucket, so it survives across days
     // (Umami's `distinct_id`).
-    let visitor_id = ua::derive_session_id(
+    let visitor_id = ua::derive_visit_id(
         state.jwt_secret.as_bytes(),
         &ip_prefix,
         &user_agent,
@@ -248,13 +249,18 @@ pub fn build_hit(
         0,
     );
 
-    // The visit: the hour inside the session. The reference implementation has
-    // both — a session and a visit — and counts its channel report per visit.
+    // The identity the site owner knows the visitor by — their own user id, a
+    // tenant id, a device id (Umami's `distinct_id` column). The client sends it
+    // as `id`; we hash it, so the raw token never reaches the disk.
+    //
+    // Mixing it into the visitor id (so an identified visitor is not merged with
+    // the anonymous ones) is the next step — see sumimi#39.
+    let user_id = match raw.id.as_deref() {
+        Some(client_id) if is_safe_client_id(client_id) => Some(ua::uuid_from_text(client_id)),
+        _ => None,
+    };
+
     let created_at = crate::db::now();
-    let visit_id = ua::uuid_from_text(&format!(
-        "{session_id}-{}",
-        created_at.and_utc().timestamp().div_euclid(3600)
-    ));
 
     // The custom event's data — moved out of the payload ✓ (it is taken
     // first, because the fields below are moved out one by one ✓).
@@ -383,9 +389,9 @@ pub fn build_hit(
 
     Ok(Hit {
         website_id: meta.id,
-        session_id,
+        visit_id,
         visitor_id,
-        visit_id: Some(visit_id),
+        user_id,
         retention_days: meta.retention_days,
         kind,
         created_at,
@@ -552,7 +558,7 @@ fn client_ip(headers: &HeaderMap, peer: Option<&ConnectInfo<SocketAddr>>) -> Str
 }
 
 /// Accept only ids that look like a UUID or a simple token (never user input verbatim).
-fn is_safe_session_id(id: &str) -> bool {
+fn is_safe_client_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id
@@ -617,10 +623,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_session_ids() {
-        assert!(is_safe_session_id("0f8fad5b-d9cb-469f-a165-70867728950e"));
-        assert!(!is_safe_session_id("bad id; DROP TABLE"));
-        assert!(!is_safe_session_id(""));
+    fn rejects_unsafe_client_ids() {
+        assert!(is_safe_client_id("0f8fad5b-d9cb-469f-a165-70867728950e"));
+        assert!(!is_safe_client_id("bad id; DROP TABLE"));
+        assert!(!is_safe_client_id(""));
     }
 
     #[test]

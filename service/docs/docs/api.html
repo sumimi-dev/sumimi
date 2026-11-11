@@ -160,6 +160,7 @@
               <tr><td><code>url</code>, <code>referrer</code>, <code>hostname</code>, <code>title</code>, <code>language</code>, <code>screen</code></td><td>The usual payload fields.</td></tr>
               <tr><td><code>name</code></td><td>Custom event name.</td></tr>
               <tr><td><code>sessionId</code></td><td>A client-supplied session id. Only accepted if it looks like a UUID or a simple token — never arbitrary user input.</td></tr>
+              <tr><td><code>id</code></td><td>The identity <em>you</em> know the visitor by — your own user id, a tenant id, a device id (Umami calls it <code>distinct_id</code>). Stored hashed; never stored verbatim. It does not replace the visitor id: the visitor id stays server-derived, and the two are kept apart.</td></tr>
               <tr><td><code>data</code></td><td>Base64-encoded JSON. Decoded and stored as-is.</td></tr>
             </tbody>
           </table>

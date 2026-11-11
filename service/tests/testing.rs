@@ -19,7 +19,7 @@ fn a_builder_names_only_what_the_caller_cares_about() {
     assert_eq!(hit.title, None);
     assert_eq!(hit.referrer, None);
     assert_eq!(hit.country, None);
-    assert_eq!(hit.visit_id, None);
+    assert_eq!(hit.user_id, None);
     assert_eq!(hit.retention_days, 0);
     assert_eq!(hit.kind, HitKind::Pageview);
 }
@@ -29,12 +29,12 @@ fn a_builder_names_only_what_the_caller_cares_about() {
 fn the_same_name_means_the_same_session() {
     let one = HitBuilder::new("w1", "s1", "v1").build();
     let two = HitBuilder::new("w1", "s1", "v1").build();
-    let other_session = HitBuilder::new("w1", "s2", "v1").build();
+    let other_visit = HitBuilder::new("w1", "s2", "v1").build();
     let other_visitor = HitBuilder::new("w1", "s1", "v2").build();
 
-    assert_eq!(one.session_id, two.session_id, "the same session");
+    assert_eq!(one.visit_id, two.visit_id, "the same visit");
     assert_eq!(one.visitor_id, two.visitor_id, "the same visitor");
-    assert_ne!(one.session_id, other_session.session_id, "a different session");
+    assert_ne!(one.visit_id, other_visit.visit_id, "a different visit");
     assert_ne!(
         one.visitor_id, other_visitor.visitor_id,
         "a different visitor"
@@ -82,14 +82,14 @@ fn the_kind_is_the_one_that_was_asked_for() {
     assert_eq!(hit.name.as_deref(), Some("signup"));
 }
 
-/// The visit, when there is one.
+/// The identity the site owner knows the visitor by, when there is one.
 #[test]
-fn the_visit_is_named_like_the_session() {
-    let hit = HitBuilder::new("w1", "s1", "v1").visit("visit-1").build();
-    assert!(hit.visit_id.is_some());
+fn the_user_is_named() {
+    let hit = HitBuilder::new("w1", "s1", "v1").user("user-1").build();
+    assert!(hit.user_id.is_some());
 
-    let same = HitBuilder::new("w1", "s1", "v1").visit("visit-1").build();
-    assert_eq!(hit.visit_id, same.visit_id);
+    let same = HitBuilder::new("w1", "s1", "v1").user("user-1").build();
+    assert_eq!(hit.user_id, same.user_id);
 }
 
 /// The numbers are numbers.

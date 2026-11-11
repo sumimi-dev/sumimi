@@ -54,7 +54,7 @@ async fn app_with(
             [],
         )?;
         conn.execute(
-            "INSERT INTO event (id, website_id, session_id, visitor_id, created_at, url, event_type)
+            "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url, event_type)
              VALUES (1, 'w1', ?1, ?2, now(), '/one', 'pageview')",
             duckdb::params![
                 sumimi_service::ua::uuid_from_text("s1"),

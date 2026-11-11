@@ -9,22 +9,23 @@ use uuid::Uuid;
 /// user who switches from Umami does not lose a single dimension. The storage engine
 /// (DuckDB) is what makes that affordable.
 ///
-/// Every field is optional except the identity of the hit: `website_id`, `session_id`,
+/// Every field is optional except the identity of the hit: `website_id`, `visit_id`,
 /// `visitor_id` and `created_at`.
 #[derive(Debug, Clone, Default)]
 pub struct Hit {
     /// The website the hit belongs to.
     pub website_id: String,
-    /// The session the hit belongs to.
-    pub session_id: Uuid,
+    /// The visit: a stretch of activity inside one visit window.
+    ///
+    /// This is what Umami calls a `visit_id` (its `session_id` is our
+    /// `visitor_id`). We name it after what it is.
+    pub visit_id: Uuid,
     /// The visitor, stable across days (Umami's `distinct_id`).
     pub visitor_id: Uuid,
-    /// The visit: a half-hour window inside the session.
-    ///
-    /// The reference implementation has both a session and a visit, and the
-    /// visit is the one its channel report counts. We keep both, so the two
-    /// numbers can be compared.
-    pub visit_id: Option<Uuid>,
+    /// The identity the site owner knows the visitor by (Umami's `distinct_id`
+    /// column): their own user id, a tenant id, a device id — whatever the
+    /// client sends. Empty when the client sends none.
+    pub user_id: Option<Uuid>,
     /// Retention window of the website in days (`0` = keep forever).
     pub retention_days: i32,
     /// What kind of hit this is.
@@ -170,8 +171,8 @@ impl HitKind {
 pub struct Revenue {
     /// The website the revenue belongs to.
     pub website_id: String,
-    /// The session that earned it.
-    pub session_id: Option<Uuid>,
+    /// The visit that earned it.
+    pub visit_id: Option<Uuid>,
     /// The event that earned it.
     pub event_id: Option<i64>,
     /// The name of the revenue source (`carbon`, `adsense`, …).
@@ -262,9 +263,14 @@ pub struct Payload {
     /// The city of the visitor.
     #[serde(default, deserialize_with = "optional_text")]
     pub city: Option<String>,
-    /// The client's own session id.
+    /// The client's own session id (ours; Umami's client sends its identity
+    /// in `id` instead).
     #[serde(default, deserialize_with = "optional_text", rename = "sessionId")]
     pub session_id: Option<String>,
+    /// The identity the site owner knows the visitor by (Umami's `distinct_id`):
+    /// their own user id, a tenant id, a device id — whatever they send.
+    #[serde(default, deserialize_with = "optional_text", rename = "id")]
+    pub id: Option<String>,
     /// Largest Contentful Paint, in milliseconds.
     #[serde(default, deserialize_with = "optional_number")]
     pub lcp: Option<f64>,

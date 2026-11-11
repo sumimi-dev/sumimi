@@ -206,7 +206,6 @@ fn hit(website: &str, number: usize, now: chrono::NaiveDateTime) -> Hit {
         &format!("visitor-{visitor}"),
     )
     .at(now)
-    .visit(&format!("visit-{}", number / 4))
     .url(format!("/blog/post-{page}"))
     .url_query("utm_source=twitter&utm_medium=cpc")
     .title(format!("Post {page} — the title of the page"))

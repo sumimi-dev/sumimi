@@ -109,7 +109,7 @@ impl HitBuilder {
         Self {
             hit: Hit {
                 website_id: website_id.to_string(),
-                session_id: uuid_from_text(session),
+                visit_id: uuid_from_text(session),
                 visitor_id: uuid_from_text(visitor),
                 kind: HitKind::Pageview,
                 created_at: chrono::Utc::now().naive_utc(),
@@ -137,8 +137,8 @@ impl HitBuilder {
     }
 
     /// The session, by id.
-    pub fn session_id(mut self, id: Uuid) -> Self {
-        self.hit.session_id = id;
+    pub fn visit_id(mut self, id: Uuid) -> Self {
+        self.hit.visit_id = id;
         self
     }
 
@@ -148,15 +148,15 @@ impl HitBuilder {
         self
     }
 
-    /// The visit this hit belongs to, by name.
-    pub fn visit(mut self, visit: &str) -> Self {
-        self.hit.visit_id = Some(uuid_from_text(visit));
+    /// The identity the site owner knows the visitor by, by name.
+    pub fn user(mut self, user: &str) -> Self {
+        self.hit.user_id = Some(uuid_from_text(user));
         self
     }
 
-    /// The visit this hit belongs to, by id.
-    pub fn visit_id(mut self, id: Uuid) -> Self {
-        self.hit.visit_id = Some(id);
+    /// The identity the site owner knows the visitor by, by id.
+    pub fn user_id(mut self, id: Uuid) -> Self {
+        self.hit.user_id = Some(id);
         self
     }
 
@@ -255,7 +255,6 @@ pub fn traffic(views: i64) -> Vec<Hit> {
                 &format!("visitor-{:08x}", session % 40_000),
             )
             .at(base + chrono::Duration::seconds(number * 37 % (30 * 86_400)))
-            .visit(&format!("visit-{session:08x}"))
             .url(PAGES[index % PAGES.len()])
             .url_query("utm_source=twitter&utm_medium=cpc")
             .title(format!("A post about topic {}", number % 500))

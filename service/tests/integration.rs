@@ -32,7 +32,6 @@ impl Drop for WriterGuard {
 /// A synthetic hit — every field set, so the test can prove nothing is lost.
 fn hit(website_id: &str, url: &str) -> Hit {
     HitBuilder::new(website_id, "session-1", "visitor-1")
-        .visit("visit-1")
         .url(url)
         .url_query("utm_source=twitter")
         .title("Example")
@@ -102,7 +101,7 @@ async fn writer_flushes_queued_hits() {
                 "SELECT url, url_query, title, referrer, referrer_path, referrer_query, hostname,
                         browser, os, device, screen, language, country,
                         utm_source, utm_medium, utm_campaign, gclid,
-                        lcp, inp, cls, fcp, ttfb, session_id, visitor_id
+                        lcp, inp, cls, fcp, ttfb, visit_id, visitor_id
                  FROM event WHERE url = '/one'",
             )?;
             let mut rows = stmt.query([])?;
@@ -246,7 +245,7 @@ async fn api_matches_the_shared_report_layer() {
             let session = sumimi_service::ua::uuid_from_text(session);
             let visitor = sumimi_service::ua::uuid_from_text(visitor);
             conn.execute(
-                "INSERT INTO event (id, website_id, session_id, visitor_id, created_at, url,
+                "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url,
                         event_type, browser, os, device)
                  VALUES (?1, 'website-1', ?2, ?3, now(), ?4, 'pageview', 'Chrome', 'macOS', 'desktop')",
                 duckdb::params![id, session, visitor, url],

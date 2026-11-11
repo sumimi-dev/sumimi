@@ -77,7 +77,6 @@ fn hits() -> Vec<Hit> {
             let number = events.len();
             events.push(
                 HitBuilder::new("website-1", &format!("session-{}", number % 4), &format!("visitor-{}", number % 5))
-                    .visit(&format!("visit-{}", number % 4))
                     .url(url)
                     .url_query("utm_source=twitter")
                     .title("Example")

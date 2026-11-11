@@ -514,7 +514,7 @@ impl Server {
 
                 let hit = Hit {
                     website_id: website.clone(),
-                    session_id: session_id(&website),
+                    visit_id: session_id(&website),
                     visitor_id: visitor_id(&website),
                     retention_days: retention,
                     kind: match kind.as_str() {

@@ -399,7 +399,7 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
     let sql = format!(
         "SELECT COUNT(*) FILTER (WHERE {pageviews}),
                 COUNT(DISTINCT visitor_id),
-                COUNT(DISTINCT session_id)
+                COUNT(DISTINCT visit_id)
          FROM event WHERE {filters}",
         pageviews = PAGEVIEWS,
         filters = filters.clause()
@@ -417,13 +417,13 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
         "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
                 COALESCE(AVG(d), 0)
          FROM (
-             SELECT session_id,
+             SELECT visit_id,
                     COUNT(*) FILTER (WHERE {pageviews}) AS n,
                     MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
                     epoch(MAX(created_at) FILTER (WHERE {pageviews})
                         - MIN(created_at) FILTER (WHERE {pageviews})) AS d
              FROM event WHERE {filters}
-             GROUP BY session_id
+             GROUP BY visit_id
          )",
         pageviews = PAGEVIEWS,
         filters = filters.clause()
@@ -578,7 +578,7 @@ fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
 fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
     let filters = Filters::new(query);
     let sql = format!(
-        "SELECT id, website_id, session_id, created_at, event_name, url, hostname, channel, data,
+        "SELECT id, website_id, visit_id, created_at, event_name, url, hostname, channel, data,
                 referrer, referrer_path, referrer_query, country, city, browser, os,
                 utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
          FROM event WHERE {where_clause}
@@ -630,7 +630,7 @@ fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
 fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
     let filters = Filters::new(query);
     let sql = format!(
-        "SELECT id, session_id, visitor_id, created_at, url, title, referrer, referrer_path,
+        "SELECT id, visit_id, visitor_id, created_at, url, title, referrer, referrer_path,
                 hostname, channel, browser, os, device, country, region, city, language, screen
          FROM event WHERE {where_clause}
          ORDER BY created_at DESC, id DESC
@@ -645,7 +645,7 @@ fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<V
     while let Some(row) = rows.next()? {
         out.push(SessionEvent {
             id: row.get(0)?,
-            session_id: row.get(1)?,
+            visit_id: row.get(1)?,
             visitor_id: row.get::<_, Option<uuid::Uuid>>(2)?,
             created_at: row.get(3)?,
             url: row.get(4)?,
@@ -671,7 +671,7 @@ fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<V
 fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<crate::models::Revenue>> {
     let filters = Filters::new(query);
     let sql = format!(
-        "SELECT website_id, session_id, event_id, event_name, currency, revenue, created_at
+        "SELECT website_id, visit_id, event_id, event_name, currency, revenue, created_at
          FROM revenue WHERE {where_clause}
          ORDER BY created_at DESC, id DESC
          LIMIT {limit} OFFSET {offset}",
@@ -686,7 +686,7 @@ fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<crate::models::
     while let Some(row) = rows.next()? {
         out.push(crate::models::Revenue {
             website_id: row.get(0)?,
-            session_id: row.get::<_, Option<uuid::Uuid>>(1)?,
+            visit_id: row.get::<_, Option<uuid::Uuid>>(1)?,
             event_id: row.get(2)?,
             event_name: row.get(3)?,
             currency: row.get(4)?,
@@ -757,7 +757,7 @@ fn write_revenue(conn: &Connection, records: &[crate::models::Revenue]) -> Resul
         appender.append_row(duckdb::params![
             next_id + index as i64,
             record.website_id,
-            record.session_id,
+            record.visit_id,
             record.event_id,
             record.event_name,
             record.currency,

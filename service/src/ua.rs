@@ -149,7 +149,7 @@ pub fn ip_prefix(ip: &str) -> String {
     }
 }
 
-/// Derive a rotating, non-reversible session id.
+/// Derive a rotating, non-reversible visit id.
 ///
 /// The id is a HMAC over (server secret, coarse IP prefix, user agent, website, time
 /// bucket). It cannot be reversed into an IP address, is not stable across time buckets
@@ -157,7 +157,7 @@ pub fn ip_prefix(ip: &str) -> String {
 ///
 /// The result is a **UUID**: 16 bytes, not a 36-character string. At 60 million page
 /// views that is the difference between 1.1 GB and 2.2 GB of session ids alone.
-pub fn derive_session_id(
+pub fn derive_visit_id(
     secret: &[u8],
     ip_prefix: &str,
     user_agent: &str,
@@ -275,11 +275,11 @@ mod tests {
     }
 
     #[test]
-    fn session_id_is_stable_within_a_bucket_and_rotates() {
+    fn visit_id_is_stable_within_a_bucket_and_rotates() {
         let args = (b"secret", "203.0.113", "UA", "website", 42);
-        let a = derive_session_id(args.0, args.1, args.2, args.3, args.4);
-        let b = derive_session_id(args.0, args.1, args.2, args.3, args.4);
-        let c = derive_session_id(args.0, args.1, args.2, args.3, 43);
+        let a = derive_visit_id(args.0, args.1, args.2, args.3, args.4);
+        let b = derive_visit_id(args.0, args.1, args.2, args.3, args.4);
+        let c = derive_visit_id(args.0, args.1, args.2, args.3, 43);
         assert_eq!(a, b);
         assert_ne!(a, c);
         // 16 bytes, not a 36-character string.
