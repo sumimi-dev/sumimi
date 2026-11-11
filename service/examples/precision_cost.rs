@@ -301,6 +301,29 @@ fn variants(path: &Path) -> Result<()> {
             time: true,
         },
         Variant {
+            // The pair, kept whole: the visitor id and the second the session
+            // started, as one string. No hash — the id says what it is.
+            name: "visitor+second",
+            select: format!(
+                "* EXCLUDE ({session_col}), visitor_id::VARCHAR || '-' || \
+                          hash({session_col})::VARCHAR AS visit_id"
+            ),
+            key: Some("visit_id".to_string()),
+            bucket: "created_at",
+            time: true,
+        },
+        Variant {
+            // The same pair, as 16 bytes + 8 bytes.
+            name: "visitor+second blob",
+            select: format!(
+                "* EXCLUDE ({session_col}), decode(replace(visitor_id::VARCHAR, '-', ''), 'hex') \
+                          || decode(printf('%016x', hash({session_col})), 'hex') AS visit_id"
+            ),
+            key: Some("visit_id".to_string()),
+            bucket: "created_at",
+            time: true,
+        },
+        Variant {
             name: "derived key",
             select: format!(
                 "* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS window_start"

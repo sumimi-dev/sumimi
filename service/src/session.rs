@@ -6,15 +6,17 @@
 //! the same sessions, and no report has to sort a visitor's events to find
 //! where the gaps were.
 //!
-//! **The state is a cache, not a store.** It holds the visitors who are
-//! *active* — the ones seen within the idle timeout — and nothing else. A
-//! visitor who is not in it has been quiet for longer than the timeout, so the
-//! next event starts a new session, which is what the rule says anyway. So
-//! there is nothing to look up in the database, and no index to pay for.
+//! **The state is a cache, not a store.** It holds the visitors whose session
+//! the *server* is managing — the ones seen within the idle timeout — and
+//! nothing else. A visitor who is not in it has been quiet for longer than the
+//! timeout, so the next event starts a new session, which is what the rule says
+//! anyway. So there is nothing to look up in the database, and no index to pay
+//! for.
 //!
-//! The client's own session id is **not** the key. A client can send any
-//! string, and a client that invents one would invent sessions with it (see
-//! sumimi#33). The server decides.
+//! **The client's own session id wins.** When the client sends one, that *is*
+//! the session: the server does not cut it and keeps no state for it (see
+//! sumimi#33 — a client that invents session ids invents sessions). This
+//! module is the server's own answer, for the events that arrive without one.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

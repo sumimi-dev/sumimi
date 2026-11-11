@@ -227,22 +227,27 @@ pub fn build_hit(
         0,
     );
 
-    // The session: the window this event belongs to. **The server decides.**
+    // The session: **the client's own id if it sent one**, otherwise the one
+    // the server works out.
     //
-    // The cut is made here, when the event arrives — so the row carries the
-    // session it belongs to, and no report has to work out where the gaps
-    // were. The client's own session id is *not* the key: a client may send
-    // any string, and a client that invents one would invent sessions with it
-    // (see sumimi#33).
+    // The client's token is never stored verbatim — it is hashed into the id,
+    // so the column is always the same size and the raw token never reaches
+    // the disk. What the server sends is what the client will keep sending,
+    // so the session lasts as long as the client says it does.
     //
-    // The id is a pure function of the visitor and the moment the session
-    // started — no secret is needed, because the visitor id is already one-way.
-    // An offline import can work it out for itself, and so can anyone holding
-    // the row.
+    // When the client sends nothing, the server decides: the cut is made here,
+    // when the event arrives, so the row carries the session it belongs to and
+    // no report has to work out where the gaps were. The id is a pure function
+    // of the visitor and the moment the session started — no secret is needed,
+    // because the visitor id is already one-way, so an offline import can work
+    // it out for itself.
     let created_at = crate::db::now();
-    let visit_id = state
-        .sessions
-        .session(visitor_id, created_at.and_utc().timestamp_micros());
+    let visit_id = match raw.session_id.as_deref() {
+        Some(client_id) if is_safe_client_id(client_id) => ua::uuid_from_text(client_id),
+        _ => state
+            .sessions
+            .session(visitor_id, created_at.and_utc().timestamp_micros()),
+    };
 
     // The identity the site owner knows the visitor by — their own user id, a
     // tenant id, a device id (Umami's `distinct_id` column). The client sends it
