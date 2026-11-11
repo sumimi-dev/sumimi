@@ -23,6 +23,21 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Result};
 use duckdb::Connection;
 
+/// One way of writing the same rows.
+struct Variant {
+    /// What the variant is called.
+    name: &'static str,
+    /// The `SELECT` that builds the table out of `src.event`.
+    select: String,
+    /// The expression that identifies a session — `None` when the variant has
+    /// no session key (it dropped the column).
+    key: Option<String>,
+    /// The expression that buckets a day out of `created_at`.
+    bucket: &'static str,
+    /// Time the report queries on this variant?
+    time: bool,
+}
+
 /// The variants of the same data, one per unit.
 const UNITS: [(&str, &str); 4] = [
     ("TIMESTAMP (us)", "make_timestamp(us)"),
@@ -51,6 +66,14 @@ fn main() -> Result<()> {
                 .join(".cache/sumimi-scratch/big/data.duckdb")
         });
         real(&path)?;
+    }
+
+    if mode == "variants" || mode == "all" {
+        let path = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".cache/sumimi-scratch/big/data.duckdb")
+        });
+        variants(&path)?;
     }
 
     Ok(())
@@ -194,6 +217,168 @@ fn real(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What each column costs on its own, and what the **alternatives** cost.
+///
+/// The families are priced together in [`real`]; here every id is dropped on
+/// its own, and the two designs that would replace the stored session id are
+/// written out and measured:
+///
+/// * **derived key** — the session id is not stored; the row keeps the *window
+///   start* (one value per session) and the session key is the pair
+///   (visitor, window start), worked out when the report runs.
+/// * **8-byte id** — the session id is stored, but as 64 bits instead of 128.
+///
+/// The window start is stood in for by `hash(visit_id)`: one value per session,
+/// constant across that session's rows — the same cardinality structure the real
+/// column would have. It is *not* monotonic like a real window start, so the
+/// measurement is the pessimistic one.
+fn variants(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Err(anyhow!("{} does not exist", path.display()));
+    }
+
+    let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?;
+    let src = Connection::open_with_flags(path, config)?;
+    let rows: i64 = src.query_row("SELECT count(*) FROM event", [], |r| r.get(0))?;
+
+    // Which columns does this file actually have? The scratch dataset is older
+    // than the current schema: it still has the v6 `session_id` (the session)
+    // next to the v6 `visit_id` (an hour-long window inside it), and it has no
+    // `user_id`. So the column the session id lives in is worked out here
+    // instead of being assumed.
+    let mut stmt = src.prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_name = 'event' AND table_schema = 'main'",
+    )?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let has = |name: &str| names.iter().any(|n| n == name);
+    let session_col = if has("session_id") {
+        "session_id"
+    } else if has("visit_id") {
+        "visit_id"
+    } else {
+        return Err(anyhow!("the event table has no session id column"));
+    };
+    println!(
+        "session id column: {session_col}; columns: {}",
+        names.len()
+    );
+    println!();
+
+    // Which way does DuckDB let a **pair** be counted as one value? The
+    // composite key has to be exact: a hash of it would collide, and a
+    // session count that is off by one in a million is still wrong.
+    println!("== how a pair can be counted as one value ==");
+    let probe = Connection::open_in_memory()?;
+    for sql in [
+        "SELECT count(DISTINCT (a, b)) FROM (SELECT 1 a, 2 b UNION ALL SELECT 1, 3) t",
+        "SELECT count(DISTINCT struct_pack(a := a, b := b)) FROM (SELECT 1 a, 2 b UNION ALL SELECT 1, 3) t",
+        "SELECT count(DISTINCT a || '-' || b) FROM (SELECT 1 a, 2 b UNION ALL SELECT 1, 3) t",
+        "SELECT count(DISTINCT hash(a, b)) FROM (SELECT 1 a, 2 b UNION ALL SELECT 1, 3) t",
+    ] {
+        match probe.query_row(sql, [], |r| r.get::<_, i64>(0)) {
+            Ok(n) => println!("  ok  {n}  {sql}"),
+            Err(e) => println!("  no      {sql}\n           {e}"),
+        }
+    }
+    println!();
+
+    let mut variants = vec![
+        Variant {
+            name: "everything",
+            select: "*".to_string(),
+            key: Some(session_col.to_string()),
+            bucket: "created_at",
+            time: true,
+        },
+        Variant {
+            name: "8-byte id only",
+            select: format!("* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS visit_id"),
+            key: Some("visit_id".to_string()),
+            bucket: "created_at",
+            time: true,
+        },
+        Variant {
+            name: "derived key",
+            select: format!(
+                "* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS window_start"
+            ),
+            key: Some("(visitor_id, window_start)".to_string()),
+            bucket: "created_at",
+            time: true,
+        },
+    ];
+
+    let dir = std::env::temp_dir().join("sumimi-precision-variants");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let escaped = path.to_string_lossy().replace('\'', "''");
+
+    println!("== {rows} rows ==\n");
+    println!("{:<18} {:>12} {:>12} {:>12}", "variant", "file", "bytes/row", "saved/row");
+    let mut baseline: Option<u64> = None;
+    for variant in &variants {
+        let out = dir.join("t.duckdb");
+        let _ = std::fs::remove_file(&out);
+        let mut times: Vec<(String, f64)> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        {
+            let dest = Connection::open(&out)?;
+            dest.execute_batch(&format!("ATTACH '{escaped}' AS src (READ_ONLY);"))?;
+            dest.execute_batch(&format!("CREATE TABLE t AS SELECT {} FROM src.event;", variant.select))?;
+            if variant.time {
+                if let Some(key) = &variant.key {
+                    let summary = format!(
+                        "SELECT COUNT(*), COUNT(DISTINCT visitor_id), COUNT(DISTINCT {key}) FROM t"
+                    );
+                    let group = format!(
+                        "SELECT COUNT(*) FROM (SELECT {key} k, COUNT(*) n FROM t GROUP BY 1)"
+                    );
+                    let buckets = format!(
+                        "SELECT date_trunc('day', {}) d, COUNT(*) FROM t GROUP BY 1",
+                        variant.bucket
+                    );
+                    times.push(("summary".to_string(), time_query_n(&dest, &summary, 2)));
+                    times.push(("group by key".to_string(), time_query_n(&dest, &group, 2)));
+                    times.push(("day buckets".to_string(), time_query_n(&dest, &buckets, 2)));
+                    // The same summary under the server's memory limit: the
+                    // hash table has to fit, and the rest spills to disk. The
+                    // key's size decides how much has to spill.
+                    let _ = dest.execute_batch(
+                        "SET memory_limit='256MB';
+                         SET max_temp_directory_size='2GB';",
+                    );
+                    match try_time_query(&dest, &summary) {
+                        Ok(ms) => times.push(("summary @256MB".to_string(), ms)),
+                        Err(e) => notes.push(format!("summary @256MB: {e}")),
+                    }
+                }
+            }
+        }
+        let size = std::fs::metadata(&out)?.len();
+        let base = *baseline.get_or_insert(size);
+        println!(
+            "{:<18} {:>9.2} MB {:>12.3} {:>12.3}",
+            variant.name,
+            size as f64 / 1_048_576.0,
+            size as f64 / rows as f64,
+            (base - size) as f64 / rows as f64
+        );
+        for (name, ms) in &times {
+            println!("    {name:<16} {ms:>10.1} ms");
+        }
+        for note in &notes {
+            println!("    {note}");
+        }
+        let _ = std::fs::remove_file(&out);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 /// What the timestamp's **unit** costs on the CPU, not on the disk.
 ///
 /// The same rows are written twice — once as a `TIMESTAMP` (microseconds, what
@@ -265,8 +450,13 @@ fn compute(rows: i64) -> Result<()> {
 
 /// The fastest of three runs, in milliseconds.
 fn time_query(conn: &Connection, sql: &str) -> f64 {
+    time_query_n(conn, sql, 3)
+}
+
+/// The fastest of `runs` runs, in milliseconds.
+fn time_query_n(conn: &Connection, sql: &str, runs: usize) -> f64 {
     let mut best = f64::MAX;
-    for _ in 0..3 {
+    for _ in 0..runs {
         let start = std::time::Instant::now();
         let mut stmt = conn.prepare(sql).expect("prepare");
         let mut rows = stmt.query_map([], |_r| Ok(())).expect("query");
@@ -279,4 +469,16 @@ fn time_query(conn: &Connection, sql: &str) -> f64 {
         }
     }
     best
+}
+
+/// One run, in milliseconds — and the error instead of a panic, because under
+/// a memory limit the query may not fit at all.
+fn try_time_query(conn: &Connection, sql: &str) -> Result<f64> {
+    let start = std::time::Instant::now();
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query_map([], |_r| Ok(()))?;
+    while rows.next().is_some() {}
+    drop(rows);
+    drop(stmt);
+    Ok(start.elapsed().as_secs_f64() * 1000.0)
 }
