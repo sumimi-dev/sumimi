@@ -182,6 +182,19 @@ pub struct Config {
     pub cache_stale_secs: i64,
     /// Default retention window in days (`0` = keep forever).
     pub retention_days: i32,
+    /// The idle timeout: how long a visitor may be quiet before their next
+    /// event starts a new session, in seconds.
+    ///
+    /// Thirty minutes — the number Umami uses (`now - iat > 1800`), and the
+    /// one Matomo and Plausible use. `0` turns the cut off: everything a
+    /// visitor does is one session.
+    pub session_timeout_seconds: i64,
+    /// How many visitors are remembered — the ones who are active.
+    ///
+    /// The state is a cache, not a store: a visitor who is not in it has been
+    /// quiet for longer than the timeout, so their next event starts a new
+    /// session anyway. This is a ceiling on the memory, not on the traffic.
+    pub session_capacity: usize,
     /// Header used to derive the country code (e.g. `CF-IPCountry`).
     pub country_header: Option<String>,
     /// Keep the query string of collected URLs (`false` by default: query strings
@@ -319,6 +332,20 @@ impl Config {
             .or_else(|| env_any("SUMIMI_RETENTION_DAYS").and_then(|v| v.parse().ok()))
             .unwrap_or(0);
 
+        // The idle timeout that cuts a session: thirty minutes, the number
+        // Umami, Matomo and Plausible use. `0` turns the cut off.
+        let session_timeout_seconds = env_any("SUMIMI_SESSION_TIMEOUT_SECS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(crate::session::IDLE_TIMEOUT_SECONDS)
+            .max(0);
+
+        // How many visitors are remembered. The state is a cache of the active
+        // ones, so this is a ceiling on the memory — not on the traffic.
+        let session_capacity = env_any("SUMIMI_SESSION_CAPACITY")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(crate::session::DEFAULT_CAPACITY)
+            .max(1);
+
         let country_header = country_header.or_else(|| env_any("SUMIMI_COUNTRY_HEADER"));
 
         // These three keep everything by default — that is what Umami stores, and
@@ -377,6 +404,8 @@ impl Config {
             uptime_interval_secs,
             uptime_timeout_secs,
             retention_days,
+            session_timeout_seconds,
+            session_capacity,
             country_header,
             keep_query,
             store_titles,

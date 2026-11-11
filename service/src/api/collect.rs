@@ -13,9 +13,6 @@ use crate::error::ApiError;
 use crate::models::{normalise, Hit, HitKind, Payload, SendRequest};
 use crate::ua;
 
-/// Session time bucket (30 minutes), like Umami's session timeout.
-const SESSION_BUCKET_SECONDS: i64 = 30 * 60;
-
 /// Umami v2 collection endpoint.
 pub async fn send(
     State(state): State<AppState>,
@@ -219,28 +216,9 @@ pub fn build_hit(
     let ip = client_ip(headers, peer);
     let ip_prefix = ua::ip_prefix(&ip);
 
-    // Visit id: a window of activity. The client may say where the boundary is
-    // (our `sessionId`); otherwise it is derived from the request. The raw IP
-    // is never stored — only a prefix feeds the HMAC.
-    //
-    // Either way the id is a **UUID**: 16 bytes on disk, and the client's own
-    // token is hashed rather than stored verbatim.
-    let visit_id = match raw.session_id.as_deref() {
-        Some(client_id) if is_safe_client_id(client_id) => ua::uuid_from_text(client_id),
-        _ => {
-            let bucket = (chrono::Utc::now().timestamp() / SESSION_BUCKET_SECONDS) as u64;
-            ua::derive_visit_id(
-                state.jwt_secret.as_bytes(),
-                &ip_prefix,
-                &user_agent,
-                &meta.id,
-                bucket,
-            )
-        }
-    };
-
-    // Visitor id: the same derivation without a time bucket, so it survives across days
-    // (Umami's `distinct_id`).
+    // Visitor id: the derivation without a time bucket, so it survives across
+    // days (Umami's `distinct_id`). The raw IP is never stored — only a prefix
+    // feeds the HMAC.
     let visitor_id = ua::derive_visit_id(
         state.jwt_secret.as_bytes(),
         &ip_prefix,
@@ -248,6 +226,23 @@ pub fn build_hit(
         &meta.id,
         0,
     );
+
+    // The session: the window this event belongs to. **The server decides.**
+    //
+    // The cut is made here, when the event arrives — so the row carries the
+    // session it belongs to, and no report has to work out where the gaps
+    // were. The client's own session id is *not* the key: a client may send
+    // any string, and a client that invents one would invent sessions with it
+    // (see sumimi#33).
+    //
+    // The id is a pure function of the visitor and the moment the session
+    // started — no secret is needed, because the visitor id is already one-way.
+    // An offline import can work it out for itself, and so can anyone holding
+    // the row.
+    let created_at = crate::db::now();
+    let visit_id = state
+        .sessions
+        .session(visitor_id, created_at.and_utc().timestamp_micros());
 
     // The identity the site owner knows the visitor by — their own user id, a
     // tenant id, a device id (Umami's `distinct_id` column). The client sends it

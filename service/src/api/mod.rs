@@ -65,6 +65,12 @@ pub struct AppState {
     /// The admission gate: what may be in flight on the collection path, and how
     /// fast it may come in.
     pub gate: Arc<crate::limits::Gate>,
+    /// The sessions of the visitors who are active right now.
+    ///
+    /// The cut between two sessions is made here, when the event arrives — so
+    /// the row carries the session it belongs to, and no report has to work it
+    /// out again.
+    pub sessions: Arc<crate::session::Sessions>,
 }
 
 impl AppState {
@@ -79,6 +85,12 @@ impl AppState {
         // The gate is built from the configuration before it is moved into the
         // state.
         let gate = Arc::new(crate::limits::Gate::new(config.limits()));
+        // The sessions, likewise: the idle timeout decides where one session
+        // ends and the next begins.
+        let sessions = Arc::new(crate::session::Sessions::new(
+            std::time::Duration::from_secs(config.session_timeout_seconds.max(0) as u64),
+            config.session_capacity,
+        ));
         Self {
             storage,
             instance,
@@ -90,6 +102,7 @@ impl AppState {
             cache_stamp: Arc::new(AtomicU64::new(0)),
             geo: None,
             gate,
+            sessions,
         }
     }
 

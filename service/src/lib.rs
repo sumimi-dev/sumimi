@@ -23,6 +23,7 @@ pub mod queue;
 pub mod reports;
 pub mod rss;
 pub mod server;
+pub mod session;
 pub mod sqlite;
 pub mod storage;
 pub mod static_files;
