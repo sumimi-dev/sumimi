@@ -196,7 +196,7 @@ sumimi gsc import gsc.csv --website <id>    # a Search Console export
 ```
 
 The same commands work against a local `.duckdb` file and against a running server
-(the admin account is used to log in). See `docs/docs/cli.html`.
+(the admin account is used to log in). See `docs/cli/`.
 
 ## Development
 

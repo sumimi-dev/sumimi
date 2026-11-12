@@ -114,8 +114,9 @@ async fn the_documentation_is_served_without_a_directory_on_disk() {
         "the index is not HTML"
     );
 
-    // A page of the site.
-    let (status, content_type, body) = get(&app, "/docs/docs/install.html").await;
+    // A page of the site — the articles are at the root of the site, so the
+    // server serves them at `/docs/install/`.
+    let (status, content_type, body) = get(&app, "/docs/install/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(content_type.contains("text/html"), "{content_type}");
     assert!(body.contains("Sumimi"), "the page is not the one we wrote");
@@ -204,4 +205,100 @@ fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+/// The site path of every page of the documentation site.
+///
+/// A page is an `index.html` under the docs directory: the site is served from
+/// the root, so `/install/index.html` is `/install/`.
+fn site_paths(docs: &std::path::Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    for file in walk(docs) {
+        if file.file_name().and_then(|name| name.to_str()) != Some("index.html") {
+            continue;
+        }
+        let relative = file
+            .strip_prefix(docs)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        // `install/index.html` → `/install/`; `index.html` → `/`.
+        let directory = relative.trim_end_matches("index.html");
+        paths.push(format!("/{directory}"));
+    }
+    paths.sort();
+    paths
+}
+
+/// The SEO of the site: every page says what it is, and the sitemap lists
+/// exactly the pages that exist.
+///
+/// The site is plain HTML with no build step — so nothing keeps the sitemap and
+/// the pages in step but a test.
+#[test]
+fn the_site_is_indexed_properly() {
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+    let pages = site_paths(&docs);
+    assert!(pages.len() >= 10, "expected the whole site, found {pages:?}");
+
+    // Every page: one title, one description, one canonical, one h1.
+    for path in &pages {
+        let file = docs.join(path.trim_start_matches('/').trim_end_matches('/'));
+        let file = if path == "/" {
+            docs.join("index.html")
+        } else {
+            file.join("index.html")
+        };
+        let html = std::fs::read_to_string(&file)
+            .unwrap_or_else(|err| panic!("{}: {err}", file.display()));
+
+        assert!(
+            html.contains("<title>") && html.matches("<title>").count() == 1,
+            "{path} needs exactly one title"
+        );
+        assert!(
+            html.contains("<meta name=\"description\""),
+            "{path} needs a description"
+        );
+        assert!(
+            html.contains("<link rel=\"canonical\""),
+            "{path} needs a canonical URL"
+        );
+        assert!(
+            html.matches("<h1").count() == 1,
+            "{path} needs exactly one h1"
+        );
+        assert!(
+            html.contains("property=\"og:title\"") && html.contains("property=\"og:image\""),
+            "{path} needs the Open Graph tags"
+        );
+        assert!(
+            html.contains("application/ld+json"),
+            "{path} needs its structured data"
+        );
+    }
+
+    // The sitemap lists exactly the pages that exist.
+    let sitemap = std::fs::read_to_string(docs.join("sitemap.xml")).expect("sitemap.xml exists");
+    let mut listed = Vec::new();
+    for chunk in sitemap.split("<loc>").skip(1) {
+        let url = chunk.split("</loc>").next().unwrap_or("");
+        listed.push(
+            url.strip_prefix("https://sumimi-dev.github.io")
+                .unwrap_or_else(|| panic!("{url} is not on the site"))
+                .to_string(),
+        );
+    }
+    listed.sort();
+    assert_eq!(
+        listed, pages,
+        "the sitemap and the pages disagree — a page was added or moved"
+    );
+
+    // And robots.txt points at it.
+    let robots = std::fs::read_to_string(docs.join("robots.txt")).expect("robots.txt exists");
+    assert!(
+        robots.contains("Sitemap: https://sumimi-dev.github.io/sitemap.xml"),
+        "robots.txt does not point at the sitemap"
+    );
 }

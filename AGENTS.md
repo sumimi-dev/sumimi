@@ -959,23 +959,39 @@ different.
 ### 4.6 service/docs/ — the website
 
 A static site (plain HTML + one stylesheet, no build step, no npm) served by the service
-binary at `/docs`. It has three sections:
+binary at `/docs`. **The docs directory is the root of the site**, and every page is an
+`index.html` in a directory of its own, so a page's address is its directory:
 
-* `service/docs/index.html` — **the home page**: the story (why the project exists), the
-  design goals with the measured numbers, and the way in;
-* `service/docs/docs/` — **the documentation**: `index.html` (the section page),
-  `install.html`, `self-host.html`, `tracker.html`, `api.html`, `cli.html`, `memory.html`,
-  `privacy.html`, `faq.html`. Every page carries the same left-hand list of articles;
-* `service/docs/blog/` — **the blog**: `index.html` and the posts;
-* `service/docs/assets/style.css` — one stylesheet, light + dark via `prefers-color-scheme`;
-* `service/docs/assets/CREDITS.md` — the licence record for every asset (all artwork is original).
+| Address | The file | What it is |
+| ------- | -------- | ---------- |
+| `/` | `service/docs/index.html` | The home page: the story (why the project exists), the design goals with the measured numbers, and the way in. |
+| `/docs/` | `service/docs/docs/index.html` | The documentation section: the list of the articles. |
+| `/install/` | `service/docs/install/index.html` | Installation and quick start. |
+| `/self-host/` | `service/docs/self-host/index.html` | Self-hosting on a cheap VPS. |
+| `/tracker/` | `service/docs/tracker/index.html` | The tracker and its deployment options. |
+| `/api/` | `service/docs/api/index.html` | The HTTP API. |
+| `/cli/` | `service/docs/cli/index.html` | The command line. |
+| `/memory/` | `service/docs/memory/index.html` | The memory promise and the deployment reference. |
+| `/privacy/` | `service/docs/privacy/index.html` | Privacy and data protection. |
+| `/faq/` | `service/docs/faq/index.html` | Frequently asked questions. |
+| `/blog/` | `service/docs/blog/index.html` | The blog: the stories, the case studies and the data. |
+
+Every documentation page carries the same left-hand list of articles. Beside them:
+`assets/style.css` (one stylesheet, light + dark via `prefers-color-scheme`),
+`assets/og.png` (the social card), `assets/CREDITS.md` (the licence record for every
+asset — all artwork is original), `sitemap.xml` and `robots.txt`.
 
 **Every link is relative, and that is not a style choice.** The same files are published at
 `https://sumimi-dev.github.io` (the docs directory is the site root) and served by the
 binary at `/docs` (the docs directory is one level down). A relative link resolves the same
-way in both; an absolute one does not. So `docs/install.html` is written `docs/install.html`
-on the site and `install.html` inside `service/docs/docs/`, and the stylesheet is
-`../assets/style.css` from a page in a subdirectory.
+way in both; an absolute one does not. So the stylesheet is `../assets/style.css` from a
+page in a directory, and a page is linked as `../install/` from another one.
+
+**The SEO of the site is part of it.** Every page carries a title, a description, a
+canonical URL, the Open Graph and Twitter tags, and its structured data (JSON-LD); the
+sitemap lists exactly the pages that exist. There is no build step to keep them in step —
+`service/tests/docs.rs` does it instead: the test fails when a page has no canonical URL,
+when there is more than one `<h1>`, or when the sitemap and the pages disagree.
 
 The site lives **inside the crate** and is **embedded in the binary** by `service/build.rs`
 (about 60 KB): a server installed with `cargo install` has a documentation site without

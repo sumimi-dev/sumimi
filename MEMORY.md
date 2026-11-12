@@ -5,9 +5,9 @@
 >
 > AGENTS.md is the source of truth for the design; this file is the full statement of
 > the memory half of it. The user-facing version of the same story is
-> [`service/docs/docs/memory.html`](service/docs/docs/memory.html) (served at
-> `/docs/docs/memory.html`, published at
-> <https://sumimi-dev.github.io/docs/memory.html>).
+> [`service/docs/memory/index.html`](service/docs/memory/index.html) (served at
+> `/docs/memory/`, published at
+> <https://sumimi-dev.github.io/memory/>).
 >
 > Open questions live in issues, not here: [#12](https://github.com/sumimi-dev/sumimi/issues/12)
 > (the two big problems), [#13](https://github.com/sumimi-dev/sumimi/issues/13) (how DuckDB

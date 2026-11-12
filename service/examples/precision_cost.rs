@@ -294,7 +294,7 @@ fn variants(path: &Path) -> Result<()> {
     }
     println!();
 
-    let mut variants = vec![
+    let variants = vec![
         Variant {
             name: "everything",
             select: "*".to_string(),

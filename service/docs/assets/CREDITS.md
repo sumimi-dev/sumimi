@@ -23,18 +23,26 @@ completely offline.
 | `logo.svg` | The Sumimi paw logo — the canonical source of the brand mark. Four toes and a pad, drawn by hand; no strokes, no gradients, no filters. Every other copy in the repository (the documentation pages, the dashboard frontend, the favicon) is inlined from this file and kept in sync by `service/tests/logo.rs`. | MIT (original work) |
 | `CREDITS.md` | This file. | MIT (original work) |
 
-The HTML pages live one directory up, in `service/docs/` itself:
+The HTML pages live one directory up, in `service/docs/` itself. Every page is
+an `index.html` in a directory of its own, so the address of a page is the
+directory — the site is served from the root:
 
-| File | What it is | Licence |
-| ---- | ---------- | ------- |
-| `index.html` | Landing page for sumimi.dev. | MIT (original work) |
-| `install.html` | Installation and quick start. | MIT (original work) |
-| `self-host.html` | Self-hosting on a cheap VPS: systemd, reverse proxy, TLS/ACME, backups. | MIT (original work) |
-| `tracker.html` | Tracker installation and deployment options. | MIT (original work) |
-| `api.html` | HTTP API reference. | MIT (original work) |
-| `cli.html` | `sumimi` CLI reference. | MIT (original work) |
-| `privacy.html` | Privacy and data-protection page. | MIT (original work) |
-| `faq.html` | Frequently asked questions. | MIT (original work) |
+| Address | What it is | Licence |
+| ------- | ---------- | ------- |
+| `/` | The home page: the story of why the project exists. | MIT (original work) |
+| `/docs/` | The documentation section: the list of the articles. | MIT (original work) |
+| `/install/` | Installation and quick start. | MIT (original work) |
+| `/self-host/` | Self-hosting on a cheap VPS: the service, TLS/ACME, backups. | MIT (original work) |
+| `/tracker/` | Tracker installation and deployment options. | MIT (original work) |
+| `/api/` | HTTP API reference. | MIT (original work) |
+| `/cli/` | `sumimi` CLI reference. | MIT (original work) |
+| `/memory/` | The memory promise and the deployment reference. | MIT (original work) |
+| `/privacy/` | Privacy and data-protection page. | MIT (original work) |
+| `/faq/` | Frequently asked questions. | MIT (original work) |
+| `/blog/` | The blog: the stories, the case studies and the data. | MIT (original work) |
+
+The `og.png` above is the picture a social card shows: the same mark, drawn
+from the same SVG, on the same paper colour.
 
 ## Artwork
 

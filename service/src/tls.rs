@@ -6,7 +6,7 @@
 //!
 //! The challenge used is TLS-ALPN-01, which means port 443 has to reach this process
 //! directly. Behind a reverse proxy that terminates TLS, use the proxy's own ACME
-//! support (Caddy, nginx + certbot) instead — see `docs/self-host.html`.
+//! support (Caddy, nginx + certbot) instead — see `docs/self-host/`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

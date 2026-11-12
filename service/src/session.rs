@@ -142,7 +142,7 @@ impl Sessions {
 pub fn session_id(visitor_id: Uuid, window_start: i64) -> Uuid {
     let mut hasher = Sha256::new();
     hasher.update(visitor_id.as_bytes());
-    hasher.update(&window_start.to_le_bytes());
+    hasher.update(window_start.to_le_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);

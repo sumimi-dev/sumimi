@@ -3,10 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How much traffic can a 1 vCPU box take? — Sumimi</title>
-<meta name="description" content="The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven fixes the curve is flat, the memory promise holds with room to spare, and the CPU is what limits a small box.">
+<title>How much traffic can a 1 vCPU box take?</title>
+<meta name="description" content="The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven fixes the curve is flat, and the CPU is what limits a small box.">
+<link rel="canonical" href="https://sumimi-dev.github.io/blog/how-much-traffic/">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Sumimi 数咪咪">
+<meta property="og:title" content="How much traffic can a 1 vCPU box take?">
+<meta property="og:description" content="The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven fixes the curve is flat, and the CPU is what limits a small box.">
+<meta property="og:url" content="https://sumimi-dev.github.io/blog/how-much-traffic/">
+<meta property="og:image" content="https://sumimi-dev.github.io/assets/og.png">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="How much traffic can a 1 vCPU box take?">
+<meta name="twitter:description" content="The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven fixes the curve is flat, and the CPU is what limits a small box.">
+<meta name="twitter:image" content="https://sumimi-dev.github.io/assets/og.png">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BlogPosting", "headline": "How much traffic can a 1 vCPU box take?", "description": "The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven fixes the curve is flat, and the CPU is what limits a small box.", "url": "https://sumimi-dev.github.io/blog/how-much-traffic/", "mainEntityOfPage": {"@type": "WebPage", "@id": "https://sumimi-dev.github.io/blog/how-much-traffic/"}, "datePublished": "2026-11-09", "dateModified": "2026-11-09", "inLanguage": "en", "image": "https://sumimi-dev.github.io/assets/og.png", "author": {"@type": "Organization", "name": "Sumimi 数咪咪"}, "publisher": {"@type": "Organization", "name": "Sumimi 数咪咪", "logo": {"@type": "ImageObject", "url": "https://sumimi-dev.github.io/assets/og.png"}}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://sumimi-dev.github.io/"}, {"@type": "ListItem", "position": 2, "name": "Blog", "item": "https://sumimi-dev.github.io/blog/"}, {"@type": "ListItem", "position": 3, "name": "How much traffic can a 1 vCPU box take?", "item": "https://sumimi-dev.github.io/blog/how-much-traffic/"}]}</script>
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">
 </head>
 <body>
@@ -14,16 +28,16 @@
 
 <header class="site-header">
   <div class="wrap">
-    <a class="brand" href="../index.html">
+    <a class="brand" href="../../">
       <svg viewBox="0 0 32 32" role="img" aria-label="Sumimi"><g fill="currentColor"><ellipse cx="7.4" cy="13.2" rx="2.9" ry="3.9" transform="rotate(-20 7.4 13.2)"/><ellipse cx="12.8" cy="8.8" rx="2.8" ry="3.9" transform="rotate(-7 12.8 8.8)"/><ellipse cx="19.2" cy="8.8" rx="2.8" ry="3.9" transform="rotate(7 19.2 8.8)"/><ellipse cx="24.6" cy="13.2" rx="2.9" ry="3.9" transform="rotate(20 24.6 13.2)"/><path d="M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z"/></g></svg>
       <span>Sumimi</span>
       <span class="brand-cn">数咪咪</span>
     </a>
     <nav class="site-nav" aria-label="Main">
       <ul>
-        <li><a href="../index.html">Home</a></li>
-        <li><a href="../docs/">Docs</a></li>
-        <li><a href="index.html" aria-current="page">Blog</a></li>
+        <li><a href="../../">Home</a></li>
+        <li><a href="../../docs/">Docs</a></li>
+        <li><a href="../" aria-current="page">Blog</a></li>
         <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
       </ul>
     </nav>
@@ -355,7 +369,7 @@
       </ul>
       <p>
         The full method, the four limits and the tables are in the
-        <a href="../docs/memory.html">memory and capacity</a> reference; the design behind
+        <a href="../../memory/">memory and capacity</a> reference; the design behind
         them is in <code>MEMORY.md</code> in the repository, and the reports themselves are
         published in
         <a href="https://github.com/sumimi-dev/sumimi/tree/main/benchmarks">benchmarks/</a>
@@ -364,8 +378,8 @@
 
       <p class="post-foot">
         This is the third post of three. The first is
-        <a href="leaving-umami.html">why this exists</a>; the second is
-        <a href="why-duckdb.html">why DuckDB</a>.
+        <a href="../leaving-umami/">why this exists</a>; the second is
+        <a href="../why-duckdb/">why DuckDB</a>.
       </p>
 
     </article>
@@ -387,9 +401,9 @@
     </p>
     <p>Apache-2.0 licensed. Self-hosted, cookieless, no telemetry.</p>
     <ul>
-      <li><a href="../index.html">Home</a></li>
-      <li><a href="../docs/">Docs</a></li>
-      <li><a href="index.html">Blog</a></li>
+      <li><a href="../../">Home</a></li>
+      <li><a href="../../docs/">Docs</a></li>
+      <li><a href="../">Blog</a></li>
       <li><a href="https://github.com/sumimi-dev/sumimi">GitHub</a></li>
     </ul>
   </div>
