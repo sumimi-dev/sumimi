@@ -1,0 +1,51 @@
+# Submit the documentation site's sitemap to Google Search Console.
+#
+# **Why a workflow and not the laptop:** the Search Console API lives on
+# `googleapis.com`, and some networks cannot reach it — including, as it turns
+# out, the one this project is developed on. GitHub's runners can, so the
+# submission happens here.
+#
+# The credential is the service account in the repository secret
+# `GSC_SERVICE_ACCOUNT_JSON`. It has to be **added as a user of the property**
+# in the Search Console; without that, the API answers "403" and this workflow
+# says so.
+name: The sitemap, to Google
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'service/docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gsc-sitemap
+  cancel-in-progress: true
+
+jobs:
+  submit:
+    name: Submit the sitemap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The service account
+        env:
+          GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$GSC_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::notice::no secret — nothing to submit"
+            exit 0
+          fi
+          printf '%s' "$GSC_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gsc.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gsc.json" >> "$GITHUB_ENV"
+
+      - name: The client
+        run: python3 -m pip install --quiet google-api-python-client google-auth
+
+      - name: Submit
+        run: python3 scripts/gsc-sitemap.py
