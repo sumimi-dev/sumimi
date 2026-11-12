@@ -186,7 +186,8 @@ disagree — and there is only **one copy of DuckDB** in the binary. Installing 
 under another name (`sumimi-server`, `sumimi-client`) switches the default mode; those are
 symlinks in the release, not separate builds.
 
-Brand: **Sumimi / 数咪咪** — "Sum" + "Umami", and phonetically *"Tsunami speed"*.
+Brand: **Sumimi / 数咪咪** — "Sum" (count) + "咪咪" (kitty): counting the cats that
+visit your sites. The engine is a tsunami — 10M views/day on one small box.
 Slogan: *Count kitties popping into my websites. — 由猫开发*.
 
 ---

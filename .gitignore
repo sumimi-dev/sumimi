@@ -2,7 +2,7 @@
 /target
 **/*.rs.bk
 
-# Sumami data — never commit a database
+# Sumimi data — never commit a database
 *.duckdb
 *.duckdb.wal
 *.jwt-secret

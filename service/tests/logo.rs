@@ -30,6 +30,20 @@ fn canonical_shapes() -> String {
     svg[start..end].to_string()
 }
 
+/// The accessible name of the canonical logo: the `aria-label` a screen reader
+/// announces. It is part of the mark — the paw *and* the name it is called — so
+/// it travels with the shapes.
+fn canonical_label() -> String {
+    let path = docs().join("assets/logo.svg");
+    let svg = std::fs::read_to_string(&path).expect("docs/assets/logo.svg exists");
+    let start = svg
+        .find("aria-label=\"")
+        .expect("the logo has an aria-label")
+        + "aria-label=\"".len();
+    let end = svg[start..].find('"').expect("the aria-label is closed") + start;
+    svg[start..end].to_string()
+}
+
 /// Every page of the documentation site, in every section.
 fn html_pages(dir: &PathBuf) -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -51,6 +65,7 @@ fn html_pages(dir: &PathBuf) -> Vec<PathBuf> {
 #[test]
 fn every_logo_copy_matches_the_canonical_file() {
     let shapes = canonical_shapes();
+    let label = format!("aria-label=\"{}\"", canonical_label());
 
     // The documentation site — every page of it, in every section.
     let docs = docs();
@@ -60,6 +75,11 @@ fn every_logo_copy_matches_the_canonical_file() {
         assert!(
             html.contains(&shapes),
             "{} does not use the canonical logo — copy it from docs/assets/logo.svg",
+            path.display()
+        );
+        assert!(
+            html.contains(&label),
+            "{} names the logo differently — copy the aria-label from docs/assets/logo.svg",
             path.display()
         );
         pages += 1;
@@ -72,6 +92,10 @@ fn every_logo_copy_matches_the_canonical_file() {
     assert!(
         js.contains(&shapes),
         "js/sumimi-app.js does not use the canonical logo — copy it from docs/assets/logo.svg"
+    );
+    assert!(
+        js.contains(&label),
+        "js/sumimi-app.js names the logo differently — copy the aria-label from docs/assets/logo.svg"
     );
 
     // The tracker must not carry a logo of its own.

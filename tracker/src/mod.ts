@@ -1,7 +1,7 @@
 /**
  * Sumimi — the tracker, typed.
  *
- * The tracker itself is one file of plain JavaScript, served by the Sumami
+ * The tracker itself is one file of plain JavaScript, served by the Sumimi
  * server itself at `GET /sumimi.js` — the file in the repository is
  * byte-for-byte the file that gets served. This package is the typed way to
  * use it from TypeScript:
@@ -38,7 +38,7 @@ export interface SumimiOptions {
    */
   website: string;
   /**
-   * The base URL of the Sumami API. Defaults to the origin of the page.
+   * The base URL of the Sumimi API. Defaults to the origin of the page.
    */
   apiUrl?: string;
   /**
