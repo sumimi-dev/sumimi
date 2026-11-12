@@ -982,7 +982,7 @@ Every documentation page carries the same left-hand list of articles. Beside the
 asset — all artwork is original), `sitemap.xml` and `robots.txt`.
 
 **Every link is relative, and that is not a style choice.** The same files are published at
-`https://sumimi-dev.github.io` (the docs directory is the site root) and served by the
+`https://sumimi.dev` (the docs directory is the site root) and served by the
 binary at `/docs` (the docs directory is one level down). A relative link resolves the same
 way in both; an absolute one does not. So the stylesheet is `../assets/style.css` from a
 page in a directory, and a page is linked as `../install/` from another one.

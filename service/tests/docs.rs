@@ -284,7 +284,7 @@ fn the_site_is_indexed_properly() {
     for chunk in sitemap.split("<loc>").skip(1) {
         let url = chunk.split("</loc>").next().unwrap_or("");
         listed.push(
-            url.strip_prefix("https://sumimi-dev.github.io")
+            url.strip_prefix("https://sumimi.dev")
                 .unwrap_or_else(|| panic!("{url} is not on the site"))
                 .to_string(),
         );
@@ -298,7 +298,7 @@ fn the_site_is_indexed_properly() {
     // And robots.txt points at it.
     let robots = std::fs::read_to_string(docs.join("robots.txt")).expect("robots.txt exists");
     assert!(
-        robots.contains("Sitemap: https://sumimi-dev.github.io/sitemap.xml"),
+        robots.contains("Sitemap: https://sumimi.dev/sitemap.xml"),
         "robots.txt does not point at the sitemap"
     );
 }

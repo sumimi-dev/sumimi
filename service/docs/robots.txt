@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://sumimi-dev.github.io/sitemap.xml
+Sitemap: https://sumimi.dev/sitemap.xml

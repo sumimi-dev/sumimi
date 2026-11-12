@@ -38,8 +38,8 @@ except ImportError:
     )
 
 # The site, and the sitemap that describes it.
-DEFAULT_SITE = "https://sumimi-dev.github.io/"
-DEFAULT_SITEMAP = "https://sumimi-dev.github.io/sitemap.xml"
+DEFAULT_SITE = "https://sumimi.dev/"
+DEFAULT_SITEMAP = "https://sumimi.dev/sitemap.xml"
 
 SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
 

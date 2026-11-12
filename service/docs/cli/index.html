@@ -5,20 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Sumimi CLI — analyse the data offline</title>
 <meta name="description" content="The sumimi command line: read a DuckDB file directly or talk to a running server, export reports, back up, prune, and run the MCP server.">
-<link rel="canonical" href="https://sumimi-dev.github.io/cli/">
+<link rel="canonical" href="https://sumimi.dev/cli/">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Sumimi 数咪咪">
 <meta property="og:title" content="The Sumimi CLI — analyse the data offline">
 <meta property="og:description" content="The sumimi command line: read a DuckDB file directly or talk to a running server, export reports, back up, prune, and run the MCP server.">
-<meta property="og:url" content="https://sumimi-dev.github.io/cli/">
-<meta property="og:image" content="https://sumimi-dev.github.io/assets/og.png">
+<meta property="og:url" content="https://sumimi.dev/cli/">
+<meta property="og:image" content="https://sumimi.dev/assets/og.png">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="The Sumimi CLI — analyse the data offline">
 <meta name="twitter:description" content="The sumimi command line: read a DuckDB file directly or talk to a running server, export reports, back up, prune, and run the MCP server.">
-<meta name="twitter:image" content="https://sumimi-dev.github.io/assets/og.png">
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "The Sumimi CLI — analyse the data offline", "description": "The sumimi command line: read a DuckDB file directly or talk to a running server, export reports, back up, prune, and run the MCP server.", "url": "https://sumimi-dev.github.io/cli/", "inLanguage": "en", "image": "https://sumimi-dev.github.io/assets/og.png", "author": {"@type": "Organization", "name": "Sumimi 数咪咪"}, "isPartOf": {"@type": "WebSite", "name": "Sumimi", "url": "https://sumimi-dev.github.io/"}}</script>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://sumimi-dev.github.io/"}, {"@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://sumimi-dev.github.io/docs/"}, {"@type": "ListItem", "position": 3, "name": "The Sumimi CLI — analyse the data offline", "item": "https://sumimi-dev.github.io/cli/"}]}</script>
+<meta name="twitter:image" content="https://sumimi.dev/assets/og.png">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "The Sumimi CLI — analyse the data offline", "description": "The sumimi command line: read a DuckDB file directly or talk to a running server, export reports, back up, prune, and run the MCP server.", "url": "https://sumimi.dev/cli/", "inLanguage": "en", "image": "https://sumimi.dev/assets/og.png", "author": {"@type": "Organization", "name": "Sumimi 数咪咪"}, "isPartOf": {"@type": "WebSite", "name": "Sumimi", "url": "https://sumimi.dev/"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://sumimi.dev/"}, {"@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://sumimi.dev/docs/"}, {"@type": "ListItem", "position": 3, "name": "The Sumimi CLI — analyse the data offline", "item": "https://sumimi.dev/cli/"}]}</script>
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23f97316'%3E%3Cellipse cx='7.4' cy='13.2' rx='2.9' ry='3.9' transform='rotate(-20 7.4 13.2)'/%3E%3Cellipse cx='12.8' cy='8.8' rx='2.8' ry='3.9' transform='rotate(-7 12.8 8.8)'/%3E%3Cellipse cx='19.2' cy='8.8' rx='2.8' ry='3.9' transform='rotate(7 19.2 8.8)'/%3E%3Cellipse cx='24.6' cy='13.2' rx='2.9' ry='3.9' transform='rotate(20 24.6 13.2)'/%3E%3Cpath d='M9.3 21.2c0-2.8 3-5 6.7-5s6.7 2.2 6.7 5c0 2.5-2.1 4.2-4.4 4.2-.9 0-1.6-.3-2.3-.3s-1.4.3-2.3.3c-2.3 0-4.4-1.7-4.4-4.2z'/%3E%3C/g%3E%3C/svg%3E">

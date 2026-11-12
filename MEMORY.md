@@ -7,7 +7,7 @@
 > the memory half of it. The user-facing version of the same story is
 > [`service/docs/memory/index.html`](service/docs/memory/index.html) (served at
 > `/docs/memory/`, published at
-> <https://sumimi-dev.github.io/memory/>).
+> <https://sumimi.dev/memory/>).
 >
 > Open questions live in issues, not here: [#12](https://github.com/sumimi-dev/sumimi/issues/12)
 > (the two big problems), [#13](https://github.com/sumimi-dev/sumimi/issues/13) (how DuckDB
