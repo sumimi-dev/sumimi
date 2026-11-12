@@ -66,6 +66,14 @@ def service():
     return build("searchconsole", "v1", credentials=credentials())
 
 
+def account_email():
+    """The address of the service account — the one to add to the property."""
+    try:
+        return credentials().service_account_email
+    except Exception:
+        return "the service account"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site", default=DEFAULT_SITE, help="the property")
@@ -89,8 +97,12 @@ def main():
     if args.site not in names:
         sys.exit(
             f"'{args.site}' is not among them.\n"
-            "Add the service account as a user of the property in the Search\n"
-            "Console, then try again."
+            "Two things, both in the Search Console and both needing a browser:\n"
+            f"  1. the property '{args.site}' has to exist and be verified;\n"
+            f"  2. this account has to be a user of it — add\n"
+            f"     {account_email()}\n"
+            "     under the property's 'Users and permissions'.\n"
+            "Then run this again, and the sitemap goes in."
         )
 
     # And the sitemap itself.
