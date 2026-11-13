@@ -1,0 +1,38 @@
+# Tell the search engines that the documentation site changed.
+#
+# **Why this is not the sitemap workflow:** the sitemap says "these are the
+# pages"; IndexNow says "and here they are, right now". Google gets the
+# sitemap through `gsc-sitemap.py`; Bing, Yandex and the rest listen for the
+# push, which this workflow makes.
+#
+# The key is a file in the published directory (`service/docs/<key>.txt`), so
+# the engines can verify that the push comes from this site.
+name: The pages, to the engines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'service/docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indexnow
+  cancel-in-progress: true
+
+jobs:
+  push:
+    name: Push the changed pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The URLs
+        run: python3 scripts/indexnow.py --list
+
+      - name: The push
+        run: python3 scripts/indexnow.py

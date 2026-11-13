@@ -3,18 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Blog — Sumimi</title>
+<title>Blog — notes on building Sumimi</title>
 <meta name="description" content="Notes from building Sumimi: the story behind the decisions, the measurements behind the numbers, and the data itself — with the method written down.">
 <link rel="canonical" href="https://sumimi.dev/blog/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Sumimi 数咪咪">
-<meta property="og:title" content="Blog — Sumimi">
+<meta property="og:title" content="Blog — notes on building Sumimi">
 <meta property="og:description" content="Notes from building Sumimi: the story behind the decisions, the measurements behind the numbers, and the data itself — with the method written down.">
 <meta property="og:url" content="https://sumimi.dev/blog/">
 <meta property="og:image" content="https://sumimi.dev/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Sumimi — self-hosted web analytics for a cheap VPS">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Blog — Sumimi">
+<meta name="twitter:title" content="Blog — notes on building Sumimi">
 <meta name="twitter:description" content="Notes from building Sumimi: the story behind the decisions, the measurements behind the numbers, and the data itself — with the method written down.">
 <meta name="twitter:image" content="https://sumimi.dev/assets/og.png">
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Blog", "name": "The Sumimi blog", "url": "https://sumimi.dev/blog/", "description": "Notes from building Sumimi: the story behind the decisions, the measurements behind the numbers, and the data itself — with the method written down.", "inLanguage": "en", "publisher": {"@type": "Organization", "name": "Sumimi 数咪咪"}}</script>
@@ -57,7 +60,7 @@
     <ul class="post-list">
       <li class="post-item">
         <p class="post-meta"><time datetime="2026-11-05">5 November 2026</time><span>7 min read</span></p>
-        <h3><a href="leaving-umami/">Leaving Umami: one small VPS, two problems</a></h3>
+        <h2><a href="leaving-umami/">Leaving Umami: one small VPS, two problems</a></h2>
         <p>
           A 1 GB box, a 20 GB disk and a handful of small sites. The disk kept filling up,
           the dashboard kept stuttering, and the six-month-old panels had turned into a
@@ -66,7 +69,7 @@
       </li>
       <li class="post-item">
         <p class="post-meta"><time datetime="2026-11-06">6 November 2026</time><span>9 min read</span></p>
-        <h3><a href="why-duckdb/">Why DuckDB: 85× smaller, and why we keep no indexes</a></h3>
+        <h2><a href="why-duckdb/">Why DuckDB: 85× smaller, and why we keep no indexes</a></h2>
         <p>
           The same rows in two engines: 4 750 bytes per page view on PostgreSQL, 56 bytes on
           DuckDB. Where the difference actually comes from — and why the answer is not "the
@@ -75,7 +78,7 @@
       </li>
       <li class="post-item">
         <p class="post-meta"><time datetime="2026-11-09">9 November 2026</time><span>9 min read</span></p>
-        <h3><a href="how-much-traffic/">How much traffic can a 1 vCPU box take?</a></h3>
+        <h2><a href="how-much-traffic/">How much traffic can a 1 vCPU box take?</a></h2>
         <p>
           The rule used to be 68 MB plus 7.8 MB per 1 000 requests a second. After seven
           fixes the curve is flat, the memory promise holds with room to spare, and the CPU
