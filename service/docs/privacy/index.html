@@ -81,11 +81,19 @@
         The short version
       </p>
       <p>
-        No cookies. No <code>localStorage</code>. No fingerprinting. No IP address stored — not
-        in the database, not in the logs, not hashed into something stable. Query strings
-        stripped by default. Do Not Track and Global Privacy Control honoured. Geography
-        recorded only if you explicitly configure an edge header. The server never makes an
-        outbound request. Retention is a setting you control.
+        No cookies. No <code>localStorage</code>. No fingerprinting. The visitor's IP address
+        and user agent are <strong>not</strong> stored — what is kept is a one-way hash of the
+        two, and that hash <em>is</em> the visitor's identifier; what else is kept are the
+        readings (country, city, browser, system, device). Set <code>SUMIMI_STORE_RAW=1</code>
+        to keep the raw address and the raw user agent as well. Query strings are kept by
+        default, because the marketing parameters live in them — set
+        <code>SUMIMI_KEEP_QUERY=0</code> to drop them. Do Not Track and Global Privacy Control
+        are sent by default; put <code>data-do-not-track="true"</code> on the script to honour
+        them. Geography recorded only if you configure an edge header or download a
+        geolocation database. The service makes no outbound call that carries your data away —
+only the uptime checks you asked for, and the certificate if you turned <code>--ssl</code> on.
+Retention is a
+        setting you control.
       </p>
     </div>
 
@@ -146,14 +154,29 @@
             <td><code>navigator.language</code>, e.g. <code>en-GB</code>.</td>
           </tr>
           <tr>
-            <td>Country</td>
-            <td>An edge header</td>
-            <td><strong>Only</strong> if a header such as <code>CF-IPCountry</code> is present and you configure Sumimi to read it. Never derived from a geo-IP database.</td>
+            <td>IP address</td>
+            <td>The request</td>
+            <td>The visitor's address, as it arrived (from the proxy header you configure, or from the socket). <strong>Not stored.</strong> What is kept is a one-way hash of it — together with the user agent, that hash is the visitor's identifier — plus the readings below.</td>
+          </tr>
+          <tr>
+            <td>User agent</td>
+            <td>The <code>User-Agent</code> header</td>
+            <td><strong>Not stored raw.</strong> What is kept is its reading (browser family and version, system, device) and its part in the visitor's hash. Set <code>SUMIMI_STORE_RAW=1</code> to keep the raw string as well — then the versions and the bots we do not know are in there too.</td>
+          </tr>
+          <tr>
+            <td>Country, region, city</td>
+            <td>An edge header, or a geolocation database</td>
+            <td>From a header such as <code>CF-IPCountry</code> when you configure one, and from the database you download with <code>sumimi geoip download</code> when you have one. <strong>Nothing is looked up without one of the two.</strong></td>
+          </tr>
+          <tr>
+            <td>Visitor id</td>
+            <td>Generated server-side</td>
+            <td>Sixteen bytes — a one-way hash of the address, the user agent and the site. Not reversible, never rotated.</td>
           </tr>
           <tr>
             <td>Session id</td>
             <td>Generated server-side</td>
-            <td>Random and non-reversible, rotating every 30 minutes.</td>
+            <td>Sixteen bytes — a hash of the visitor and the second the session began. Not reversible.</td>
           </tr>
           <tr>
             <td>Custom event properties</td>
@@ -171,11 +194,11 @@
           <tr><th>Never stored, never logged</th></tr>
         </thead>
         <tbody>
-          <tr><td>Raw IP addresses — not stored, not logged, not hashed into a stable identifier</td></tr>
           <tr><td>Cookies of any kind</td></tr>
           <tr><td><code>localStorage</code> or <code>sessionStorage</code> identifiers</td></tr>
           <tr><td>Fingerprinting: canvas, audio, fonts, plugins, hardware</td></tr>
           <tr><td>Precise geolocation</td></tr>
+          <tr><td>The visitor's address in any log — there is no per-request log, and the administrator's log records no addresses</td></tr>
           <tr><td>Precise viewport measurements</td></tr>
           <tr><td>Installed fonts or plugin lists</td></tr>
           <tr><td>Account credentials, form contents, keystrokes, page text</td></tr>
@@ -189,32 +212,41 @@
 
     <h2>The visitor identifier</h2>
     <p>
-      Analytics needs some way to say "this is the same person as yesterday" without keeping a
-      durable record of who that person is. Sumimi uses an HMAC-SHA256 over the server's own
-      secret and four inputs:
+      Analytics needs some way to say "this is the same person as yesterday". Sumimi does
+      that with <strong>one one-way hash</strong>:
     </p>
-    <pre class="shell"><code>HMAC(server_secret, coarse_ip_prefix ‖ user_agent ‖ website_id ‖ time_bucket)</code></pre>
-    <p>Three properties of this construction matter:</p>
+    <pre class="shell"><code>visitor_id = SHA-256(address ‖ user_agent ‖ website_id)</code></pre>
+    <p>
+      The first sixteen bytes of that digest are the visitor's identifier. It is written to
+      every row, and the visitor count is the number of distinct identifiers in the window.
+    </p>
     <ul>
       <li>
-        <strong>It cannot be reversed.</strong> The HMAC is one-way, so the identifier cannot
-        be turned back into an IP address, even by someone who holds the secret.
+        <strong>It is one-way.</strong> The hash cannot be turned back into an address or a
+        user agent, so there is nothing there to leak and no secret to protect.
       </li>
       <li>
-        <strong>It rotates.</strong> The time bucket is 30 minutes for sessions and one day for
-        the visitor count, so "unique visitors" means unique visitors <em>today</em> rather than
-        unique visitors forever. There is no long-lived identifier to leak.
+        <strong>It survives across days</strong>, which is what "unique visitors" means: the
+        same person, seen yesterday and today, is one visitor. It is never rotated.
       </li>
       <li>
-        <strong>It is scoped to one website.</strong> The website id is part of the input, so
-        the same visitor has different identifiers on different sites and the two cannot be
+        <strong>It is scoped to one website</strong>: the site's own id is part of the input,
+        so the same visitor on two of your sites has two identifiers and the two cannot be
         correlated.
+      </li>
+      <li>
+        <strong>The address that goes in is the whole IPv4 address, or the /64 of an IPv6
+        address.</strong> An IPv6 browser rotates the rest of its address but keeps its /64,
+        so the /64 is the part that identifies the connection. IPv4 has no such rotation, so
+        the whole address is used — a /24 would merge everyone behind one network into a
+        single visitor.
       </li>
     </ul>
     <p>
-      The coarse prefix is the first three octets of an IPv4 address (a /24) or the first four
-      hextets of an IPv6 address (a /64). The full address is used to derive that prefix and
-      then discarded; it is never written to disk and never written to a log line.
+      The country, the region and the city are worked out of the address before it is
+      hashed, and what is kept are those readings. Set <code>SUMIMI_STORE_RAW=1</code> and the
+      raw address and the raw user agent are kept as well — that is a site owner's choice, and
+      it is the only way to get them back. No log line records the address.
     </p>
 
     <h2>Cookies, storage and fingerprinting</h2>
@@ -283,30 +315,48 @@ utm_source = newsletter</code></pre>
 
     <h2>Geography</h2>
     <p>
-      Sumimi has <strong>no geo-IP database</strong> and never looks one up. A country code is
-      recorded only when two conditions are both true:
+      Sumimi looks up <strong>nothing</strong> unless you give it something to look up. There
+      are two ways, and both are yours to choose:
     </p>
     <ol>
-      <li>A reverse proxy in front of Sumimi sets a header containing the country code —
-        typically <code>CF-IPCountry</code> from a CDN, or your own header.</li>
-      <li>You name that header in <code>SUMIMI_COUNTRY_HEADER</code>, or per website in
-        <code>countryHeader</code>.</li>
+      <li>
+        <strong>An edge header.</strong> A reverse proxy in front of Sumimi sets a header
+        containing the country code — typically <code>CF-IPCountry</code> from a CDN, or your
+        own — and you name that header in <code>SUMIMI_COUNTRY_HEADER</code>, or per website in
+        <code>countryHeader</code>. It is the most accurate answer, and it costs nothing.
+      </li>
+      <li>
+        <strong>A geolocation database.</strong> You download one yourself, with
+        <code>sumimi geoip download</code>, and it is read from the instance directory at
+        startup. The lookup then gives the country, the region, the city and the coordinates
+        of the visitor's address.
+      </li>
     </ol>
     <p>
-      Without that configuration, no geographic information is recorded at all — not a country,
-      not a region, not a city. There is no fallback path that geolocates an address.
+      Without either of them, no geographic information is recorded at all — not a country, not
+      a region, not a city. There is no fallback path that geolocates an address, and the
+      server never downloads a database on its own.
     </p>
     <p>
-      When a country is recorded, it is the two-letter code from the header and nothing more.
-      Region and city remain empty.
+      The header wins when both are there: a proxy knows the country exactly, because it is
+      the one that terminated the connection.
+    </p>
+    <p>
+      The database is not shipped with Sumimi — it is tens of megabytes and it goes out of
+      date every month, so downloading it is the site owner's job. The command prints who to
+      credit, because the licence asks for it.
     </p>
 
     <h2>The server's own behaviour</h2>
     <ul>
       <li>
-        <strong>No outbound calls.</strong> The service never phones home. No telemetry, no
-        crash reporting, no update checks, no usage reporting, no third-party scripts. If the
-        box has no outbound network access, nothing breaks.
+        <strong>No calls that carry your data away.</strong> There is no telemetry, no crash
+        reporting, no update check, no usage reporting, no third-party script. The
+        <strong>only</strong> outbound requests the service makes are the ones you asked for:
+        the uptime checks go to the websites you listed, and — if you turned
+        <code>--ssl</code> on — the certificate is issued and renewed with the ACME
+        provider. Everything else stays on the box. The geolocation database is downloaded by
+        you, with <code>sumimi geoip download</code>, not by the service.
       </li>
       <li>
         <strong>The tracker is always served by your own server.</strong> The script you put
@@ -317,9 +367,10 @@ utm_source = newsletter</code></pre>
         <code>SUMIMI_APP_URL=/app</code> to serve it from your own server instead.
       </li>
       <li>
-        <strong>No raw IPs in logs.</strong> Access logs record the method, the path, the status
-        and the duration. Query strings are stripped from logged paths, because they routinely
-        carry tokens and personal data.
+        <strong>No per-request log at all.</strong> Nothing about a page view is written to a
+        log line — no address, no path, no query string, no user agent. The only log is the
+        administrator's: who did what, and when (logins, website changes, imports). It records
+        no addresses either.
       </li>
       <li>
         <strong>No request bodies in logs.</strong> Payloads are validated and discarded, never
@@ -447,14 +498,15 @@ curl -X DELETE https://analytics.example.com/api/websites/3f2a... \
           <tr><td>Cookies</td><td><span class="pill no">never set</span></td></tr>
           <tr><td><code>localStorage</code> identifiers</td><td><span class="pill no">never used</span></td></tr>
           <tr><td>Fingerprinting</td><td><span class="pill no">never attempted</span></td></tr>
-          <tr><td>Raw IP addresses</td><td><span class="pill no">never stored or logged</span></td></tr>
-          <tr><td>Visitor identifier</td><td>non-reversible HMAC over a coarse IP prefix; <strong>stable across days</strong> (it is not rotated)</td></tr>
-          <tr><td>Session identifier</td><td>rotating every 30 minutes, scoped to one website</td></tr>
-          <tr><td>URL query strings</td><td>stripped by default, opt-in per site</td></tr>
-          <tr><td>Do Not Track</td><td><span class="pill yes">honoured — nothing is sent</span></td></tr>
-          <tr><td>Global Privacy Control</td><td><span class="pill yes">honoured — nothing is sent</span></td></tr>
-          <tr><td>Geography</td><td>only from a configured edge header, else nothing</td></tr>
-          <tr><td>Outbound calls from the server</td><td><span class="pill no">none, ever</span></td></tr>
+          <tr><td>IP address</td><td><span class="pill no">not stored</span> — only its hash and its readings; <code>SUMIMI_STORE_RAW=1</code> keeps it; <strong>never written to a log line</strong></td></tr>
+          <tr><td>User agent</td><td><span class="pill no">not stored raw</span> — only its readings; <code>SUMIMI_STORE_RAW=1</code> keeps it</td></tr>
+          <tr><td>Visitor identifier</td><td>a one-way hash of the address, the user agent and the site — sixteen bytes, never rotated</td></tr>
+          <tr><td>Session identifier</td><td>sixteen bytes — a hash of the visitor and the second the session began</td></tr>
+          <tr><td>URL query strings</td><td>kept by default; <code>SUMIMI_KEEP_QUERY=0</code> drops them</td></tr>
+          <tr><td>Do Not Track</td><td>sent by default; <code>data-do-not-track="true"</code> honours it</td></tr>
+          <tr><td>Global Privacy Control</td><td>sent by default; <code>data-do-not-track="true"</code> honours it</td></tr>
+          <tr><td>Geography</td><td>only from a configured edge header or a database you downloaded, else nothing</td></tr>
+          <tr><td>Outbound calls that carry your data away</td><td><span class="pill no">none</span> — only the uptime checks you asked for, and the certificate if you use <code>--ssl</code></td></tr>
           <tr><td>Request bodies in logs</td><td><span class="pill no">never</span></td></tr>
           <tr><td>Retention</td><td>configurable per website, enforced by <code>sumimi prune</code></td></tr>
           <tr><td>Erasure</td><td><span class="pill yes"><code>sumimi erase</code> and <code>DELETE /api/websites/:id</code></span></td></tr>

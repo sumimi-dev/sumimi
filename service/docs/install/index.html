@@ -378,10 +378,17 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
       </table>
     </div>
     <p>
-      Two more settings have no flag — they are environment-only because they are per-site
+      A few more settings have no flag — they are environment-only because they are per-site
       policy rather than per-server:
     </p>
     <ul>
+      <li><code>SUMIMI_STORE_RAW</code> — whether to store the visitor's
+        <strong>raw address and raw user agent</strong>. It is <strong>off</strong> by
+        default: what is kept is a one-way hash of the two (the visitor identifier) and the
+        readings — country, region, city, browser, system, device. Set it to <code>1</code> to
+        keep the raw address and the raw user agent as well; then the visitor identifier can be
+        worked out again from the row, which is a privacy trade the site owner makes on
+        purpose.</li>
       <li><code>SUMIMI_KEEP_QUERY</code> — whether to store the query string of the
         collected URLs. It is <strong>on</strong> by default, because that is what Umami
         stores and the marketing parameters (UTM, ad click ids) live in it — they are

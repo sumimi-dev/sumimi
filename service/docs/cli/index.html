@@ -344,6 +344,52 @@ start the server and open the dashboard to see it</code></pre>
       </p>
     </div>
 
+    <h3><code>geoip download</code></h3>
+    <p>
+      Download the <strong>geolocation database</strong>, so the server can work out where a
+      visitor is: the country, the region, the city and the coordinates.
+    </p>
+    <pre class="shell"><code>sumimi geoip download</code></pre>
+    <pre class="shell"><code>[sumimi] downloading https://download.db-ip.com/free/dbip-city-lite-2026-11.mmdb.gz
+[sumimi] wrote ./sumimi/geoip/DBIP-Lite.mmdb (121.0 MB)
+[sumimi] the download was 57.3 MB
+[sumimi] the server holds the file in memory: about 121.0 MB
+[sumimi] the geolocation is ready — restart the server to use it
+[sumimi] Geolocation data by DB-IP (https://db-ip.com), under the Creative Commons BY 4.0 licence.</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Default</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--country</code></td><td>off</td><td>The small database: the country only. A tenth of the size, and it is what a small box can hold in memory.</td></tr>
+          <tr><td><code>--dir &lt;path&gt;</code></td><td><code>./sumimi</code></td><td>The instance directory. The database lands in <code>&lt;path&gt;/geoip/</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The database is <strong>DB-IP Lite</strong>, in the <strong>mmdb format</strong> — the
+      same format MaxMind uses. It is not shipped with Sumimi: it is tens of megabytes and it
+      goes out of date every month, so downloading it is the site owner's job.
+    </p>
+    <p>
+      The server reads it at startup, from the instance directory. <strong>Without it,
+      nothing is looked up</strong> — the country then comes from the edge header
+      (<code>CF-IPCountry</code> and friends), exactly as before. Restart the server after the
+      download.
+    </p>
+    <div class="callout">
+      <p class="callout-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v.01M11 12h1v4h1"/></svg>
+        The attribution is not optional
+      </p>
+      <p>
+        DB-IP Lite is under the Creative Commons BY 4.0 licence: free to use, as long as
+        DB-IP is credited. The command prints the credit; keep it wherever you show the
+        reports.
+      </p>
+    </div>
+
     <h3><code>prune</code></h3>
     <p>
       Enforce the retention window: delete sessions and events older than the configured

@@ -245,20 +245,35 @@ and event rows carry.
 | Referrer | `referrer` (host), `referrer_path`, `referrer_query`, `referrer_name` (the display name) |
 | Site | `hostname` |
 | Environment | `browser`, `browser_version`, `os`, `os_version`, `device`, `screen`, `language`, `country`, `region`, `city`, `latitude`, `longitude` |
-| Identity | `session_id`, `visitor_id`, `visit_id` (the hour inside the session) |
+| Identity | `visitor_id` (the visitor), `visit_id` (the session), `user_id` (the visitor as the site owner knows them), `session_start` (when the session began) |
 | Marketing | `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term` |
 | Ad click ids | `gclid`, `fbclid`, `msclkid`, `ttclid`, `lifatid`, `twclid` |
 | Performance | `lcp`, `inp`, `cls`, `fcp`, `ttfb` (Core Web Vitals) |
 | Events | `event_name`, `event_type`, `tag`, `data` |
 | Revenue | `revenue` per session/event, with `currency` |
-| Visitors | a visitor id that survives across days |
+| Visitors | a sixteen-byte hash of the address, the user agent and the website — a visitor survives across days |
 
 **What we never collect** — the same short list Umami keeps:
 
-* raw IP addresses — not stored, not logged (a hash is used to derive the visitor id)
 * cookies, `localStorage` identifiers, fingerprinting (canvas, audio, fonts, hardware)
-* precise geolocation (country comes from an edge header, not a GeoIP database)
 * form contents, keystrokes, page text
+* the visitor's address **in the logs** — there is no per-request log at all, and the
+  administrator's log records no addresses
+
+**What we do collect, and why** — the **readings**, not the raw strings: the country, the
+region, the city, the browser, the system, the device. The **raw IP address and the raw user
+agent are not stored by default** (`SUMIMI_STORE_RAW=1` turns them on): the visitor
+identifier is already a hash of the two, so nothing is lost by not keeping the originals —
+and the default is the clean one, with the switch in the site owner's hands (D-041).
+
+**The visitor identifier's input is the whole IPv4 address, or the /64 of an IPv6 one.**
+A /24 would merge everyone behind one office NAT into a single visitor; IPv6 keeps its /64
+because the privacy extensions rotate everything after it.
+
+**The geolocation database is the site owner's business.** The server ships no data file and
+makes no outbound request; the owner downloads one with `sumimi geoip download` and it is
+read from the instance directory at startup. Until then, the country comes from an edge
+header — and nothing is looked up.
 
 ### 2.1a The customer is a site owner
 
@@ -521,11 +536,16 @@ so nothing can drift apart, and the page attribution is exact.
 event(
     id BIGINT,               -- monotonic, assigned by the writer, NOT a primary key
     website_id,
-    session_id UUID,         -- 16 bytes, not a 36-character string (schema v4)
-    visitor_id UUID,         -- 16 bytes
     created_at,
 
-    visit_id UUID,              -- the hour inside the session (schema v6)
+    visitor_id UUID,         -- the visitor: 16 bytes (schema v10)
+    visit_id UUID,           -- the session: 16 bytes (schema v10)
+    user_id UUID,            -- the visitor as the site owner knows them (nullable)
+    session_start TIMESTAMP, -- when the session began: a fact, stored (schema v10)
+
+    ip              VARCHAR,         -- the raw address (empty unless SUMIMI_STORE_RAW=1)
+    ip_prefix       VARCHAR,         -- its coarse prefix (empty unless SUMIMI_STORE_RAW=1)
+    user_agent      VARCHAR,         -- the raw user agent (empty unless SUMIMI_STORE_RAW=1)
 
     url, url_query, title,                       -- the page
     referrer, referrer_path, referrer_query,     -- where it came from
@@ -547,22 +567,46 @@ event(
 )
 
 revenue(                    -- what the owner earned, imported (not tracked)
-    id BIGINT, website_id, session_id, event_id,
+    id BIGINT, website_id, visit_id, event_id,
     event_name, currency, revenue, created_at
 )
 ```
 
-**The session and visitor ids are UUIDs** (schema v4). They used to be 36-character
-strings — a hash, formatted as a UUID — and at 60 million page views that is 2.15 GB of
-text where 1.07 GB of bytes would do. The migration is deterministic: an id that is
-already UUID-shaped keeps its bytes, and a client-supplied id is hashed with SHA-256, so
-**no session is split in two** by the migration.
+**The visitor id is stored** (schema v10). It is `SHA-256(address ‖ user_agent ‖
+website_id)`, first sixteen bytes — a pure function of the visitor's address, their
+agent and the site. ⇒ ⇒ The address that goes in is **the whole IPv4 address, or the /64
+of an IPv6 one** (a /24 would merge a whole office into one visitor; IPv6 rotates
+everything after its /64). ⇒ ⇒ The reports count the visitors out of that id, so the
+count is over a **fixed-size key**, not over a pair of strings — which was 2–6× the
+cost at report time.
+
+⇒ ⇒ **The raw address and the raw user agent are not stored by default**
+(`SUMIMI_STORE_RAW=1` turns them on) ⇒ ⇒ the visitor id is already a hash of them, so
+the readings (country, region, city, browser, system, device) are all that the reports
+need. ⇒ ⇒ The default is the clean one and the switch is the site owner's.
+
+**The session id is sixteen bytes** (schema v10): `SHA-256(visitor_id ‖ the second the
+session began)`. ⇒ ⇒ **The start itself is not in the id** — sixteen bytes have no room
+for it — so it is **stored beside it**, in `session_start` ⇒ ⇒ the start of a session is
+a fact about what happened, and it is written down rather than worked out of a bucket.
+
+⇒ ⇒ A session is cut by a **30-minute idle timeout**, made when the event arrives ⇒ ⇒
+the state that decides it lives in the **client's signed token** (`x-sumimi-cache`, or
+`x-umami-cache`) ⇒ ⇒ **the server keeps no state** ⇒ ⇒ a request without a token falls
+back to the server's own in-memory cache of the recently-seen visitors.
+
+⇒ ⇒ **There is no migration.** The shape of the ids changed, and the rows of an
+older file cannot be carried over — so an older database is **replaced**: the old file
+is set aside under its own version number (`sumimi.duckdb.v7.bak`) and an empty one of
+the current version takes its place. The analysis data and the site registrations are
+not carried over; the accounts are not in this file at all (they live in the instance
+store), so they survive.
 
 **The baseline is Umami.** We store everything Umami stores — plus the browser and OS
 *versions*, which Umami does not keep. Two consequences worth stating plainly:
 
-* **The visitor id survives across days** (Umami's `distinct_id`). It is derived from a
-  hash of the coarse IP prefix and the user agent; the raw IP is never stored.
+* **The visitor id survives across days** (Umami's `session_id`). It is a hash of the
+  address and the user agent; the raw address is not stored unless `SUMIMI_STORE_RAW=1`.
 * **The query string is stored**, because the UTM parameters and the ad click ids live
   in it. The server does the splitting — the browser sends the whole URL.
 

@@ -332,9 +332,11 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
       <code>sumimi/</code>, holding <code>data.duckdb</code> (the events),
       <code>instance.sqlite</code> (the accounts, the log, the cache) and
       <code>jwt-secret</code> — then start the service on the new box. Copying the
-      <code>jwt-secret</code> file is what keeps the issued tokens working; because the
-      visitor identifier is derived from the server secret, changing the secret means visitor
-      identifiers change, which is a privacy feature rather than a bug.
+      <code>jwt-secret</code> file is what keeps the issued tokens working. The visitor
+      identifier is <strong>not</strong> derived from that secret — it is a hash of the
+      address, the user agent and the website — so changing the secret changes the issued
+      tokens, not the visitor identifiers: the same visitor stays the same visitor across a
+      move.
     </p>
 
     <h3>Where did my admin password go?</h3>
@@ -525,9 +527,11 @@ sumimi serve --db ./demo.duckdb --port 3000</code></pre>
 
     <h3>Is there any telemetry in Sumimi itself?</h3>
     <p>
-      No. The server makes no outbound requests of any kind — no analytics, no crash
-      reporting, no update checks, no geo-IP lookups. It never talks to anything but its
-      visitors and you.
+      No. There is no analytics, no crash reporting, no update check and no geo-IP lookup —
+      the geolocation database is downloaded by you, with <code>sumimi geoip download</code>,
+      not by the server. The only outbound requests the service makes are the ones you asked
+      for: the uptime checks go to the websites you listed, and, if you turned
+      <code>--ssl</code> on, the certificate is issued and renewed with the ACME provider.
     </p>
     <p>
       The one thing that may leave the browser is the dashboard frontend, which is fetched

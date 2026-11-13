@@ -74,8 +74,9 @@
     <p class="page-lede">
       The Sumimi tracker is a single dependency-free JavaScript file. It has no build step, no
       npm package and no bundler; the file in the repository is byte-for-byte the file that gets
-      served. It sets no cookies, uses no <code>localStorage</code>, does no fingerprinting, and
-      honours Do Not Track and Global Privacy Control.
+      served. It sets no cookies, uses no <code>localStorage</code>, and does no fingerprinting.
+      Do Not Track and Global Privacy Control are sent by default; put
+      <code>data-do-not-track="true"</code> on the script to honour them.
     </p>
 
     <h2>The script tag</h2>
@@ -133,6 +134,11 @@ sumimi.identify({ plan: "pro" });</code></pre>
             <td><code>data-api-url</code></td>
             <td>no</td>
             <td>Base URL of the API, when the tracker file itself is hosted somewhere else. Defaults to the origin the script was loaded from.</td>
+          </tr>
+          <tr>
+            <td><code>data-do-not-track</code></td>
+            <td>no</td>
+            <td>Set it to <code>"true"</code> and the tracker honours the visitor's Do Not Track and Global Privacy Control signals — then nothing is sent. Without it, those signals are ignored and the page view is sent, the way Umami's tracker does it.</td>
           </tr>
         </tbody>
       </table>

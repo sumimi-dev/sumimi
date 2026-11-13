@@ -943,6 +943,12 @@ subject.
 **A run that failed is also a record** — the step runs `always()`, because a gap
 in the ledger is worse than a failed entry.
 
+**The records are the ledger, not the work.** One run, one issue, forever ⇒ ⇒
+the open list would fill with them ⇒ ⇒ **the newest one stays open** (it is the
+current baseline) and **the previous one is closed** when the next run opens its
+own ⇒ ⇒ ⇒ the ledger stays complete (closed issues are still there) and the
+baseline stays single.
+
 ### How to repeat the measurement
 
 Three rulers. The first one is the exact one.
