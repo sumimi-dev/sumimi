@@ -436,8 +436,6 @@ enum Window {
     ThisMonth,
     /// The calendar month before this one.
     LastMonth,
-    /// The thirty days before the month starts.
-    BeforeMonth,
 }
 
 /// The window each phrase asks for, in English.
@@ -451,12 +449,17 @@ const EN_WINDOWS: &[(&[&str], Window)] = &[
 ];
 
 /// The window each phrase asks for, in Chinese.
+///
+/// **The same windows the English ones ask for** — 「本月」 is the days from the
+/// first of the month until now, 「上个月」 is the calendar month before it.
+/// (They used to ask for the thirty days before this month, in both cases; that
+/// was a bug, and the two languages did not agree.)
 const ZH_WINDOWS: &[(&[&str], Window)] = &[
     (&["今天"], Window::Today),
     (&["昨天"], Window::Yesterday),
     (&["上周"], Window::LastWeek),
-    (&["本月", "这个月"], Window::BeforeMonth),
-    (&["上个月", "上月"], Window::BeforeMonth),
+    (&["本月", "这个月"], Window::ThisMonth),
+    (&["上个月", "上月"], Window::LastMonth),
 ];
 
 /// The words that ask for a number of days, in English.
@@ -685,14 +688,6 @@ fn window(text: &str, lang: Lang, now: NaiveDateTime) -> TimeRange {
                 .and_hms_opt(0, 0, 0)
                 .unwrap_or(end);
             TimeRange { start, end }
-        }
-        Some(Window::BeforeMonth) => {
-            // The thirty days before the month starts.
-            let end = start_of_month(now);
-            TimeRange {
-                start: end - day * 30,
-                end,
-            }
         }
         None => {
             // "last 30 days" — the number has to follow the word.

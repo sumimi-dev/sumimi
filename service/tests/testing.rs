@@ -33,10 +33,12 @@ fn the_same_name_means_the_same_session() {
     let other_visitor = HitBuilder::new("w1", "s1", "v2").build();
 
     assert_eq!(one.visit_id, two.visit_id, "the same visit");
-    assert_eq!(one.visitor_id, two.visitor_id, "the same visitor");
+    assert_eq!(one.ip_prefix, two.ip_prefix, "the same visitor");
+    assert_eq!(one.user_agent, two.user_agent, "the same visitor");
     assert_ne!(one.visit_id, other_visit.visit_id, "a different visit");
     assert_ne!(
-        one.visitor_id, other_visitor.visitor_id,
+        (one.ip_prefix.as_str(), one.user_agent.as_str()),
+        (other_visitor.ip_prefix.as_str(), other_visitor.user_agent.as_str()),
         "a different visitor"
     );
 }

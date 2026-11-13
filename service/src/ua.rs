@@ -19,6 +19,112 @@ pub struct UserAgentInfo {
     pub device: Option<String>,
 }
 
+/// The kind of a crawler, from its user agent.
+///
+/// **A bot is not a visitor** — it does not look at the page, it fetches it.
+/// Umami throws its hits away; we keep them and **mark** them, so a site
+/// owner can say which crawlers came and when.
+///
+/// The kinds are the leaves of the four groups the dashboard shows:
+///
+/// - `bot-ai-*` — the crawlers that fetch the site to answer questions;
+/// - `bot-se-*` — the search engines, which fetch it for the index;
+/// - `bot-social-*` — the preview bots of the social and messaging apps;
+/// - `bot-other-*` — the crawlers we do not know by name.
+pub fn bot_kind(user_agent: &str) -> Option<&'static str> {
+    let ua = user_agent.to_ascii_lowercase();
+
+    // The AI crawlers first: they are the ones worth naming.
+    if ["gptbot", "chatgpt-user", "oai-searchbot"]
+        .iter()
+        .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-ai-openai");
+    }
+    if ["claudebot", "claude-web", "anthropic-ai", "ccbot"]
+        .iter()
+        .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-ai-anthropic");
+    }
+    if ["perplexitybot", "perplexity-user"]
+        .iter()
+        .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-ai-perplexity");
+    }
+    if ua.contains("applebot-extended") {
+        return Some("bot-ai-apple");
+    }
+
+    // The search engines.
+    if [
+        "googlebot",
+        "google-inspectiontool",
+        "adsbot-google",
+        "googleother",
+        "storebot-google",
+        "google-extended",
+    ]
+    .iter()
+    .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-se-google");
+    }
+    if ["bingbot", "msnbot", "adidxbot"]
+        .iter()
+        .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-se-bing");
+    }
+    if ua.contains("yandex") {
+        return Some("bot-se-yandex");
+    }
+    if ua.contains("baiduspider") {
+        return Some("bot-se-baidu");
+    }
+    if ["duckduckbot", "applebot", "seznam"]
+        .iter()
+        .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-se-other");
+    }
+
+    // The social and messaging apps.
+    if ua.contains("facebookexternalhit") {
+        return Some("bot-social-meta");
+    }
+    if ua.contains("twitterbot") {
+        return Some("bot-social-x");
+    }
+    if ua.contains("linkedinbot") {
+        return Some("bot-social-linkedin");
+    }
+    if ["slackbot", "discordbot", "telegrambot", "whatsapp"]
+        .iter()
+        .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-social-messaging");
+    }
+
+    // The rest: the crawlers we do not know by name.
+    if [
+        "bot",
+        "spider",
+        "crawler",
+        "crawling",
+        "slurp",
+        "mediapartners",
+        "scraper",
+    ]
+    .iter()
+    .any(|marker| ua.contains(marker))
+    {
+        return Some("bot-other-unknown");
+    }
+    None
+}
+
 /// Classify a user-agent string into browser / OS / device families.
 ///
 /// This is intentionally a small, dependency-free approximation: it covers the browsers
@@ -149,31 +255,48 @@ pub fn ip_prefix(ip: &str) -> String {
     }
 }
 
-/// Derive a rotating, non-reversible visit id.
+/// The address the visitor's id is worked out of.
 ///
-/// The id is a HMAC over (server secret, coarse IP prefix, user agent, website, time
-/// bucket). It cannot be reversed into an IP address, is not stable across time buckets
-/// (so it is not a durable identifier), and is scoped to one website.
+/// **IPv4: the whole address.** A /24 is 256 addresses: a campus, an office,
+/// a mobile carrier's NAT — everybody behind it would be **one** visitor.
+/// The address is only *hashed* into the id, so nothing raw is stored by
+/// this.
 ///
-/// The result is a **UUID**: 16 bytes, not a 36-character string. At 60 million page
-/// views that is the difference between 1.1 GB and 2.2 GB of session ids alone.
-pub fn derive_visit_id(
-    secret: &[u8],
-    ip_prefix: &str,
-    user_agent: &str,
-    website_id: &str,
-    bucket: u64,
-) -> Uuid {
-    let mut mac = HmacSha256::new(secret);
-    mac.update(ip_prefix.as_bytes());
-    mac.update(b"\x1f");
-    mac.update(user_agent.as_bytes());
-    mac.update(b"\x1f");
-    mac.update(website_id.as_bytes());
-    mac.update(b"\x1f");
-    mac.update(&bucket.to_le_bytes());
-    let digest = mac.finalize();
-    uuid_from_bytes(&digest[..16])
+/// **IPv6: the /64.** The whole address would be wrong the other way: IPv6
+/// privacy extensions **rotate the /64** of a client on every network it
+/// joins, so the whole address would make one visitor into many. The /64 is
+/// what stays with the machine.
+pub fn visitor_address(ip: &str) -> String {
+    if ip.contains(':') {
+        ip.split(':').take(4).collect::<Vec<_>>().join(":")
+    } else {
+        ip.to_string()
+    }
+}
+
+/// The **visitor id**: the identity a session is cut for.
+///
+/// It is a UUID built from the SHA-256 of (the visitor's address, the user
+/// agent, the website) — **sixteen bytes**.
+///
+/// The address is the one [`visitor_address`] picks: the whole IPv4 address,
+/// the /64 of an IPv6 one.
+///
+/// **The website is in it**, so two sites never share a visitor's session: the
+/// session cache is keyed by this, and a visitor who is active on both sites at
+/// once must get a session on each.
+///
+/// The id is **pure**: the same visitor gets the same id on every server, after
+/// every restart, and an offline import can work it out for itself. So the row
+/// carries it, and the reports count the visitors out of it.
+pub fn visitor_id(address: &str, user_agent: &str, website_id: &str) -> Uuid {
+    let mut hasher = Sha256::new();
+    hasher.update(address.as_bytes());
+    hasher.update(b"\x1f");
+    hasher.update(user_agent.as_bytes());
+    hasher.update(b"\x1f");
+    hasher.update(website_id.as_bytes());
+    uuid_from_bytes(&hasher.finalize()[..16])
 }
 
 /// Turn 16 bytes into a UUID.
@@ -275,14 +398,16 @@ mod tests {
     }
 
     #[test]
-    fn visit_id_is_stable_within_a_bucket_and_rotates() {
-        let args = (b"secret", "203.0.113", "UA", "website", 42);
-        let a = derive_visit_id(args.0, args.1, args.2, args.3, args.4);
-        let b = derive_visit_id(args.0, args.1, args.2, args.3, args.4);
-        let c = derive_visit_id(args.0, args.1, args.2, args.3, 43);
+    fn the_visitor_id_is_a_function_of_the_prefix_the_agent_and_the_site() {
+        let a = visitor_id("203.0.113", "UA", "website");
+        let b = visitor_id("203.0.113", "UA", "website");
         assert_eq!(a, b);
-        assert_ne!(a, c);
-        // 16 bytes, not a 36-character string.
+        // Another site is another visitor: the session cache is keyed by this.
+        assert_ne!(a, visitor_id("203.0.113", "UA", "other-website"));
+        // Another address, another agent.
+        assert_ne!(a, visitor_id("203.0.114", "UA", "website"));
+        assert_ne!(a, visitor_id("203.0.113", "Other UA", "website"));
+        // Sixteen bytes.
         assert_eq!(a.as_bytes().len(), 16);
     }
 

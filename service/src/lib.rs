@@ -30,6 +30,7 @@ pub mod static_files;
 pub mod testing;
 #[cfg(feature = "tls")]
 pub mod tls;
+pub mod token;
 pub mod uptime;
 pub mod ua;
 pub mod writer;

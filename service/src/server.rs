@@ -303,7 +303,18 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
     config.paths.prepare()?;
     let storage = open_storage(&config, &args.backend)?;
     let instance = open_instance(&config)?;
-    serve_with(Arc::new(config), storage, instance).await
+
+    // The geolocation database, if the site owner downloaded one.
+    //
+    // The environment variable wins (it points at a file whatever its name);
+    // then the city database in the instance directory; then the country one.
+    // **No database is not an error**: the country comes from the header then.
+    let geo = crate::geo::from_env()
+        .or_else(|| crate::geo::open_if_present(&config.paths.geoip))
+        .or_else(|| crate::geo::open_if_present(&config.paths.geoip_country))
+        .map(|resolver| Arc::new(resolver) as Arc<dyn crate::geo::Resolver>);
+
+    serve_with_geo(Arc::new(config), storage, instance, geo).await
 }
 
 /// Run the HTTP server with a given storage backend.

@@ -92,6 +92,23 @@ impl Text for Option<&str> {
 
 /// A hit under construction.
 ///
+/// The identity of a visitor: the address, its prefix and the user agent.
+///
+/// A visitor is the pair (the prefix, the user agent) — that is what the
+/// reports count, and it is what is stored. A test names its visitors, so a
+/// name is turned into a pair that stands for it: the same name always gives
+/// the same pair, and two names give two different ones.
+pub fn visitor_identity(id: &Uuid) -> (String, String, String) {
+    let bytes = id.as_bytes();
+    let prefix = format!("{}.{}.{}", bytes[0], bytes[1], bytes[2]);
+    let agent = format!(
+        "sumimi-test/{:02x}{:02x}{:02x}{:02x}",
+        bytes[3], bytes[4], bytes[5], bytes[6]
+    );
+    let ip = format!("{prefix}.1");
+    (ip, prefix, agent)
+}
+
 /// Every setter returns the builder, so the fields a caller cares about are
 /// named in a row and the rest are left alone.
 #[derive(Debug, Clone)]
@@ -106,11 +123,16 @@ impl HitBuilder {
     /// always means the same session, so a test can put two hits in one
     /// session by naming the same session twice.
     pub fn new(website_id: &str, session: &str, visitor: &str) -> Self {
+        let visitor_id = uuid_from_text(visitor);
+        let (ip, ip_prefix, user_agent) = visitor_identity(&visitor_id);
         Self {
             hit: Hit {
                 website_id: website_id.to_string(),
-                visit_id: uuid_from_text(session),
-                visitor_id: uuid_from_text(visitor),
+                visit_id: crate::session::client_session_id(session),
+                visitor_id,
+                ip,
+                ip_prefix,
+                user_agent,
                 kind: HitKind::Pageview,
                 created_at: chrono::Utc::now().naive_utc(),
                 ..Hit::default()
@@ -121,6 +143,12 @@ impl HitBuilder {
     /// When it happened.
     pub fn at(mut self, at: NaiveDateTime) -> Self {
         self.hit.created_at = at;
+        self
+    }
+
+    /// When the session started.
+    pub fn session_start(mut self, at: NaiveDateTime) -> Self {
+        self.hit.session_start = Some(at);
         self
     }
 
@@ -137,14 +165,39 @@ impl HitBuilder {
     }
 
     /// The session, by id.
-    pub fn visit_id(mut self, id: Uuid) -> Self {
+    pub fn visit_id(mut self, id: crate::session::VisitId) -> Self {
         self.hit.visit_id = id;
         self
     }
 
     /// The visitor, by id.
+    ///
+    /// A visitor is the pair (the address prefix, the user agent) — the id is
+    /// the hash of it — so an id is turned into the pair that stands for it.
     pub fn visitor_id(mut self, id: Uuid) -> Self {
+        let (ip, ip_prefix, user_agent) = visitor_identity(&id);
         self.hit.visitor_id = id;
+        self.hit.ip = ip;
+        self.hit.ip_prefix = ip_prefix;
+        self.hit.user_agent = user_agent;
+        self
+    }
+
+    /// The visitor's address.
+    pub fn ip(mut self, ip: &str) -> Self {
+        self.hit.ip = ip.to_string();
+        self
+    }
+
+    /// The visitor's address prefix — half of the visitor's identity.
+    pub fn ip_prefix(mut self, prefix: &str) -> Self {
+        self.hit.ip_prefix = prefix.to_string();
+        self
+    }
+
+    /// The visitor's user agent — the other half of the visitor's identity.
+    pub fn user_agent(mut self, agent: &str) -> Self {
+        self.hit.user_agent = agent.to_string();
         self
     }
 
@@ -230,6 +283,14 @@ pub fn traffic(views: i64) -> Vec<Hit> {
     const BROWSERS: [&str; 4] = ["Chrome", "Safari", "Firefox", "Edge"];
     const SYSTEMS: [&str; 4] = ["Windows", "macOS", "iOS", "Android"];
     const COUNTRIES: [&str; 5] = ["US", "CN", "DE", "GB", "JP"];
+    /// A handful of user agents — the real world has a few thousand, not one
+    /// per visitor, and the storage cost depends on that.
+    const AGENTS: [&str; 4] = [
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    ];
 
     let base = chrono::NaiveDate::from_ymd_opt(2026, 3, 1)
         .unwrap()
@@ -249,12 +310,31 @@ pub fn traffic(views: i64) -> Vec<Hit> {
                 Some("example.com"),
             ));
 
-            HitBuilder::new(
-                "w1",
-                &format!("session-{session:08x}"),
-                &format!("visitor-{:08x}", session % 40_000),
-            )
-            .at(base + chrono::Duration::seconds(number * 37 % (30 * 86_400)))
+            // A session is three page views, a few minutes apart, and the
+            // session id is the one the **server** writes.
+            let visitor = uuid_from_text(&format!("visitor-{:08x}", session % 40_000));
+            let (ip, ip_prefix, _) = visitor_identity(&visitor);
+            // The user agent has a **low cardinality** in the real world: a
+            // handful of browsers, not one per visitor. The address, on the
+            // other hand, is nearly one per visitor.
+            let user_agent = AGENTS[index % AGENTS.len()].to_string();
+            let started = base + chrono::Duration::seconds((session * 97) % (30 * 86_400));
+            let at = started + chrono::Duration::seconds((index % 3) as i64 * 90);
+            // The session id is the one the **server** writes: it is a hash of
+            // the visitor and the moment the session started.
+            let visitor_id =
+                crate::ua::visitor_id(&crate::ua::visitor_address(&ip), &user_agent, "w1");
+            let visit_id =
+                crate::session::session_id(visitor_id, started.and_utc().timestamp_micros());
+
+            HitBuilder::new("w1", &format!("session-{session:08x}"), "v")
+                .visit_id(visit_id)
+                .visitor_id(visitor_id)
+                .ip(&ip)
+                .ip_prefix(&ip_prefix)
+                .user_agent(&user_agent)
+                .session_start(started)
+                .at(at)
             .url(PAGES[index % PAGES.len()])
             .url_query("utm_source=twitter&utm_medium=cpc")
             .title(format!("A post about topic {}", number % 500))

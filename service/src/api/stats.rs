@@ -59,6 +59,20 @@ pub(crate) fn report_query(id: &str, query: &crate::models::StatsQuery) -> Repor
         device: query.device.clone(),
         country: query.country.clone(),
     };
+    // The marked traffic is not part of the numbers unless the dashboard asks
+    // for its kinds.
+    report.include_markers = query
+        .markers
+        .as_deref()
+        .map(|markers| {
+            markers
+                .split(',')
+                .map(str::trim)
+                .filter(|marker| !marker.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     report.limit = query.limit.unwrap_or(50).clamp(1, 1000);
     report.offset = query.offset.unwrap_or(0).max(0);
     report
@@ -127,7 +141,7 @@ fn cache_key(spec: &ReportSpec) -> String {
     // The key is the report and everything that changes its answer. It is only
     // ever used as a key, so it does not have to be pretty.
     format!(
-        "report:{:?}:{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+        "report:{:?}:{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
         spec.report,
         spec.website,
         spec.query.start_at,
@@ -142,6 +156,9 @@ fn cache_key(spec: &ReportSpec) -> String {
         spec.query.query,
         spec.query.limit,
         spec.query.offset,
+        // The kinds of marked traffic the report counts: they change the
+        // answer, so they are part of the key.
+        spec.query.markers,
     )
 }
 
@@ -440,4 +457,43 @@ async fn breakdown(
         query,
     };
     Ok(Json(cached_report(&state, &spec)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The kinds of marked traffic change the answer, so they are part of the
+    /// cache key — otherwise the answer for one is served for the other.
+    #[test]
+    fn the_kinds_of_marked_traffic_are_part_of_the_cache_key() {
+        let mut spec = ReportSpec {
+            website: "w1".to_string(),
+            report: ReportKind::Pages,
+            query: crate::models::StatsQuery {
+                start_at: Some(1),
+                end_at: Some(2),
+                url: None,
+                referrer: None,
+                browser: None,
+                os: None,
+                device: None,
+                country: None,
+                event: None,
+                query: None,
+                markers: None,
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let without = cache_key(&spec);
+        spec.query.markers = Some("bot-google".to_string());
+        let with = cache_key(&spec);
+        assert_ne!(without, with, "the two answers must not share a key");
+
+        // And two different kinds are two different answers too.
+        spec.query.markers = Some("bot-ai".to_string());
+        assert_ne!(with, cache_key(&spec));
+    }
 }

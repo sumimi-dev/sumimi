@@ -12,20 +12,52 @@ pub mod stats;
 pub mod websites;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use axum::extract::{Request, State};
+use axum::http::HeaderName;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::storage::Storage;
 use crate::writer::Writer;
+
+/// The cross-origin rules of the collection endpoints.
+///
+/// **The collection is public**, so it is the one place where a page on
+/// another origin has to be able to post. Without these headers the browser
+/// sends a preflight, we do not answer it, and the hit is dropped before it
+/// reaches us — silently, because the tracker swallows the error.
+///
+/// The headers the client carries its state in are allowed as well: ours
+/// first, then Umami's — the Umami SDK is meant to work against us as it is.
+///
+/// The layer sits on the collection routes only: the rest of the API is
+/// authenticated, and a cross-origin reader of it would be a reader of
+/// somebody else's data.
+fn collection_cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            HeaderName::from_static("x-sumimi-cache"),
+            HeaderName::from_static("x-umami-cache"),
+            HeaderName::from_static("x-sumimi-website-id"),
+            HeaderName::from_static("x-umami-website-id"),
+            HeaderName::from_static("x-sumimi-hostname"),
+            HeaderName::from_static("x-umami-hostname"),
+        ])
+        .max_age(std::time::Duration::from_secs(86_400))
+}
 
 /// Metadata we need on the hot path (collection).
 #[derive(Debug, Clone)]
@@ -233,6 +265,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/send",
             post(collect::send)
+                .layer::<CorsLayer, Infallible>(collection_cors())
                 .layer(axum::extract::DefaultBodyLimit::max(body_limit))
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),
@@ -242,6 +275,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/collect",
             post(collect::collect)
+                .layer::<CorsLayer, Infallible>(collection_cors())
                 .layer(axum::extract::DefaultBodyLimit::max(body_limit))
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),

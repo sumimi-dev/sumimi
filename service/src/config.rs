@@ -24,6 +24,7 @@ pub const CDN_APP_URL: &str = "https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@mai
 ///   instance.sqlite  the control plane — the accounts, the log, the cache, the chat
 ///   logs/            the server's log files
 ///   acme/            the TLS certificate cache
+///   geoip/           the geolocation database (the site owner downloads it)
 ///   jwt-secret       the signing secret
 /// ```
 #[derive(Debug, Clone)]
@@ -40,6 +41,15 @@ pub struct Paths {
     pub acme: PathBuf,
     /// The file the signing secret is kept in.
     pub secret: PathBuf,
+    /// The geolocation database: the **city** one, the one that answers the
+    /// country, the region, the city and the coordinates.
+    ///
+    /// It is not there until the site owner downloads it
+    /// (`sumimi geoip download`) — the server runs without it.
+    pub geoip: PathBuf,
+    /// The geolocation database: the **country** one. The small one, for a box
+    /// that cannot hold the city database in memory.
+    pub geoip_country: PathBuf,
 }
 
 impl Paths {
@@ -79,6 +89,12 @@ impl Paths {
             logs: dir.join("logs"),
             acme: dir.join("acme"),
             secret: dir.join("jwt-secret"),
+            geoip: dir
+                .join(crate::geo::GEOIP_DIR)
+                .join(crate::geo::CITY_FILE),
+            geoip_country: dir
+                .join(crate::geo::GEOIP_DIR)
+                .join(crate::geo::COUNTRY_FILE),
             dir,
             data,
         }
@@ -197,19 +213,32 @@ pub struct Config {
     pub session_capacity: usize,
     /// Header used to derive the country code (e.g. `CF-IPCountry`).
     pub country_header: Option<String>,
-    /// Keep the query string of collected URLs (`false` by default: query strings
-    /// routinely carry session tokens and other personal data).
+    /// Keep the query string of collected URLs (**on** by default: the marketing
+    /// parameters live in it, and Umami stores it too). Set `SUMIMI_KEEP_QUERY=0`
+    /// to drop the raw query string.
     pub keep_query: bool,
+    /// Store the **raw** address and the **raw** user agent with every hit.
+    ///
+    /// **Off by default.** What is stored by default is the *reading* of them:
+    /// the country, the region, the city, the browser, the operating system,
+    /// the device — and the visitor's id, which is the hash of the address and
+    /// the agent. The raw strings are not needed for any of that.
+    ///
+    /// A site owner who wants them (to have the full set of dimensions, or to
+    /// geolocate an address himself) turns them on with
+    /// `SUMIMI_STORE_RAW=1`.
+    pub store_raw: bool,
     /// Store the page title with every session.
     ///
-    /// Off by default: at 10M views/day the title is roughly half of the stored bytes
-    /// and almost nobody looks at it. Turn it on for small sites if you want the
-    /// session list to show page titles.
+    /// On by default: Umami stores the title, and that is the baseline. Turn it off
+    /// to save the space — at 10M views/day the title is roughly half of the stored
+    /// bytes and almost nobody looks at it.
     pub store_titles: bool,
     /// Store the whole referring URL instead of just its host.
     ///
-    /// Off by default: the referrer breakdown only needs the host (that is what
-    /// Umami shows too), and the full URL is the single largest field we store.
+    /// On by default: Umami stores the full referrer. Turn it off to keep the host
+    /// alone — the breakdown groups by the host anyway, and the full URL is the
+    /// single largest field we store.
     pub store_full_referrer: bool,
     /// Directory holding the frontend files served at `/app/*` (and the tracker source).
     pub js_dir: PathBuf,
@@ -352,6 +381,8 @@ impl Config {
         // it is the baseline we promised. Turning one off is a per-site policy
         // decision, so it is environment-only.
         let store_titles = env_flag("SUMIMI_STORE_TITLES", true);
+        // The raw address and the raw agent: **off** by default.
+        let store_raw = env_flag("SUMIMI_STORE_RAW", false);
         let store_full_referrer = env_flag("SUMIMI_STORE_FULL_REFERRER", true);
 
         let keep_query = env_flag("SUMIMI_KEEP_QUERY", true);
@@ -408,6 +439,7 @@ impl Config {
             session_capacity,
             country_header,
             keep_query,
+            store_raw,
             store_titles,
             store_full_referrer,
             js_dir,

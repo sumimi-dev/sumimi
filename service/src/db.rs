@@ -46,7 +46,19 @@ use duckdb::Connection;
 ///   we used to call the session id), `visitor_id` is the visitor, and
 ///   `user_id` is the identity the site owner knows the visitor by (Umami's
 ///   `distinct_id` column). The hour-long visit id of v6 is gone.
-pub const SCHEMA_VERSION: i64 = 7;
+/// * v8 — the **session id is eight bytes**, not sixteen: the segment's start
+///   is in the high half, so a report anchors a session's duration on the
+///   moment it really started without a second column.
+/// * v9 — the **visitor id is not stored**. The address (the raw one and its
+///   coarse prefix) and the raw user agent are stored instead, and a visitor
+///   is the pair (the prefix, the user agent) — so the reports count the
+///   visitors out of the information, not out of an id.
+/// * v10 — **both ids are sixteen bytes** (a UUID), like Umami's: the
+///   `visitor_id` is stored again, and the `visit_id` is a UUID too. Sixteen
+///   bytes have no room for the segment's start, so the start is stored
+///   **beside** the id (`session_start`) — it is a fact, and a fact that is
+///   worked out of a bucket is not the fact.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The columns of the `event` table.
 ///
@@ -57,6 +69,10 @@ pub const EVENT_COLUMNS: &str = "
     website_id      VARCHAR NOT NULL,
     visit_id        UUID NOT NULL,
     visitor_id      UUID NOT NULL,
+    session_start   TIMESTAMP,
+    ip              VARCHAR NOT NULL DEFAULT '',
+    ip_prefix       VARCHAR NOT NULL DEFAULT '',
+    user_agent      VARCHAR NOT NULL DEFAULT '',
     user_id         UUID,
     created_at      TIMESTAMP NOT NULL,
 
@@ -185,62 +201,47 @@ pub fn schema_version(conn: &Connection) -> i64 {
     }
 }
 
-/// Rewrite an older database into a new file, and say where the new file is.
+/// The names of the `event` table's columns, in order.
+pub fn event_columns() -> Vec<String> {
+    column_names(EVENT_COLUMNS)
+}
+
+/// Copy the database into a new file, and say where the new file is.
 ///
 /// The caller closes the connection and swaps the files over.
 ///
-/// **Why a new file and not an in-place rebuild.** DuckDB cannot drop a constraint,
-/// so the fact tables have to be recreated. DuckDB frees the blocks of a dropped
-/// table but never gives them back to the filesystem — `VACUUM` does not shrink the
-/// file either — so an in-place rebuild of a database with 400 GB of events would
-/// leave a 800 GB file with 400 GB of dead space in it. Writing a new file and
-/// swapping it in costs the same peak disk space and ends with a compact file.
+/// **Why a new file and not an in-place rewrite.** DuckDB frees the blocks of
+/// a dropped table but never gives them back to the filesystem — `VACUUM` does
+/// not shrink the file either — so an in-place rewrite of a database with
+/// 400 GB of events would leave an 800 GB file with 400 GB of dead space in
+/// it. Writing a new file and swapping it in costs the same peak disk space
+/// and ends with a compact file.
 ///
-/// The peak disk use is therefore about twice the size of the database. That is
-/// unavoidable for any rewrite, and it is a one-off.
-pub fn rebuild_to_new_file(path: &Path, conn: &Connection) -> Result<PathBuf> {
+/// **The copy is as it is**: the same schema, the same rows. This is how a
+/// database is made smaller after rows have been deleted — it is not a
+/// migration, and it changes nothing about what is in the file.
+pub fn compact_to_new_file(path: &Path, conn: &Connection) -> Result<PathBuf> {
     let new_path = new_database_path(path);
     let _ = std::fs::remove_file(&new_path);
 
     let escaped = new_path.to_string_lossy().replace('\'', "''");
-
-    // Which tables does the old database actually have, and how is each column
-    // read out of them? This is worked out **before** the new database is
-    // attached: `information_schema` spans every attached database, and the
-    // attached one already has the new columns — so a check made afterwards
-    // would find the *new* table's columns and read them out of the old table.
-    let existing: Vec<&str> = TABLES
-        .iter()
-        .map(|(table, _)| *table)
-        .filter(|table| table_exists(conn, table))
-        .collect();
-    let selections: Vec<String> = TABLES
-        .iter()
-        .map(|(table, columns)| migration_select_list(conn, table, &column_names(columns)))
-        .collect();
-
     conn.execute_batch(&format!("ATTACH '{escaped}' AS fresh"))?;
 
-    for ((table, columns), selection) in TABLES.iter().zip(selections.iter()) {
-        let quoted = if *table == "user" {
-            "\"user\""
-        } else {
-            *table
-        };
+    for (table, columns) in TABLES {
+        let quoted = if *table == "user" { "\"user\"" } else { *table };
         conn.execute_batch(&format!("CREATE TABLE fresh.{quoted} ({columns});"))?;
-        // A table the old database never had (an early v2 file has no `revenue`)
-        // stays empty rather than failing the migration.
-        if existing.contains(table) {
+        // A table the file never had stays empty rather than failing the copy.
+        if table_exists(conn, table) {
             let names = column_names(columns);
             conn.execute_batch(&format!(
-                "INSERT INTO fresh.{quoted} ({names}) SELECT {selection} FROM main.{quoted};",
+                "INSERT INTO fresh.{quoted} ({names}) SELECT {names} FROM main.{quoted};",
                 names = names.join(", "),
             ))?;
         }
     }
 
-    // The copy still says it was written by the old version — fix that, or the new
-    // file would be migrated again the next time it is opened.
+    // The copy still says it was written by the old version — fix that, or the
+    // new file would be replaced again the next time it is opened.
     conn.execute(
         "INSERT INTO fresh.meta (key, value) VALUES ('schema_version', ?) \
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -251,9 +252,40 @@ pub fn rebuild_to_new_file(path: &Path, conn: &Connection) -> Result<PathBuf> {
     Ok(new_path)
 }
 
-/// The names of the `event` table's columns, in order.
-pub fn event_columns() -> Vec<String> {
-    column_names(EVENT_COLUMNS)
+/// Where the compacted database is written, before it is swapped in.
+fn new_database_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sumimi.duckdb".to_string());
+    name.push_str(".compacted");
+    path.with_file_name(name)
+}
+
+/// Does the database have this table?
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT count(*) FROM information_schema.tables \
+         WHERE table_name = ? AND table_schema = 'main'",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// Where an older database is **set aside** when it is replaced.
+///
+/// The name carries the version it was written with, so two upgrades in a row
+/// do not overwrite each other's leftovers, and so it is obvious what the file
+/// is if somebody finds it later.
+pub fn versioned_backup_path(path: &Path, version: i64) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sumimi.duckdb".to_string());
+    name.push_str(&format!(".v{version}.bak"));
+    path.with_file_name(name)
 }
 
 /// The values of one row of the `event` table, in the schema's order.
@@ -275,6 +307,10 @@ pub fn event_row<'a>(
         &hit.website_id,
         &hit.visit_id,
         &hit.visitor_id,
+        &hit.session_start,
+        &hit.ip,
+        &hit.ip_prefix,
+        &hit.user_agent,
         &hit.user_id,
         &hit.created_at,
         &hit.url,
@@ -332,101 +368,6 @@ fn column_names(columns: &str) -> Vec<String> {
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-/// How to read each column of a table out of the old database.
-///
-/// Most columns are copied as they are. The session and visitor ids are not: before
-/// v4 they were 36-character strings, and they are now 16-byte UUIDs.
-///
-/// The conversion is **deterministic**: an id that is already UUID-shaped is kept
-/// as it is (the ids the server derived were a hash formatted as a UUID, so they
-/// survive the migration unchanged), and anything else — a session id the client
-/// sent — is hashed with SHA-256 and the first 16 bytes are kept. The same old id
-/// always becomes the same UUID, so no session is split in two.
-fn migration_select_list(conn: &Connection, table: &str, names: &[String]) -> String {
-    names
-        .iter()
-        .map(|name| {
-            // The old `visit_id` was a half-hour window inside the session; the
-            // new `visit_id` is that session itself, which the old file stored
-            // as `session_id`. The old hour-long window is dropped.
-            let source = match (table, name.as_str()) {
-                ("event", "visit_id") | ("revenue", "visit_id") => "session_id",
-                _ => name.as_str(),
-            };
-            // A column the old database never had stays empty.
-            if !column_exists(conn, table, source) {
-                return "NULL".to_string();
-            }
-            let is_id = matches!(
-                (table, source),
-                ("event", "session_id")
-                    | ("event", "visit_id")
-                    | ("event", "visitor_id")
-                    | ("revenue", "session_id")
-                    | ("revenue", "visit_id")
-            );
-            if is_id {
-                uuid_from_text(source)
-            } else {
-                source.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// The SQL that turns an old text id into a UUID.
-///
-/// The hash is taken over the **text** of the column: `sha256` has no UUID
-/// overload, and DuckDB resolves the function when it binds the statement — so
-/// `sha256(session_id)` on a column that is already `UUID` is a binder error,
-/// even when the `CASE` would never take that branch. A v4 file has UUID
-/// columns, so the cast is not optional.
-fn uuid_from_text(column: &str) -> String {
-    let hash = format!("sha256(CAST({column} AS VARCHAR))");
-    format!(
-        "CASE WHEN try_cast({column} AS UUID) IS NOT NULL \
-           THEN try_cast({column} AS UUID) \
-           ELSE CAST(substr({hash}, 1, 8) || '-' || substr({hash}, 9, 4) || '-' \
-                     || substr({hash}, 13, 4) || '-' || substr({hash}, 17, 4) || '-' \
-                     || substr({hash}, 21, 12) AS UUID) END"
-    )
-}
-
-/// Does the table have this column?
-fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
-    conn.query_row(
-        "SELECT count(*) FROM information_schema.columns \
-         WHERE table_name = ?1 AND table_schema = 'main' AND column_name = ?2",
-        duckdb::params![table, column],
-        |row| row.get::<_, i64>(0),
-    )
-    .map(|n| n > 0)
-    .unwrap_or(false)
-}
-
-/// Where the rebuilt database is written, before it is swapped in.
-fn new_database_path(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "sumimi.duckdb".to_string());
-    name.push_str(".rebuilt");
-    path.with_file_name(name)
-}
-
-/// Does the database have this table?
-fn table_exists(conn: &Connection, table: &str) -> bool {
-    conn.query_row(
-        "SELECT count(*) FROM information_schema.tables \
-         WHERE table_name = ? AND table_schema = 'main'",
-        [table],
-        |row| row.get::<_, i64>(0),
-    )
-    .map(|n| n > 0)
-    .unwrap_or(false)
 }
 
 /// Now, as a naive UTC timestamp.

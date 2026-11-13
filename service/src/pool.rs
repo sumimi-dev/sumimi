@@ -208,26 +208,36 @@ impl Db {
             .map_err(|e| anyhow::anyhow!("opening duckdb database {}: {e}", path.display()))?;
         Self::configure(&conn, &settings)?;
 
-        // An older database is rewritten into a new file: DuckDB cannot drop a
-        // constraint, and it never gives the blocks of a dropped table back to the
-        // filesystem, so an in-place rebuild would leave the file twice as large.
+        // An older database is **replaced**, not migrated.
+        //
+        // The shape of the session id changed (sixteen bytes → eight), and the
+        // rows of an old file cannot be carried over: the id means something
+        // different now, and the site's registrations live in the same file. So
+        // the old file is **set aside** under its own version number and an
+        // empty one takes its place — the analysis data and the registrations
+        // are not carried over, but nothing is destroyed either.
         let version = crate::db::schema_version(&conn);
         if version > 0 && version < crate::db::SCHEMA_VERSION {
-            tracing::info!(
-                "the database was written by schema v{version}; rebuilding it as v{}",
-                crate::db::SCHEMA_VERSION
+            let backup = crate::db::versioned_backup_path(path, version);
+            tracing::warn!(
+                "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \
+                 the analysis data and the site registrations are not carried over; \
+                 the old file is kept as {}",
+                path.display(),
+                crate::db::SCHEMA_VERSION,
+                backup.display()
             );
-            let rebuilt = crate::db::rebuild_to_new_file(path, &conn)?;
             // The old file is locked by this connection — close it before the swap.
             drop(conn);
-            std::fs::rename(&rebuilt, path).map_err(|e| {
+            std::fs::rename(path, &backup).map_err(|e| {
                 anyhow::anyhow!(
-                    "swapping the rebuilt database {} in: {e}",
-                    rebuilt.display()
+                    "setting the old database {} aside as {}: {e}",
+                    path.display(),
+                    backup.display()
                 )
             })?;
             conn = Connection::open(path).map_err(|e| {
-                anyhow::anyhow!("opening the rebuilt duckdb database {}: {e}", path.display())
+                anyhow::anyhow!("opening the new duckdb database {}: {e}", path.display())
             })?;
             Self::configure(&conn, &settings)?;
         }

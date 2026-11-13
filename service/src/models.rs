@@ -9,8 +9,8 @@ use uuid::Uuid;
 /// user who switches from Umami does not lose a single dimension. The storage engine
 /// (DuckDB) is what makes that affordable.
 ///
-/// Every field is optional except the identity of the hit: `website_id`, `visit_id`,
-/// `visitor_id` and `created_at`.
+/// Every field is optional except the identity of the hit: `website_id`, `visit_id`
+/// and `created_at`.
 #[derive(Debug, Clone, Default)]
 pub struct Hit {
     /// The website the hit belongs to.
@@ -19,9 +19,38 @@ pub struct Hit {
     ///
     /// This is what Umami calls a `visit_id` (its `session_id` is our
     /// `visitor_id`). We name it after what it is.
-    pub visit_id: Uuid,
-    /// The visitor, stable across days (Umami's `distinct_id`).
+    ///
+    /// It is **sixteen bytes** (see [`crate::session::VisitId`]).
+    pub visit_id: crate::session::VisitId,
+    /// The visitor.
+    ///
+    /// This is what Umami calls a `session_id`. It is a pure function of the
+    /// address prefix, the user agent and the website — so it is the same on
+    /// every server, and the reports count the visitors out of it.
     pub visitor_id: Uuid,
+    /// The moment the session started.
+    ///
+    /// **It is stored, not worked out.** The start of a session is a fact; a
+    /// fact that is worked out of a bucket is not the fact. `None` for a
+    /// session the client named itself — there is no start to remember.
+    pub session_start: Option<chrono::NaiveDateTime>,
+    /// The visitor's IP address, the raw one.
+    ///
+    /// It is stored, not hashed away: the site's owner wants the full set of
+    /// dimensions, and the address is what the country, the region and the city
+    /// are worked out of.
+    pub ip: String,
+    /// The coarse prefix of the address — a /24 for IPv4, a /64 for IPv6.
+    ///
+    /// **This is what the visitor's identity is made of**: a visitor is the
+    /// pair (the prefix, the user agent), so the reports can count the
+    /// visitors without a visitor id column.
+    pub ip_prefix: String,
+    /// The raw user agent — the string the browser sent.
+    ///
+    /// It is stored, not only its reading: the version numbers, the bots and
+    /// the ones we do not know are all in there.
+    pub user_agent: String,
     /// The identity the site owner knows the visitor by (Umami's `distinct_id`
     /// column): their own user id, a tenant id, a device id — whatever the
     /// client sends. Empty when the client sends none.
@@ -142,6 +171,18 @@ pub enum HitKind {
     Screenview,
     /// An identify call (attaches data to the session).
     Identify,
+    /// The web vitals of a document.
+    ///
+    /// Umami sends them as a hit of their own, once the document has been
+    /// painted: the page view goes out at once (the client needs the answer
+    /// to carry its token), and the vitals follow.
+    Performance,
+    /// An error report.
+    ///
+    /// Umami sends the errors of a page to the same endpoint. We do not store
+    /// them — there is no place for them — but they are not events either, so
+    /// they are not counted.
+    Error,
 }
 
 impl HitKind {
@@ -151,6 +192,8 @@ impl HitKind {
             "event" => Some(HitKind::Event),
             "screenview" => Some(HitKind::Screenview),
             "identify" => Some(HitKind::Identify),
+            "performance" => Some(HitKind::Performance),
+            "error" => Some(HitKind::Error),
             _ => None,
         }
     }
@@ -162,6 +205,8 @@ impl HitKind {
             HitKind::Event => "event",
             HitKind::Screenview => "screenview",
             HitKind::Identify => "identify",
+            HitKind::Performance => "performance",
+            HitKind::Error => "error",
         }
     }
 }
@@ -172,7 +217,7 @@ pub struct Revenue {
     /// The website the revenue belongs to.
     pub website_id: String,
     /// The visit that earned it.
-    pub visit_id: Option<Uuid>,
+    pub visit_id: Option<crate::session::VisitId>,
     /// The event that earned it.
     pub event_id: Option<i64>,
     /// The name of the revenue source (`carbon`, `adsense`, …).
@@ -271,6 +316,31 @@ pub struct Payload {
     /// their own user id, a tenant id, a device id — whatever they send.
     #[serde(default, deserialize_with = "optional_text", rename = "id")]
     pub id: Option<String>,
+    /// The address the client says the visitor came from.
+    ///
+    /// Umami takes it from the payload when it is there: a server-side import
+    /// knows the visitor's address better than the server does — the server
+    /// only sees the importer.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub ip: Option<String>,
+    /// The user agent the client says the visitor used.
+    #[serde(default, deserialize_with = "optional_text", rename = "userAgent")]
+    pub user_agent: Option<String>,
+    /// The browser the client says the visitor used.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub browser: Option<String>,
+    /// The operating system the client says the visitor used.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub os: Option<String>,
+    /// The device the client says the visitor used.
+    #[serde(default, deserialize_with = "optional_text")]
+    pub device: Option<String>,
+    /// When the event happened, in seconds since the epoch.
+    ///
+    /// Umami's client sends it for the events that are imported after the
+    /// fact. The clock is still ours: a time that is not there is ignored.
+    #[serde(default, deserialize_with = "optional_seconds")]
+    pub timestamp: Option<i64>,
     /// Largest Contentful Paint, in milliseconds.
     #[serde(default, deserialize_with = "optional_number")]
     pub lcp: Option<f64>,
@@ -354,6 +424,19 @@ where
     Ok(match value {
         Some(serde_json::Value::Number(number)) => number.as_f64(),
         Some(serde_json::Value::String(text)) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    })
+}
+
+/// A number of seconds — a number, or the text of one.
+fn optional_seconds<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::Number(number)) => number.as_i64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<i64>().ok(),
         _ => None,
     })
 }
@@ -712,6 +795,13 @@ pub struct StatsQuery {
     pub event: Option<String>,
     #[serde(default)]
     pub query: Option<String>,
+    /// The kinds of **marked** traffic to count anyway: `dev`, `test`, `bot`,
+    /// `bot-ai`, `bot-google`, …
+    ///
+    /// Off by default: the marked traffic is not part of the numbers. The
+    /// dashboard's switch asks for the kinds it wants to see.
+    #[serde(default)]
+    pub markers: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
     #[serde(default)]

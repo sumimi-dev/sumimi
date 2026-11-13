@@ -13,7 +13,6 @@
 
 use anyhow::Result;
 use chrono::NaiveDateTime;
-use uuid::Uuid;
 
 use crate::models::{
     BreakdownRow, EventRow, MetricsSummary, SessionRow, Website,
@@ -92,6 +91,13 @@ pub struct ReportQuery {
     pub range: TimeRange,
     /// The dimension filters.
     pub dimensions: Dimensions,
+    /// The kinds of **marked** traffic to count anyway: `dev`, `test`, `bot`,
+    /// `bot-ai`, `bot-google`, …
+    ///
+    /// Empty ⇒ none of them are counted — they are marked, and the marker
+    /// keeps them out of the numbers. The dashboard asks for the kinds it
+    /// wants to see.
+    pub include_markers: Vec<String>,
     /// How many rows to return.
     pub limit: i64,
     /// How many rows to skip.
@@ -105,6 +111,7 @@ impl ReportQuery {
             website_id: website_id.to_string(),
             range,
             dimensions: Dimensions::default(),
+            include_markers: Vec::new(),
             limit: 50,
             offset: 0,
         }
@@ -120,13 +127,151 @@ impl ReportQuery {
 /// wrong (a session that only fired a custom event is not a bounce, but it
 /// would look like one).
 ///
+/// The **web vitals** are not a page view either: Umami sends them as a hit
+/// of their own, once the document has been painted, so a site that reports
+/// them would show two page views for every page it has.
+///
 /// The **logs** — the session list and the event list — keep everything: they
 /// are logs.
 ///
 /// The three backends speak the same SQL here (`'…'` quotes work in all of
 /// them), so the rule lives in one place: a metric that means "page views"
 /// means the same thing in all of them.
-pub const PAGEVIEWS: &str = "event_type NOT IN ('event', 'identify')";
+pub const PAGEVIEWS: &str = "event_type NOT IN ('event', 'identify', 'performance')";
+
+/// The kinds that **mark** the traffic as not part of the numbers.
+///
+/// A marker is a tag the server writes itself:
+///
+/// - `dev` — the developer's own traffic (`developer`, `manager`, `owner`);
+/// - `test` — the traffic sent under `tester` (sumimi#71);
+/// - `bot-*` — the crawlers, in four groups (see [`crate::ua::bot_kind`]).
+///
+/// **The site's own tags are labels, not markers** — they group the events,
+/// and they change nothing in the numbers.
+///
+/// The groups and the kinds in each: a group with no kinds of its own **is** a
+/// kind. The dashboard shows the groups and their kinds — picking a group
+/// picks all of its kinds.
+pub const MARKER_GROUPS: [(&str, &[&str]); 6] = [
+    ("dev", &[]),
+    ("test", &[]),
+    (
+        "bot-ai",
+        &[
+            "bot-ai-openai",
+            "bot-ai-anthropic",
+            "bot-ai-perplexity",
+            "bot-ai-apple",
+        ],
+    ),
+    (
+        "bot-se",
+        &[
+            "bot-se-google",
+            "bot-se-bing",
+            "bot-se-yandex",
+            "bot-se-baidu",
+            "bot-se-other",
+        ],
+    ),
+    (
+        "bot-social",
+        &[
+            "bot-social-meta",
+            "bot-social-x",
+            "bot-social-linkedin",
+            "bot-social-messaging",
+        ],
+    ),
+    ("bot-other", &["bot-other-unknown"]),
+];
+
+/// Every kind of marker: the groups that have no kinds of their own, and the
+/// kinds inside the groups.
+pub fn marker_tags() -> Vec<&'static str> {
+    MARKER_GROUPS
+        .iter()
+        .flat_map(|(group, kinds)| {
+            if kinds.is_empty() {
+                vec![*group]
+            } else {
+                kinds.to_vec()
+            }
+        })
+        .collect()
+}
+
+/// The kinds a name stands for.
+///
+/// A group stands for the kinds in it; a kind stands for itself. A name that
+/// is neither stands for nothing — the dashboard and the API may name a kind
+/// this server does not know, and it must not widen the numbers by accident.
+pub fn expand_markers(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        let mut known = false;
+        for (group, kinds) in MARKER_GROUPS.iter() {
+            if group == name {
+                known = true;
+                if kinds.is_empty() {
+                    out.push((*group).to_string());
+                } else {
+                    out.extend(kinds.iter().map(|kind| kind.to_string()));
+                }
+            } else if kinds.contains(&name.as_str()) {
+                known = true;
+                out.push(name.clone());
+            }
+        }
+        if !known {
+            tracing::warn!(marker = %name, "an unknown kind of marked traffic");
+        }
+    }
+    out
+}
+
+/// The condition that leaves the **marked** traffic out of the numbers, and
+/// the values that go with it.
+///
+/// The clause and the values are built together, so a backend cannot ask for
+/// one and forget the other.
+///
+/// `included` is the kinds the dashboard asked for — a group stands for the
+/// kinds in it, so picking a group picks all of them.
+pub fn not_marked(included: &[String]) -> (String, Vec<String>) {
+    let all = marker_tags();
+    let included = expand_markers(included);
+
+    let mut clause = String::from("tag IS NULL");
+    let mut values: Vec<String> = Vec::new();
+
+    if !all.is_empty() {
+        clause.push_str(" OR (");
+        for (index, _) in all.iter().enumerate() {
+            if index > 0 {
+                clause.push_str(" AND ");
+            }
+            clause.push_str("tag <> ?");
+        }
+        clause.push(')');
+        values.extend(all.iter().map(|tag| tag.to_string()));
+    }
+
+    if !included.is_empty() {
+        clause.push_str(" OR tag IN (");
+        for (index, _) in included.iter().enumerate() {
+            if index > 0 {
+                clause.push_str(", ");
+            }
+            clause.push('?');
+        }
+        clause.push(')');
+        values.extend(included.iter().cloned());
+    }
+
+    (clause, values)
+}
 
 /// The dimensions a breakdown can be computed over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,9 +456,13 @@ pub struct SessionEvent {
     /// The row id — the tiebreaker when two events share a timestamp.
     pub id: i64,
     /// The visit the event belongs to.
-    pub visit_id: Uuid,
-    /// The rotating visitor id.
-    pub visitor_id: Option<Uuid>,
+    pub visit_id: crate::session::VisitId,
+    /// When the visit started — `None` for a visit the client named itself.
+    pub session_start: Option<NaiveDateTime>,
+    /// The coarse prefix of the visitor's address.
+    pub ip_prefix: String,
+    /// The visitor's raw user agent.
+    pub user_agent: String,
     /// When it happened.
     pub created_at: NaiveDateTime,
     /// The page.
@@ -379,7 +528,7 @@ pub fn group_sessions(
     offset: i64,
 ) -> Vec<SessionRow> {
     // The events arrive newest first; the grouping needs them oldest first.
-    let mut by_session: std::collections::HashMap<Uuid, Vec<&SessionEvent>> =
+    let mut by_session: std::collections::HashMap<crate::session::VisitId, Vec<&SessionEvent>> =
         std::collections::HashMap::new();
     for event in events {
         by_session
@@ -397,6 +546,7 @@ pub fn group_sessions(
                     .then_with(|| a.id.cmp(&b.id))
             });
             let first = group.first().expect("a group is never empty");
+
             let last = group.last().expect("a group is never empty");
 
             let newest_with = |pick: fn(&SessionEvent) -> Option<&String>| -> Option<String> {
@@ -410,7 +560,7 @@ pub fn group_sessions(
             };
 
             SessionRow {
-                id: visit_id.to_string(),
+                id: crate::session::format_visit_id(visit_id),
                 website_id: website_id.to_string(),
                 created_at: first.created_at,
                 updated_at: last.created_at,
@@ -430,7 +580,7 @@ pub fn group_sessions(
                 language: newest_with(|event| event.language.as_ref()),
                 screen: newest_with(|event| event.screen.as_ref()),
                 views: group.len() as i64,
-                duration: (last.created_at - first.created_at).num_seconds(),
+                duration: session_duration(first, last),
             }
         })
         .collect();
@@ -445,6 +595,21 @@ pub fn group_sessions(
 
     let offset = offset.max(0) as usize;
     rows.into_iter().skip(offset).take(limit.max(0) as usize).collect()
+}
+
+/// How long a session lasted, in seconds.
+///
+/// The anchor is the moment the session **started** — the `session_start` the
+/// row carries — so it is the *algorithmic* start, not the first event the
+/// report happened to see. A session the client named has no start (there is
+/// no moment to remember), so it falls back to the span between the first and
+/// the last event of the group.
+///
+/// This is the same rule the summary's average session length uses, so the two
+/// never disagree.
+fn session_duration(first: &SessionEvent, last: &SessionEvent) -> i64 {
+    let anchor = first.session_start.unwrap_or(first.created_at);
+    (last.created_at - anchor).num_seconds().max(0)
 }
 /// A storage backend.
 pub trait Storage: Send + Sync {

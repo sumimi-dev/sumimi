@@ -449,17 +449,13 @@ fn the_chinese_window_is_read_from_the_question() {
     assert_eq!(intent.range.end - intent.range.start, chrono::Duration::days(7));
 }
 
-/// The Chinese months answer the window they have always answered.
+/// The Chinese months ask for the same windows the English ones ask for.
 ///
-/// "本月" and "上个月" both ask for the thirty days **before** this month:
-/// the window ends when this month starts. The English "this month" asks for
-/// the other thing — the days from the first of the month until now.
-///
-/// So the two languages do not agree, and the Chinese one is the wrong one.
-/// The test pins what the assistant answers today, so the refactoring cannot
-/// change it by accident; the difference is a bug to fix on purpose.
+/// 「本月」 is the days from the first of the month until now; 「上个月」 is the
+/// calendar month before it. (Both used to ask for the thirty days before this
+/// month, in both cases — that was the bug this test was pinning.)
 #[test]
-fn the_chinese_months_answer_the_window_they_have_always_answered() {
+fn the_chinese_months_answer_the_same_windows_as_the_english_ones() {
     let now = chrono::NaiveDate::from_ymd_opt(2026, 1, 15)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -468,18 +464,21 @@ fn the_chinese_months_answer_the_window_they_have_always_answered() {
         .unwrap()
         .and_hms_opt(0, 0, 0)
         .unwrap();
+    let december = chrono::NaiveDate::from_ymd_opt(2025, 12, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
 
-    for question in ["本月的访客数", "这个月的访客数", "上个月的访客数", "上月的访客数"] {
+    for question in ["本月的访客数", "这个月的访客数"] {
         let intent = analyst::parse(question, now);
-        assert_eq!(
-            intent.range.end, january,
-            "{question}: the window ends when this month starts"
-        );
-        assert_eq!(
-            intent.range.start,
-            january - chrono::Duration::days(30),
-            "{question}: the thirty days before it"
-        );
+        assert_eq!(intent.range.start, january, "{question}: from the first");
+        assert_eq!(intent.range.end, now, "{question}: until now");
+    }
+
+    for question in ["上个月的访客数", "上月的访客数"] {
+        let intent = analyst::parse(question, now);
+        assert_eq!(intent.range.start, december, "{question}: the month before");
+        assert_eq!(intent.range.end, january, "{question}: up to this month");
     }
 }
 

@@ -266,8 +266,10 @@ fn api_build_hit(
         "website-1",
         HitKind::Pageview,
         raw,
+        None,
     )
     .unwrap()
+    .0
 }
 
 
@@ -457,8 +459,10 @@ fn the_price_of_building_the_hit() {
             "website-1",
             HitKind::Pageview,
             raw.clone(),
+            None,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         std::hint::black_box(hit);
     }
 

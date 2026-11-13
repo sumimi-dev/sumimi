@@ -101,7 +101,7 @@ async fn writer_flushes_queued_hits() {
                 "SELECT url, url_query, title, referrer, referrer_path, referrer_query, hostname,
                         browser, os, device, screen, language, country,
                         utm_source, utm_medium, utm_campaign, gclid,
-                        lcp, inp, cls, fcp, ttfb, visit_id, visitor_id
+                        lcp, inp, cls, fcp, ttfb, visit_id, ip_prefix, user_agent
                  FROM event WHERE url = '/one'",
             )?;
             let mut rows = stmt.query([])?;
@@ -129,8 +129,9 @@ async fn writer_flushes_queued_hits() {
                     row.get::<_, Option<f64>>(19)?,
                     row.get::<_, Option<f64>>(20)?,
                     row.get::<_, Option<f64>>(21)?,
-                    row.get::<_, uuid::Uuid>(22)?,
-                    row.get::<_, uuid::Uuid>(23)?,
+                    row.get::<_, sumimi_service::session::VisitId>(22)?,
+                    row.get::<_, String>(23)?,
+                    row.get::<_, String>(24)?,
                 ))),
                 None => Ok(None),
             }
@@ -160,8 +161,7 @@ async fn writer_flushes_queued_hits() {
     assert_eq!(stored.19, Some(0.02));
     assert_eq!(stored.20, Some(700.0));
     assert_eq!(stored.21, Some(90.0));
-    assert_eq!(stored.22, sumimi_service::ua::uuid_from_text("session-1"));
-    assert_eq!(stored.23, sumimi_service::ua::uuid_from_text("visitor-1"));
+    assert_eq!(stored.22, sumimi_service::session::client_session_id("session-1"));
 
     writer.shutdown();
     // Stop the writer thread so the test runtime can shut down.
@@ -242,13 +242,22 @@ async fn api_matches_the_shared_report_layer() {
             (2, "s1", "v1", "/a"),
             (3, "s2", "v2", "/b"),
         ] {
-            let session = sumimi_service::ua::uuid_from_text(session);
-            let visitor = sumimi_service::ua::uuid_from_text(visitor);
+            let session = sumimi_service::session::client_session_id(session);
+            let (ip, ip_prefix, user_agent) =
+                sumimi_service::testing::visitor_identity(&sumimi_service::ua::uuid_from_text(visitor));
             conn.execute(
-                "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url,
-                        event_type, browser, os, device)
-                 VALUES (?1, 'website-1', ?2, ?3, now(), ?4, 'pageview', 'Chrome', 'macOS', 'desktop')",
-                duckdb::params![id, session, visitor, url],
+                "INSERT INTO event (id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent,
+                        created_at, url, event_type, browser, os, device)
+                 VALUES (?1, 'website-1', ?2, ?7, ?3, ?4, ?5, now(), ?6, 'pageview', 'Chrome', 'macOS', 'desktop')",
+                duckdb::params![
+                    id,
+                    session,
+                    ip,
+                    ip_prefix,
+                    user_agent,
+                    url,
+                    sumimi_service::ua::visitor_id(&ip_prefix, &user_agent, "website-1"),
+                ],
             )?;
         }
         Ok(())

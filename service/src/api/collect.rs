@@ -11,7 +11,68 @@ use std::net::SocketAddr;
 use crate::api::AppState;
 use crate::error::ApiError;
 use crate::models::{normalise, Hit, HitKind, Payload, SendRequest};
+use crate::token;
 use crate::ua;
+
+/// The headers the client carries its state in.
+///
+/// **Ours first, Umami's second.** Our own tracker sends `x-sumimi-*`; the
+/// Umami SDK sends `x-umami-*`, and it is meant to work against us as it is —
+/// so both are read, and ours wins when a client sends both.
+const CACHE_HEADERS: [&str; 2] = ["x-sumimi-cache", "x-umami-cache"];
+const WEBSITE_HEADERS: [&str; 2] = ["x-sumimi-website-id", "x-umami-website-id"];
+const HOSTNAME_HEADERS: [&str; 2] = ["x-sumimi-hostname", "x-umami-hostname"];
+
+/// The kind of the developer's own traffic.
+pub const DEVELOPER_TAG: &str = "dev";
+
+/// The kind of the traffic sent under `tester`.
+pub const TEST_TAG: &str = "test";
+
+/// The ids that mean "this is not a real visitor", and the kind each one is.
+///
+/// A hit sent under one of them is **marked** with its kind, so it is left out
+/// of the numbers — the developer's own clicks would otherwise be the busiest
+/// visitor of the site (sumimi#71).
+pub const DEVELOPER_IDS: [(&str, &str); 4] = [
+    ("developer", DEVELOPER_TAG),
+    ("manager", DEVELOPER_TAG),
+    ("owner", DEVELOPER_TAG),
+    ("tester", TEST_TAG),
+];
+
+/// Read a header, ours first and Umami's second.
+fn header<'a>(headers: &'a HeaderMap, names: [&str; 2]) -> Option<&'a str> {
+    for name in names {
+        if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// The body the collection endpoint answers with.
+///
+/// **Umami's shape, our ids.** The Umami SDK reads `cache` and nothing else —
+/// so a client that only knows Umami works against us — while the other two
+/// are there for whoever asks.
+///
+/// Note the naming: `sessionId` is Umami's name for the **visitor** (their
+/// "session" is our visitor; their "visit" is our session). The names are
+/// kept as they are so the two are the same thing on the wire.
+#[derive(Debug, serde::Serialize)]
+pub struct SendResponse {
+    /// The token the client sends back with the next hit.
+    pub cache: String,
+    /// The visitor's id.
+    #[serde(rename = "sessionId")]
+    pub visitor_id: String,
+    /// The session's id.
+    #[serde(rename = "visitId")]
+    pub visit_id: String,
+}
 
 /// Umami v2 collection endpoint.
 pub async fn send(
@@ -30,39 +91,64 @@ pub async fn send(
     })?;
     let mut raw = request.into_payload();
 
-    // The website comes out of the payload — **moved**, not copied ✓.
+    // The website comes out of the payload — **moved**, not copied ✓. The
+    // header is the fallback: the Umami SDK puts the id in the payload, but a
+    // client that only sends the header has to work too.
     let website_key = raw
         .website
         .take()
+        .or_else(|| header(&headers, WEBSITE_HEADERS).map(str::to_string))
         .ok_or_else(|| ApiError::BadRequest("missing website".into()))?;
 
     // Umami v2 sends pageviews as `type: "event"` *without* a name; a custom event
     // carries a name. Both shapes are accepted here.
     let kind = resolve_kind(raw.kind.as_deref(), raw.name.is_some());
 
-    let hit = build_hit(
+
+    // The token the client carries: the state of the session it is in. **A
+    // token that cannot be read is the same as no token at all** — the hit
+    // then starts a session, exactly as it did before.
+    let claims = header(&headers, CACHE_HEADERS)
+        .and_then(|token| token::verify(&state.jwt_secret, token));
+
+    let (hit, claims) = build_hit(
         &state,
         &headers,
         peer.as_ref().map(|p| &p.0),
         &website_key,
         kind,
         raw,
+        claims.as_ref(),
     )?;
-    let taken = state.writer.push(hit);
 
-    // The server is over capacity: the event was **not** stored. The client is
-    // told — a `200` here would say "everything is fine" while the data is
-    // being lost. `503` with a `Retry-After` is the honest answer: send it
-    // again in a moment.
-    if !taken {
-        return Ok((
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(axum::http::header::RETRY_AFTER, "1")],
-        )
-            .into_response());
+    // An error report is not an event: it is not stored and it does not count
+    // as one. The token still goes back, so the client keeps its session.
+    if kind != HitKind::Error {
+        let taken = state.writer.push(hit);
+
+        // The server is over capacity: the event was **not** stored. The client is
+        // told — a `200` here would say "everything is fine" while the data is
+        // being lost. `503` with a `Retry-After` is the honest answer: send it
+        // again in a moment.
+        if !taken {
+            return Ok((
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "1")],
+            )
+                .into_response());
+        }
     }
 
-    Ok(StatusCode::OK.into_response())
+    // The token the client sends back with the next hit. It is signed, not
+    // encrypted: the client can read it, it just cannot change it.
+    let cache = token::sign(&state.jwt_secret, &claims).map_err(ApiError::internal)?;
+
+    Ok(Json(SendResponse {
+        cache,
+        visitor_id: claims.visitor_id,
+        visit_id: claims.visit_id,
+    })
+    .into_response())
 }
 
 /// Legacy Umami v1 collection endpoint (query parameters).
@@ -108,7 +194,9 @@ pub async fn collect(
         &website_key,
         kind,
         raw,
-    )?;
+        None,
+    )?
+    .0;
     let taken = state.writer.push(hit);
 
     // The server is over capacity: the event was **not** stored. The client is
@@ -161,6 +249,10 @@ fn resolve_kind(kind: Option<&str>, has_name: bool) -> HitKind {
     match kind {
         Some("screenview") => HitKind::Screenview,
         Some("identify") => HitKind::Identify,
+        // Umami sends the web vitals as a hit of their own.
+        Some("performance") => HitKind::Performance,
+        // Umami sends the errors of a page to the same endpoint.
+        Some("error") => HitKind::Error,
         Some("event") | None => {
             if has_name {
                 HitKind::Event
@@ -179,6 +271,8 @@ fn kind_name(kind: HitKind) -> &'static str {
         HitKind::Event => "event",
         HitKind::Screenview => "screenview",
         HitKind::Identify => "identify",
+        HitKind::Performance => "performance",
+        HitKind::Error => "error",
     }
 }
 
@@ -203,34 +297,63 @@ pub fn build_hit(
     website_key: &str,
     kind: HitKind,
     mut raw: Payload,
-) -> Result<Hit, ApiError> {
+    token: Option<&token::Claims>,
+) -> Result<(Hit, token::Claims), ApiError> {
     let meta = state.website_meta(website_key)?;
 
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    // **The client may say who the visitor is** — Umami's rule. A server-side
+    // import knows the visitor's address and browser better than the server
+    // does: the server only sees the importer.
+    let user_agent = match raw.user_agent.as_deref() {
+        Some(agent) if !agent.is_empty() => agent.to_string(),
+        _ => headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string(),
+    };
     let info = ua::classify(&user_agent);
 
-    let ip = client_ip(headers, peer);
+    let ip = match raw.ip.as_deref() {
+        Some(ip) if !ip.is_empty() => ip.to_string(),
+        _ => client_ip(headers, peer),
+    };
     let ip_prefix = ua::ip_prefix(&ip);
 
-    // Visitor id: the derivation without a time bucket, so it survives across
-    // days (Umami's `distinct_id`). The raw IP is never stored — only a prefix
-    // feeds the HMAC.
-    let visitor_id = ua::derive_visit_id(
-        state.jwt_secret.as_bytes(),
-        &ip_prefix,
-        &user_agent,
-        &meta.id,
-        0,
-    );
+    // The visitor: what the session is cut for. It is a hash of the visitor's
+    // address (the whole IPv4 one, the /64 of an IPv6 one), the user agent
+    // and the website — **sixteen bytes**, and pure: the same visitor gets the
+    // same id on every server.
+    let visitor_id = ua::visitor_id(&ua::visitor_address(&ip), &user_agent, &meta.id);
 
-    // The session: **the client's own id if it sent one**, otherwise the one
-    // the server works out.
+    let clock = crate::db::now();
+
+    // When the event happened. A client may say when it was — for the events
+    // that are imported after the fact — but not a time that is not there: the
+    // clock is ours, and a time in the future is not a time yet.
+    let created_at = match raw.timestamp {
+        Some(seconds) => chrono::DateTime::from_timestamp(seconds, 0)
+            .map(|moment| moment.naive_utc())
+            .filter(|moment| {
+                *moment >= chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()
+                    && *moment <= clock + chrono::Duration::minutes(5)
+            })
+            .unwrap_or(clock),
+        None => clock,
+    };
+    let at = created_at.and_utc().timestamp_micros();
+    let now = created_at.and_utc().timestamp();
+
+    // The session: **the client's own token first**, then the client's own id
+    // (the older way), and only then the one the server works out.
     //
-    // The client's token is never stored verbatim — it is hashed into the id,
+    // The token is the state: it says which session the client is in, when the
+    // session started and when the client was last seen — so the server
+    // applies the idle rule to it and keeps no state of its. It is used only
+    // when it belongs to this website and to this visitor — a token of
+    // somebody else's is not used.
+    //
+    // The client's own id is never stored verbatim — it is hashed into the id,
     // so the column is always the same size and the raw token never reaches
     // the disk. What the server sends is what the client will keep sending,
     // so the session lasts as long as the client says it does.
@@ -241,13 +364,48 @@ pub fn build_hit(
     // of the visitor and the moment the session started — no secret is needed,
     // because the visitor id is already one-way, so an offline import can work
     // it out for itself.
-    let created_at = crate::db::now();
-    let visit_id = match raw.session_id.as_deref() {
-        Some(client_id) if is_safe_client_id(client_id) => ua::uuid_from_text(client_id),
-        _ => state
-            .sessions
-            .session(visitor_id, created_at.and_utc().timestamp_micros()),
+    let ours = token.filter(|claims| {
+        claims.website_id == meta.id && claims.visitor() == Some(visitor_id)
+    });
+    let (visit_id, session_start) = match ours {
+        // The token is ours and the visitor is still active: the session goes
+        // on — and it keeps the start it had.
+        Some(claims) if now - claims.last <= crate::session::IDLE_TIMEOUT_SECONDS => (
+            claims
+                .session()
+                .unwrap_or_else(|| crate::session::session_id(visitor_id, at)),
+            claims.started_at(),
+        ),
+        // The token is ours, but the visitor has been quiet for longer than the
+        // timeout: a new session starts here.
+        Some(_) => (
+            crate::session::session_id(visitor_id, at),
+            Some(created_at),
+        ),
+        // The older way: the client named the session itself. There is no start
+        // to remember — the duration is measured from the first event instead.
+        None => match raw.session_id.as_deref() {
+            Some(client_id) if is_safe_client_id(client_id) => {
+                (crate::session::client_session_id(client_id), None)
+            }
+            _ => (
+                state.sessions.session(visitor_id, at),
+                Some(created_at),
+            ),
+        },
     };
+
+    // The token the client gets back: the session it is in, when it started,
+    // and the moment of this hit.
+    let claims = token::Claims::new(
+        &meta.id,
+        visitor_id,
+        visit_id,
+        session_start
+            .map(|start| start.and_utc().timestamp())
+            .unwrap_or(now),
+        now,
+    );
 
     // The identity the site owner knows the visitor by — their own user id, a
     // tenant id, a device id (Umami's `distinct_id` column). The client sends it
@@ -260,7 +418,37 @@ pub fn build_hit(
         _ => None,
     };
 
-    let created_at = crate::db::now();
+    // **The marker.** A tag marks the traffic that is not part of the numbers:
+    // the bots, the developer's own traffic, and whatever else the site owner
+    // tags. The dashboard can ask for it (`include_tagged`).
+    //
+    // - a bot carries `bot` — Umami throws its hits away, we keep them and
+    //   leave them out of the numbers;
+    // - the developer's own traffic carries the id it was sent under
+    //   (`developer`, `tester`, `manager`, `owner` — sumimi#71).
+    let tag = match raw.id.as_deref() {
+        Some(id) => DEVELOPER_IDS
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map(|(_, kind)| kind.to_string()),
+        None => None,
+    };
+    let tag = match tag {
+        Some(tag) => Some(tag),
+        None => {
+            let agent = raw
+                .user_agent
+                .as_deref()
+                .or_else(|| {
+                    headers
+                        .get(axum::http::header::USER_AGENT)
+                        .and_then(|v| v.to_str().ok())
+                })
+                .unwrap_or("");
+            // A crawler: marked with its kind (`bot`, `bot-ai`, `bot-google`, …).
+            ua::bot_kind(agent).map(str::to_string)
+        }
+    };
 
     // The custom event's data — moved out of the payload ✓ (it is taken
     // first, because the fields below are moved out one by one ✓).
@@ -282,6 +470,12 @@ pub fn build_hit(
             .map(|(_, value)| value.as_str())
     };
 
+    // The hostname of the site. It comes out of the payload; the header is the
+    // fallback, for the clients that only send that.
+    let hostname = raw
+        .hostname
+        .or_else(|| header(headers, HOSTNAME_HEADERS).map(str::to_string));
+
     // The referrer: host, path and query. The breakdown groups by the host, which
     // is what Umami shows; the path and the query are the extra we keep.
     // `SUMIMI_STORE_FULL_REFERRER=0` keeps the host alone.
@@ -295,6 +489,17 @@ pub fn build_hit(
                 let host = crate::channels::strip_www(&host);
                 host.to_string()
             });
+            // **A site is not a referrer to itself**: Umami never saves the
+            // domain of a self-referral, so the traffic of a site does not
+            // show up in its own referrer breakdown.
+            let self_referral = match (&host, &hostname) {
+                (Some(host), Some(hostname)) => {
+                    let hostname = crate::channels::strip_www(hostname);
+                    host.eq_ignore_ascii_case(hostname)
+                }
+                _ => false,
+            };
+            let host = if self_referral { None } else { host };
             if state.config.store_full_referrer {
                 (host, path, query)
             } else {
@@ -344,7 +549,6 @@ pub fn build_hit(
 
     // The channel: the bucket the visit falls into. It is worked out once,
     // here, and stored with the event.
-    let hostname = raw.hostname;
     let channel = Some(
         crate::channels::channel(&crate::channels::ChannelInput::new(
             referrer.as_deref(),
@@ -381,16 +585,30 @@ pub fn build_hit(
             "fbclid" => fbclid = Some(value),
             "msclkid" => msclkid = Some(value),
             "ttclid" => ttclid = Some(value),
-            "lifatid" => lifatid = Some(value),
+            // Umami's name for it: `li_fat_id`.
+            "li_fat_id" | "lifatid" => lifatid = Some(value),
             "twclid" => twclid = Some(value),
             _ => {}
         }
     }
 
-    Ok(Hit {
+    Ok((Hit {
         website_id: meta.id,
         visit_id,
         visitor_id,
+        session_start,
+        // **The raw address and the raw agent are not stored by default.**
+        //
+        // What is stored is the *reading* of them — the country, the region,
+        // the city, the browser, the operating system, the device — and the
+        // visitor's id, which is the hash of the address and the agent. The
+        // raw strings are not needed for any of that.
+        //
+        // `SUMIMI_STORE_RAW=1` stores them anyway, for the owner who wants
+        // the full set of dimensions.
+        ip: if state.config.store_raw { ip } else { String::new() },
+        ip_prefix: if state.config.store_raw { ip_prefix } else { String::new() },
+        user_agent: if state.config.store_raw { user_agent } else { String::new() },
         user_id,
         retention_days: meta.retention_days,
         kind,
@@ -407,11 +625,12 @@ pub fn build_hit(
         hostname,
         channel,
 
-        browser: info.browser,
+        // The client may say what the visitor's browser was — Umami's rule.
+        browser: raw.browser.or(info.browser),
         browser_version: info.browser_version,
-        os: info.os,
+        os: raw.os.or(info.os),
         os_version: info.os_version,
-        device: info.device,
+        device: raw.device.or(info.device),
         screen: raw.screen,
         language: raw.language,
         country,
@@ -440,58 +659,119 @@ pub fn build_hit(
         ttfb: raw.ttfb,
 
         name: raw.name,
-        tag: raw.tag,
+        // The owner's own tag, unless the hit carries a marker.
+        tag: tag.or(raw.tag),
         data,
-    })
+    }, claims))
 }
 
 /// Split a URL into its path, its query string and its parameters.
 ///
-/// **The path is moved, not copied** ✓: a URL without a query and without a
-/// fragment *is* its path ⇒ ⇒ ⇒ so the string the tracker sent becomes the
-/// string the event carries ✓ ⇒ ⇒ ⇒ no copy ✓ (see `MEMORY.md` §6 ✓).
+/// **The URL is resolved the way Umami resolves it.** The Umami tracker sends
+/// the **whole** URL, so the origin comes off and only the path is kept; a
+/// relative URL is a path of the site, so it starts at the root; and the
+/// fragment belongs to the path (Umami keeps it there).
+///
+/// **The path is moved, not copied** ✓: a URL that is already a path — no
+/// origin, no query, no fragment — *is* its path ⇒ ⇒ ⇒ so the string the
+/// tracker sent becomes the string the event carries ✓ ⇒ ⇒ ⇒ no copy ✓
+/// (see `MEMORY.md` §6 ✓).
 fn split_url(url: String) -> (Option<String>, Option<String>, Vec<(String, String)>) {
-    let without_fragment = match url.split_once('#') {
-        Some((before, _)) => before,
-        None => url.as_str(),
+    // The fragment comes off first: it is the last thing in a URL.
+    let fragment_at = url.find('#');
+    let without_fragment = match fragment_at {
+        Some(at) => &url[..at],
+        None => &url[..],
     };
-    match without_fragment.split_once('?') {
-        Some((path, query)) => (
-            Some(path.to_string()),
-            Some(query.to_string()),
-            parse_query(query),
-        ),
-        // No query and no fragment: the URL **is** the path ✓ ⇒ ⇒ ⇒ move it ✓.
-        None if without_fragment.len() == url.len() => (Some(url), None, Vec::new()),
-        None => (Some(without_fragment.to_string()), None, Vec::new()),
-    }
+
+    // The path and the query string.
+    let query_at = without_fragment.find('?');
+    let path_end = query_at.unwrap_or(without_fragment.len());
+    let (path, query) = match query_at {
+        Some(at) => (&without_fragment[..at], Some(&without_fragment[at + 1..])),
+        None => (without_fragment, None),
+    };
+
+    // The URL may be absolute — the Umami tracker sends the whole thing — and
+    // then only the path is kept.
+    let origin_at = path.find("://");
+    let path = match origin_at {
+        Some(at) => {
+            let rest = &path[at + 3..];
+            match rest.find('/') {
+                Some(slash) => &rest[slash..],
+                None => "/",
+            }
+        }
+        None => path,
+    };
+
+    let params = match query {
+        Some(query) => parse_query(query),
+        None => Vec::new(),
+    };
+    let query = query.map(str::to_string);
+
+    // The path, with the fragment on it. The simple case is the common one:
+    // the URL was a path already ⇒ **moved**, not copied.
+    let simple = origin_at.is_none() && fragment_at.is_none() && path.starts_with('/');
+    let path = if simple {
+        let mut rest = url;
+        rest.truncate(path_end);
+        rest
+    } else {
+        let mut out = String::with_capacity(path.len() + 8);
+        if !path.starts_with('/') {
+            out.push('/');
+        }
+        out.push_str(path);
+        if let Some(at) = fragment_at {
+            out.push('#');
+            out.push_str(&url[at + 1..]);
+        }
+        out
+    };
+
+    (Some(path), query, params)
 }
 
 /// Split a referrer into its host, path and query.
+///
+/// A referrer may be a whole URL, or **only a path** — the tracker sends the
+/// path of the page the visitor came from when the referrer is on the same
+/// site. There is no host in that one (Umami resolves it against the site's
+/// own domain, so it counts as a self-referral).
 fn split_referrer(referrer: String) -> (Option<String>, Option<String>, Option<String>) {
     let without_scheme = referrer
         .strip_prefix("https://")
         .or_else(|| referrer.strip_prefix("http://"))
         .unwrap_or(&referrer);
 
-    let (host, rest) = match without_scheme.split_once('/') {
-        Some((host, rest)) => (host, Some(rest)),
-        None => (without_scheme, None),
+    // The path and the query of a path-only referrer.
+    let (path, query) = match without_scheme.split_once('?') {
+        Some((path, query)) => (Some(path.to_string()), Some(query.to_string())),
+        None => (Some(without_scheme.to_string()), None),
     };
 
-    let (path, query) = match rest {
-        Some(rest) => match rest.split_once('?') {
-            Some((path, query)) => (Some(path.to_string()), Some(query.to_string())),
-            None => (Some(rest.to_string()), None),
-        },
-        None => (None, None),
+    // A path-only referrer: there is no host in it.
+    if without_scheme.starts_with('/') {
+        return (None, path, query);
+    }
+
+    // The host and the rest of it. The path keeps its slash — Umami stores
+    // the pathname.
+    let (host, path, query) = match without_scheme.split_once('/') {
+        Some((host, rest)) => {
+            let (path, query) = match rest.split_once('?') {
+                Some((path, query)) => (Some(format!("/{path}")), Some(query.to_string())),
+                None => (Some(format!("/{rest}")), None),
+            };
+            (host.to_string(), path, query)
+        }
+        None => (without_scheme.to_string(), None, None),
     };
 
-    (
-        Some(host.to_string()),
-        path,
-        query,
-    )
+    (Some(host), path, query)
 }
 
 /// Parse a query string into its parameters.
