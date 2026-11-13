@@ -368,6 +368,75 @@ p {
   }
 }
 
+/* The marked traffic: the kinds the dashboard asks for. */
+
+.marked-select {
+  position: relative;
+  font-size: 13px;
+}
+
+.marked-select > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-weight: 600;
+  user-select: none;
+}
+
+.marked-select > summary::-webkit-details-marker {
+  display: none;
+}
+
+.marked-select[open] > summary {
+  color: var(--text);
+  background: var(--bg-sunken);
+}
+
+.marked-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.marked-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.marked-item:hover {
+  background: var(--bg-sunken);
+}
+
+.marked-item input {
+  accent-color: var(--brand);
+  margin: 0;
+}
+
+/* The kinds inside a group: one step in. */
+.marked-sub {
+  padding-left: 24px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
 /* --- dashboard body ------------------------------------------------------- */
 
 .dashboard-body {

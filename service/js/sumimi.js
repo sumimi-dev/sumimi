@@ -31,13 +31,28 @@
  * The five metrics are sent as strings (the server parses them itself); every
  * other field is sent as the browser reported it.
  *
- * The web vitals are collected with PerformanceObserver and are sent together
- * with the page view, once the page has been painted.
+ * The web vitals are collected with PerformanceObserver and are sent as a hit
+ * of their own, once the document has been painted — the page view goes out
+ * at once, and the vitals follow.
+ *
+ * The session
+ * -----------
+ * The server answers every hit with a **token**: it says which session the
+ * visitor is in, and the client sends it back with the next hit. So the server
+ * does not have to remember the sessions itself, and the session of a visitor
+ * is the same whether the hits arrive at one server or at several.
+ *
+ * The token lives in a variable of this script — **not** in a cookie, not in
+ * localStorage, not in sessionStorage. It is there for as long as the page is.
+ * It is signed, so it cannot be changed; it is not encrypted, so it can be
+ * read.
  *
  * Privacy
  * -------
  *   - no cookies, no localStorage, no fingerprinting
- *   - Do Not Track and Global Privacy Control are honoured: nothing is sent
+ *   - Do Not Track and Global Privacy Control are **the site owner's decision**:
+ *     the tracker sends by default, and `data-do-not-track="true"` asks it to
+ *     honour what the visitor says
  *   - the query string IS sent, because the server parses the UTM parameters
  *     and the ad click ids (gclid, fbclid, msclkid, ttclid, lifatid, twclid)
  *     out of it. The referrer and the page URL are sent in full for the same
@@ -52,6 +67,9 @@
  *   data-website-id   the website id (required unless data-website is given)
  *   data-website      the website domain, instead of an id
  *   data-api-url      the API base URL (default: the script's own origin)
+ *   data-do-not-track "true" to honour the visitor's Do Not Track and Global
+ *                     Privacy Control signals (off by default: the owner
+ *                     decides, not us)
  *
  * Public API (window.sumimi, aliased as window.umami):
  *   sumimi.track(name, data)   a custom event
@@ -70,11 +88,19 @@
 
   if (!WEBSITE_ID && !WEBSITE) return;
 
-  // --- privacy: honour Do Not Track and Global Privacy Control ---
+  // --- privacy: the site owner decides ---
+  //
+  // **We do not decide for the site owner** — the tracker sends by default,
+  // and the owner can ask it to honour the visitor's signal with
+  // `data-do-not-track="true"` (the same attribute Umami uses). The protocol
+  // between the owner and the visitor is the owner's business; we give him
+  // the ability, not the decision.
   var navigatorRef = window.navigator || {};
-  var dnt = navigatorRef.doNotTrack || window.doNotTrack;
-  if (dnt === '1' || dnt === 'yes' || navigatorRef.globalPrivacyControl === true) {
-    return;
+  if (script.getAttribute('data-do-not-track') === 'true') {
+    var dnt = navigatorRef.doNotTrack || window.doNotTrack;
+    if (dnt === '1' || dnt === 'yes' || navigatorRef.globalPrivacyControl === true) {
+      return;
+    }
   }
 
   if (!API_URL) {
@@ -255,42 +281,10 @@
   }
 
   /**
-   * The vitals of **this document**, frozen the first time they are reported.
-   *
-   * The Core Web Vitals describe a *document*, not a route: LCP is the largest
-   * paint of the page, CLS is the layout shift of the page, INP is the longest
-   * interaction of the page. A single page application that changes its route
-   * does not get a new document — it keeps the one it loaded.
-   *
-   * So every page view of a document reports the **same** document-level
-   * numbers. Without this, a visitor who browses three routes of an SPA would
-   * report the same document's LCP three times, with three different values,
-   * and every average would be wrong.
-   */
-  var documentVitals = null;
-
-  /** The document-level vitals, frozen the first time they are used. */
-  function documentLevelVitals() {
-    if (!documentVitals) {
-      documentVitals = {
-        lcp: vitals.lcp,
-        inp: vitals.inp,
-        cls: vitals.cls,
-        fcp: vitals.fcp,
-        ttfb: vitals.ttfb
-      };
-    }
-    return documentVitals;
-  }
-
-  /**
    * The fields every hit carries.
-   *
-   * `withVitals` is false for the custom events: the web vitals describe the
-   * document, and they are sent with the page views.
    */
-  function basePayload(withVitals) {
-    var payload = {
+  function basePayload() {
+    return {
       website: WEBSITE_ID || WEBSITE,
       url: currentUrl(),
       referrer: currentReferrer(),
@@ -299,18 +293,29 @@
       language: navigatorRef.language || '',
       screen: screenSize()
     };
+  }
 
-    if (withVitals) {
-      // The server reads the metrics as strings and parses them itself
-      // (`raw.str(name).parse::<f64>()`), so they are sent as strings.
-      var metrics = documentLevelVitals();
-      payload.lcp = String(metrics.lcp);
-      payload.inp = String(metrics.inp);
-      payload.cls = String(metrics.cls);
-      payload.fcp = String(metrics.fcp);
-      payload.ttfb = String(metrics.ttfb);
-    }
-
+  /**
+   * The web vitals of **this document**.
+   *
+   * The Core Web Vitals describe a *document*, not a route: LCP is the largest
+   * paint of the page, CLS is the layout shift of the page, INP is the longest
+   * interaction of the page. A single page application that changes its route
+   * does not get a new document — it keeps the one it loaded.
+   *
+   * So they are sent **once per document**, as a hit of their own: the page
+   * view goes out at once, and the vitals follow when the document has been
+   * painted. The same shape Umami uses.
+   *
+   * The metrics are sent as strings (the server parses them itself).
+   */
+  function vitalsPayload() {
+    var payload = basePayload();
+    payload.lcp = String(vitals.lcp);
+    payload.inp = String(vitals.inp);
+    payload.cls = String(vitals.cls);
+    payload.fcp = String(vitals.fcp);
+    payload.ttfb = String(vitals.ttfb);
     return payload;
   }
 
@@ -319,12 +324,22 @@
   // ---------------------------------------------------------------------------
 
   /**
+   * The token the server gave us.
+   *
+   * It says which session we are in: the server reads it back, so it does not
+   * have to remember the sessions itself. It is **signed, not encrypted** — we
+   * can read it, we just cannot change it.
+   */
+  var cache = null;
+
+  /**
    * Send one hit.
    *
-   * @param {string} type    'event' | 'identify'
+   * @param {string} type    'event' | 'identify' | 'performance'
    * @param {object} payload
+   * @param {boolean} [beacon]  send it with `sendBeacon` — no answer comes back
    */
-  function send(type, payload) {
+  function send(type, payload, beacon) {
     var body;
     try {
       body = JSON.stringify({ type: type, payload: payload });
@@ -334,9 +349,17 @@
 
     var url = API_URL + '/api/send';
 
+    var headers = {
+      'Content-Type': 'application/json',
+      'x-sumimi-website-id': WEBSITE_ID || WEBSITE,
+      'x-sumimi-hostname': window.location.hostname
+    };
+    if (cache) headers['x-sumimi-cache'] = cache;
+
     // `sendBeacon` survives the page being unloaded — it is the only way to
-    // get a page view out of a tab that is being closed.
-    if (navigatorRef.sendBeacon) {
+    // get a hit out of a tab that is being closed. But it brings no answer
+    // back, so it is only used for the hits that do not need one.
+    if (beacon && navigatorRef.sendBeacon) {
       try {
         var blob = new Blob([body], { type: 'application/json' });
         if (navigatorRef.sendBeacon(url, blob)) return;
@@ -350,7 +373,7 @@
         window.fetch(url, {
           method: 'POST',
           body: body,
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           keepalive: true,
           mode: 'cors',
           credentials: 'omit'
@@ -370,7 +393,7 @@
                   window.fetch(url, {
                     method: 'POST',
                     body: body,
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     keepalive: true,
                     mode: 'cors',
                     credentials: 'omit'
@@ -379,7 +402,15 @@
                   /* never break the host page */
                 }
               }, wait);
+              return;
             }
+            // The answer carries the token for the next hit.
+            return response
+              .json()
+              .then(function (data) {
+                if (data && data.cache) cache = data.cache;
+              })
+              .catch(function () {});
           })
           .catch(function () {});
       }
@@ -400,7 +431,7 @@
    */
   function track(name, data, tag) {
     if (!name) return;
-    var payload = basePayload(false);
+    var payload = basePayload();
     payload.name = name;
     if (tag) payload.tag = tag;
     if (data !== undefined && data !== null) payload.data = data;
@@ -412,7 +443,7 @@
    * @param {object} data
    */
   function identify(data) {
-    var payload = basePayload(false);
+    var payload = basePayload();
     payload.data = data || {};
     send('identify', payload);
   }
@@ -423,7 +454,7 @@
    * @param {string} [url] the URL to report, when it is not the current one
    */
   function pageview(url) {
-    var payload = basePayload(true);
+    var payload = basePayload();
     if (url) payload.url = url;
     send('event', payload);
   }
@@ -434,12 +465,16 @@
   window.umami = api;
 
   // ---------------------------------------------------------------------------
-  // When to send the page view
+  // When to send what
   // ---------------------------------------------------------------------------
 
-  // The web vitals are only known after the page has been painted, so the page
-  // view is sent when the document goes away — with `sendBeacon`, so it
-  // survives the unload.
+  // The **page view** goes out as soon as the page is there — not when the
+  // page goes away. The answer carries the token, and the token is what keeps
+  // the next hit in the same session; a beacon brings no answer back.
+  //
+  // The **web vitals** are the other way round: they are only known once the
+  // document has been painted, so they go out when the document goes away, as
+  // a hit of their own — the same shape Umami uses.
   var sent = false;
 
   /** The URL of the page we are on. Tracked across single page navigations. */
@@ -449,36 +484,46 @@
   function sendPageview() {
     if (sent) return;
     sent = true;
-    readTtfb();
     pageview();
+  }
+
+  /** Send the web vitals of this document, once. */
+  var vitalsSent = false;
+  function sendVitals() {
+    if (vitalsSent) return;
+    vitalsSent = true;
+    readTtfb();
+    send('performance', vitalsPayload(), true);
   }
 
   if (document.addEventListener) {
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'hidden') sendPageview();
+      if (document.visibilityState === 'hidden') sendVitals();
     });
-    window.addEventListener('pagehide', sendPageview);
+    window.addEventListener('pagehide', sendVitals);
   }
+
+  // The page view of the page we are on goes out now.
+  sendPageview();
 
   // ---------------------------------------------------------------------------
   // Single page applications
   // ---------------------------------------------------------------------------
 
-  // A history navigation ends one page and starts another, so **both** get a page
-  // view: the page we are leaving is reported now (with the metrics it had), and
-  // the page we arrive at is reported when we leave *it*.
+  // A history navigation ends one page and starts another, so **both** get a
+  // page view: the page we are leaving was reported when we arrived at it, and
+  // the page we arrive at is reported now.
   //
-  // Reporting only the arriving route would lose the landing page of every
-  // single page application — the entry page, which is the one a site owner
-  // cares most about.
+  // The URL that is reported is the one we arrive at — the page view of the
+  // landing page is not lost, because it was reported when the page loaded.
   function onNavigation() {
-    if (!sent) {
-      sent = true;
-      readTtfb();
-      pageview(lastUrl);
-    }
-    lastUrl = currentUrl();
+    var url = currentUrl();
+    // The URL did not really change (`replaceState` is often called with the
+    // same URL): there is no new page to report.
+    if (url === lastUrl) return;
+    lastUrl = url;
     sent = false;
+    sendPageview();
   }
 
   if (window.history && typeof window.history.pushState === 'function') {

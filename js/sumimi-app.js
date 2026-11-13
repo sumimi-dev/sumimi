@@ -58,12 +58,65 @@
   var API_URL = resolveApiUrl();
 
   /** Application state. */
+  // The kinds of **marked** traffic: the traffic that is not part of the
+  // numbers. The dashboard can ask for the kinds it wants to see.
+  //
+  // They come in groups: picking a group picks all of its kinds.
+  //
+  // The list is the server's (`MARKER_GROUPS` in `service/src/storage.rs`) — a
+  // test checks that the two agree.
+  var MARKER_GROUPS = [
+    { kind: 'dev', label: 'dev' },
+    { kind: 'test', label: 'test' },
+    {
+      kind: 'bot-ai',
+      label: 'AI',
+      kinds: [
+        { kind: 'bot-ai-openai', label: 'OpenAI' },
+        { kind: 'bot-ai-anthropic', label: 'Anthropic' },
+        { kind: 'bot-ai-perplexity', label: 'Perplexity' },
+        { kind: 'bot-ai-apple', label: 'Apple' }
+      ]
+    },
+    {
+      kind: 'bot-se',
+      label: 'search',
+      kinds: [
+        { kind: 'bot-se-google', label: 'Google' },
+        { kind: 'bot-se-bing', label: 'Bing' },
+        { kind: 'bot-se-yandex', label: 'Yandex' },
+        { kind: 'bot-se-baidu', label: 'Baidu' },
+        { kind: 'bot-se-other', label: 'other' }
+      ]
+    },
+    {
+      kind: 'bot-social',
+      label: 'social',
+      kinds: [
+        { kind: 'bot-social-meta', label: 'Meta' },
+        { kind: 'bot-social-x', label: 'X' },
+        { kind: 'bot-social-linkedin', label: 'LinkedIn' },
+        { kind: 'bot-social-messaging', label: 'messaging' }
+      ]
+    },
+    {
+      kind: 'bot-other',
+      label: 'other',
+      kinds: [{ kind: 'bot-other-unknown', label: 'unknown' }]
+    }
+  ];
+
+  /** The groups of marked traffic and their boxes. */
+  var markerGroups = [];
+
   var state = {
     token: null,
     user: null,
     websites: [],
     websiteId: null,
     range: '24h',
+    // The kinds of marked traffic to count anyway.
+    markers: [],
     loading: false
   };
 
@@ -136,6 +189,33 @@
       node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
     });
     return node;
+  }
+
+  /** The label of a kind of marked traffic. */
+  function labelOf(kind) {
+    for (var i = 0; i < MARKER_GROUPS.length; i++) {
+      var group = MARKER_GROUPS[i];
+      if (group.kind === kind) return group.label;
+      var kinds = group.kinds || [];
+      for (var j = 0; j < kinds.length; j++) {
+        if (kinds[j].kind === kind) return kinds[j].label;
+      }
+    }
+    return kind;
+  }
+
+  /** Bring the boxes in line with what is picked. */
+  function syncMarkerBoxes() {
+    markerGroups.forEach(function (group) {
+      group.children.forEach(function (child) {
+        child.box.checked = state.markers.indexOf(child.leaf) !== -1;
+      });
+      var on = group.leaves.filter(function (leaf) {
+        return state.markers.indexOf(leaf) !== -1;
+      }).length;
+      group.box.checked = on === group.leaves.length;
+      group.box.indeterminate = on > 0 && on < group.leaves.length;
+    });
   }
 
   /** Remove every child of a node. */
@@ -280,7 +360,11 @@
     var range = currentRange();
     var end = Date.now();
     var start = end - range.ms;
-    return '?startAt=' + start + '&endAt=' + end;
+    var query = '?startAt=' + start + '&endAt=' + end;
+    if (state.markers.length) {
+      query += '&markers=' + encodeURIComponent(state.markers.join(','));
+    }
+    return query;
   }
 
   /** The currently selected range object. */
@@ -494,6 +578,56 @@
       })
     );
 
+    // The **marked** traffic — the bots, the developer's own clicks — is not
+    // part of the numbers. The dropdown asks for the kinds it wants to see:
+    // a group and the kinds in it.
+    //
+    // The groups are rebuilt every time the shell is rendered ⇒ the old ones
+    // are dropped first.
+    markerGroups = [];
+    var markedSelect = el('details', { class: 'marked-select', id: 'sumimi-markers' }, [
+      el('summary', { text: 'Marked' }),
+      el('div', { class: 'marked-list' }, MARKER_GROUPS.map(function (group) {
+        var kinds = group.kinds || [{ kind: group.kind, label: group.label }];
+        var leaves = kinds.map(function (kind) { return kind.kind; });
+
+        var groupBox = el('input', { type: 'checkbox' });
+        var children = kinds.map(function (kind) {
+          var box = el('input', { type: 'checkbox' });
+          box.addEventListener('change', function () {
+            if (box.checked) {
+              if (state.markers.indexOf(kind.kind) === -1) state.markers.push(kind.kind);
+            } else {
+              state.markers = state.markers.filter(function (leaf) {
+                return leaf !== kind.kind;
+              });
+            }
+            syncMarkerBoxes();
+            loadDashboard();
+          });
+          return { box: box, leaf: kind.kind };
+        });
+
+        groupBox.addEventListener('change', function () {
+          // Picking the group picks all of its kinds; unpicking unpicks them.
+          state.markers = state.markers.filter(function (leaf) {
+            return leaves.indexOf(leaf) === -1;
+          });
+          if (groupBox.checked) state.markers = state.markers.concat(leaves);
+          syncMarkerBoxes();
+          loadDashboard();
+        });
+
+        markerGroups.push({ box: groupBox, leaves: leaves, children: children });
+
+        return el('div', { class: 'marked-group' }, [
+          el('label', { class: 'marked-item' }, [groupBox, group.label])
+        ].concat(children.map(function (child) {
+          return el('label', { class: 'marked-item marked-sub' }, [child.box, labelOf(child.leaf)]);
+        })));
+      }))
+    ]);
+
     var logout = el('button', {
       type: 'button',
       class: 'btn btn-ghost',
@@ -527,6 +661,10 @@
         el('div', { class: 'field field-inline' }, [
           el('span', { class: 'label-like', id: 'sumimi-range-label', text: 'Range' }),
           rangeGroup
+        ]),
+        el('div', { class: 'field field-inline' }, [
+          el('span', { class: 'label-like', text: 'Marked' }),
+          markedSelect
         ])
       ]),
       el('div', { class: 'topbar-right' }, [userName, logout])
