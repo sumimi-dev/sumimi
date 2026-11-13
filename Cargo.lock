@@ -1506,6 +1506,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1691,6 +1697,18 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "maxminddb"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b43d2458d977b610b04a3858e6504f06133663d303a1a0606601b530bfc9bc6"
+dependencies = [
+ "ipnetwork",
+ "memchr",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "memchr"
@@ -2320,7 +2338,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sumimi"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2333,12 +2351,13 @@ dependencies = [
 
 [[package]]
 name = "sumimi-cli"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "duckdb",
+ "flate2",
  "serde",
  "serde_json",
  "sumimi-service",
@@ -2349,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "sumimi-service"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2360,6 +2379,7 @@ dependencies = [
  "duckdb",
  "http-body-util",
  "jsonwebtoken",
+ "maxminddb",
  "rusqlite",
  "rustls-acme",
  "serde",

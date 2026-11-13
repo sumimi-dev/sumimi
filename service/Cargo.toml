@@ -66,6 +66,20 @@ jsonwebtoken = "9"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# The geolocation database.
+#
+# Why: the **mmdb format is the de facto standard** — MaxMind publishes it,
+# DB-IP publishes it, IP2Location publishes it. Everybody who ships a
+# geolocation database ships one of these, so the file the site owner
+# downloads is one of these, and there is nothing to convert.
+#
+# Why not write the parser ourselves: the format is a binary search tree with
+# a data section and a separated by a documented layout, and every edge case
+# in it has been found by other people already. It would be a lot of code for
+# no gain — and the reader is *not* on the hot path: the file is read once, at
+# startup, and the lookup is an in-memory search.
+maxminddb = "0.32"
+
 # TLS / ACME. `ring` keeps the build simple (no cmake, no aws-lc-sys).
 rustls-acme = { version = "0.15", default-features = false, features = [
     "ring",
