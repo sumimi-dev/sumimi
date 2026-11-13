@@ -32,6 +32,17 @@ duckdb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ureq = { version = "3", features = ["json"] }
+
+# The decompressor for the geolocation database.
+#
+# Why: **every free geolocation database is published gzipped** — the file is
+# a tenth of the size that way, and the download is the slow part. So the
+# download has to unpack it.
+#
+# Why `miniz_oxide` (the default backend): it is pure Rust, so the binary
+# stays self-contained — no C library to install next to it, and the release
+# is still one file.
+flate2 = "1"
 tokio.workspace = true
 uuid = { version = "1", features = ["v4"] }
 # The shared layer: the schema, the models and every report live here, so the
@@ -39,4 +50,4 @@ uuid = { version = "1", features = ["v4"] }
 #
 # The version is needed for publishing: the path is used locally, and the
 # version is what the published crate depends on.
-sumimi-service = { path = "../service", version = "0.4.1" }
+sumimi-service = { path = "../service", version = "0.5.0" }

@@ -185,9 +185,21 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
         let pool: Vec<Uuid> = (0..visitors).map(|_| Uuid::new_v4()).collect();
 
         for _ in 0..visitors {
-            let session_id = Uuid::new_v4();
             let visitor_id = pool[rng.below(pool.len())];
+            let (ip, ip_prefix, user_agent) =
+                sumimi_service::testing::visitor_identity(&visitor_id);
             let started = day_start + chrono::Duration::seconds(rng.between(0, 86_399));
+            // The session id is worked out from the visitor and the moment the
+            // session began — the same shape the server writes.
+            let visitor_id = sumimi_service::ua::visitor_id(
+                &sumimi_service::ua::visitor_address(&ip),
+                &user_agent,
+                &website_id,
+            );
+            let session_id = sumimi_service::session::session_id(
+                visitor_id,
+                started.and_utc().timestamp_micros(),
+            );
 
             // A session is one to four page views.
             let page_views = match rng.below(100) {
@@ -233,6 +245,10 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                     website_id: website_id.clone(),
                     visit_id: session_id,
                     visitor_id,
+                    session_start: Some(started),
+                    ip: ip.clone(),
+                    ip_prefix: ip_prefix.clone(),
+                    user_agent: user_agent.clone(),
                     user_id: None,
                     retention_days: 0,
                     kind: HitKind::Pageview,
@@ -299,6 +315,10 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                     website_id: website_id.clone(),
                     visit_id: session_id,
                     visitor_id,
+                    session_start: Some(started),
+                    ip,
+                    ip_prefix,
+                    user_agent,
                     user_id: None,
                     retention_days: 0,
                     kind: HitKind::Event,

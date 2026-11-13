@@ -515,7 +515,9 @@ impl Server {
                 let hit = Hit {
                     website_id: website.clone(),
                     visit_id: session_id(&website),
-                    visitor_id: visitor_id(&website),
+                    ip: ip(&website),
+                    ip_prefix: ip_prefix(&website),
+                    user_agent: user_agent(&website),
                     retention_days: retention,
                     kind: match kind.as_str() {
                         "event" => HitKind::Event,
@@ -708,9 +710,9 @@ impl Server {
 /// One session per website per half hour — the same 30-minute bucket the
 /// tracker uses — so the events recorded by an agent do not each become a
 /// session of their own.
-fn session_id(website: &str) -> uuid::Uuid {
+fn session_id(website: &str) -> sumimi_service::session::VisitId {
     let bucket = chrono::Utc::now().timestamp() / (30 * 60);
-    sumimi_service::ua::uuid_from_text(&format!("sumimi-mcp-{website}-{bucket}"))
+    sumimi_service::session::client_session_id(&format!("sumimi-mcp-{website}-{bucket}"))
 }
 
 /// The visitor an MCP-recorded event belongs to.
@@ -719,6 +721,27 @@ fn session_id(website: &str) -> uuid::Uuid {
 /// and counting every recorded event as a new visitor would be a lie.
 fn visitor_id(website: &str) -> uuid::Uuid {
     sumimi_service::ua::uuid_from_text(&format!("sumimi-mcp-{website}"))
+}
+
+/// The address the agent's events come from.
+///
+/// The agent does not know who the person is: one stable address and one
+/// stable user agent per website, so the events of an agent are one visitor.
+fn ip(website: &str) -> String {
+    let (ip, _, _) = sumimi_service::testing::visitor_identity(&visitor_id(website));
+    ip
+}
+
+/// The prefix of that address — half of the visitor's identity.
+fn ip_prefix(website: &str) -> String {
+    let (_, prefix, _) = sumimi_service::testing::visitor_identity(&visitor_id(website));
+    prefix
+}
+
+/// The user agent of that address — the other half of the visitor's identity.
+fn user_agent(website: &str) -> String {
+    let (_, _, agent) = sumimi_service::testing::visitor_identity(&visitor_id(website));
+    agent
 }
 
 /// The report a name refers to.

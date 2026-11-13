@@ -32,8 +32,7 @@ fn the_archive_answers_the_same_as_the_database() {
         )?;
         // One set-based insert: 50 000 individual prepares would take minutes.
         //
-        // The ids are UUIDs (schema v4): a text id is hashed into 16 bytes, the
-        // same way the migration does it.
+        // Both ids are UUIDs (schema v10): a text id is hashed into 16 bytes.
         conn.execute_batch(
             r#"
 CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
@@ -41,8 +40,10 @@ CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
     substr(sha256(s), 13, 4) || '-' || substr(sha256(s), 17, 4) || '-' ||
     substr(sha256(s), 21, 12) AS UUID);
 
+CREATE OR REPLACE MACRO session_of(n) AS uuid_of('session-' || n);
+
 INSERT INTO event (
-    id, website_id, visit_id, visitor_id, created_at, url, url_query, title,
+    id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent, created_at, url, url_query, title,
     referrer, referrer_path, referrer_query, hostname,
     browser, browser_version, os, os_version, device, screen, language,
     country, region, city,
@@ -53,8 +54,11 @@ INSERT INTO event (
 SELECT
   i,
   'w1',
-  uuid_of('s' || (1 + (i / 2))::VARCHAR),
-  uuid_of('v' || (i % 120)::VARCHAR),
+  session_of(1 + (i / 2)),
+  uuid_of('visitor-' || (i % 120)),
+  '203.0.113.' || (i % 120)::VARCHAR,
+  '203.0.113',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
   now()::TIMESTAMP - INTERVAL (i % 20000) MINUTE,
   '/page/' || (i % 7)::VARCHAR,
   'utm_source=twitter', 'A page title',
@@ -69,9 +73,12 @@ FROM generate_series(1, 50000) t(i);
 "#,
         )?;
         conn.execute(
-            "INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url, hostname,
+            "INSERT INTO event (id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent,
+                    created_at, url, hostname,
                     event_type, event_name, tag, data)
-             VALUES (999999, 'w1', uuid_of('s1'), uuid_of('v1'), now()::TIMESTAMP, '/signup',
+             VALUES (999999, 'w1', session_of(1), uuid_of('visitor-1'), '203.0.113.7', '203.0.113',
+                     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                     now()::TIMESTAMP, '/signup',
                      'example.com', 'event', 'signup', 'cta', '{}')",
             [],
         )?;

@@ -38,8 +38,8 @@ tokio.workspace = true
 #
 # The versions are needed for publishing: the paths are used locally, and the
 # versions are what the published crate depends on.
-sumimi-service = { path = "../service", version = "0.4.1" }
-sumimi-cli = { path = "../cli", version = "0.4.1" }
+sumimi-service = { path = "../service", version = "0.5.0" }
+sumimi-cli = { path = "../cli", version = "0.5.0" }
 
 [dev-dependencies]
 # The tests run the real executable: one sends it a real SIGTERM, the other

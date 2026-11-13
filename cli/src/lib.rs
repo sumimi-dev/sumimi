@@ -7,6 +7,7 @@
 
 pub mod backup;
 mod gsc;
+mod geoip;
 pub mod mcp;
 mod output;
 pub mod seed;
@@ -57,9 +58,29 @@ struct Cli {
     command: Command,
 }
 
+/// The commands of `sumimi geoip`.
+#[derive(Debug, Clone, Subcommand)]
+enum GeoipCommand {
+    /// Download the geolocation database into the instance directory.
+    Download {
+        /// The small one: the country only.
+        ///
+        /// The country database is a tenth of the size, and it is what a small
+        /// box can hold in memory. The city one adds the region, the city and
+        /// the coordinates.
+        #[arg(long)]
+        country: bool,
+    },
+}
+
 /// The commands.
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
+    /// The geolocation database.
+    Geoip {
+        #[command(subcommand)]
+        command: GeoipCommand,
+    },
     /// List the websites.
     Websites,
     /// Show the summary metrics.
@@ -386,6 +407,16 @@ pub fn run() -> Result<()> {
             days,
             visitors,
         } => cmd_seed(&cli, website, domain, *days, *visitors),
+        Command::Geoip { command } => match command {
+            GeoipCommand::Download { country } => {
+                let kind = if *country {
+                    geoip::Kind::Country
+                } else {
+                    geoip::Kind::City
+                };
+                geoip::download(&cli.dir, kind)
+            }
+        },
         Command::Backup {
             out,
             website,
