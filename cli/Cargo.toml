@@ -50,4 +50,4 @@ uuid = { version = "1", features = ["v4"] }
 #
 # The version is needed for publishing: the path is used locally, and the
 # version is what the published crate depends on.
-sumimi-service = { path = "../service", version = "0.5.0" }
+sumimi-service = { path = "../service", version = "0.5.1" }
