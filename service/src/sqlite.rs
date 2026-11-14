@@ -26,9 +26,10 @@ use crate::models::{
     BreakdownRow, EventRow, Hit, MetricsSummary, MetricValue, Revenue, SessionRow, Website,
 };
 use crate::pool::{Pool, Pooled};
+use crate::query::{Dialect, Granularity, Param};
 use crate::storage::{
     group_sessions, session_scan_limit, Dimension, ReportQuery, SessionEvent, Storage, StorageStats,
-    SummaryMetrics, WebsitePatch, PAGEVIEWS,
+    SummaryMetrics, WebsitePatch,
 };
 
 /// How SQLite spells the kinds.
@@ -70,6 +71,86 @@ const TABLES: &[(&str, &[crate::schema::Column])] = &[
     ("website", crate::schema::WEBSITE),
     ("meta", crate::schema::META),
 ];
+
+/// How SQLite spells the things that differ.
+///
+/// Everything else — the columns, the conditions, the counts — is in the
+/// shared queries (see [`crate::query`]).
+struct SqliteDialect;
+
+impl Dialect for SqliteDialect {
+    /// SQLite's parameters are numbered: `?1`, `?2`, …
+    fn placeholder(&self, n: usize) -> String {
+        format!("?{n}")
+    }
+
+    /// The moments are microseconds already.
+    fn epoch_us(&self, expr: &str) -> String {
+        expr.to_string()
+    }
+
+    /// SQLite has no `GREATEST`; the scalar `MAX` is the same thing.
+    fn greatest(&self, a: &str, b: &str) -> String {
+        format!("MAX({a}, {b})")
+    }
+
+    fn cast_double(&self, expr: &str) -> String {
+        format!("CAST({expr} AS REAL)")
+    }
+
+    /// `strftime` reads **seconds**, so the microseconds are divided first.
+    fn bucket(&self, granularity: Granularity, expr: &str) -> String {
+        let format = match granularity {
+            Granularity::Hour => "%Y-%m-%dT%H:00:00Z",
+            Granularity::Day => "%Y-%m-%dT00:00:00Z",
+        };
+        format!("strftime('{format}', {expr} / 1000000.0, 'unixepoch')")
+    }
+}
+
+/// A row of SQLite, read by the name of its column.
+struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
+
+impl crate::row::Row for SqliteRow<'_> {
+    fn text(&self, name: &str) -> Result<Option<String>> {
+        Ok(self.0.get::<_, Option<String>>(name)?)
+    }
+    fn int(&self, name: &str) -> Result<Option<i64>> {
+        Ok(self.0.get::<_, Option<i64>>(name)?)
+    }
+    fn float(&self, name: &str) -> Result<Option<f64>> {
+        Ok(self.0.get::<_, Option<f64>>(name)?)
+    }
+    /// A uuid is stored as its text.
+    fn uuid(&self, name: &str) -> Result<Option<uuid::Uuid>> {
+        Ok(self
+            .0
+            .get::<_, Option<String>>(name)?
+            .and_then(|text| uuid::Uuid::parse_str(&text).ok()))
+    }
+    /// A moment is stored as microseconds since the epoch.
+    fn time(&self, name: &str) -> Result<Option<chrono::NaiveDateTime>> {
+        Ok(self.0.get::<_, Option<i64>>(name)?.map(from_ts))
+    }
+}
+
+/// The values of a statement, as SQLite wants them.
+fn values(statement: &crate::query::Statement) -> Vec<Box<dyn rusqlite::ToSql>> {
+    statement
+        .values
+        .iter()
+        .map(|param| -> Box<dyn rusqlite::ToSql> {
+            match param {
+            Param::Text(text) => Box::new(text.clone()),
+            Param::Int(number) => Box::new(*number),
+            Param::Float(number) => Box::new(*number),
+            Param::Uuid(id) => Box::new(id.to_string()),
+            Param::Time(moment) => Box::new(ts(*moment)),
+            Param::Null => Box::new(Option::<String>::None),
+            }
+        })
+        .collect()
+}
 
 /// The SQLite backend.
 ///
@@ -248,10 +329,6 @@ fn ts(value: chrono::NaiveDateTime) -> i64 {
 ///
 /// SQLite has no UUID type, so the ids are stored as their text — the same
 /// text they are shown in.
-fn parse_uuid(text: &str) -> uuid::Uuid {
-    uuid::Uuid::parse_str(text).unwrap_or_else(|_| uuid::Uuid::nil())
-}
-
 /// Schema version of the SQLite database.
 ///
 /// * v3 — the event-row model, the ids as text.
@@ -319,71 +396,6 @@ fn from_ts(value: i64) -> chrono::NaiveDateTime {
 /// Now, as a naive UTC timestamp.
 fn crate_now() -> chrono::NaiveDateTime {
     chrono::Utc::now().naive_utc()
-}
-
-/// The WHERE clause and its parameters.
-struct Filters {
-    clauses: Vec<String>,
-    values: Vec<rusqlite::types::Value>,
-}
-
-impl Filters {
-    /// The filters of a **report**: the tagged traffic is left out.
-    ///
-    /// The bots, the developer's own traffic, and whatever else the site owner
-    /// tagged are not part of the numbers — the dashboard can ask for them.
-    fn new(query: &ReportQuery) -> Self {
-        let mut filters = Filters::logs(query);
-        // The marked traffic — the bots, the developer's own traffic — is not
-        // part of the numbers, unless the dashboard asks for its kinds.
-        let (clause, tags) = crate::storage::not_marked(&query.include_markers);
-        filters.clauses.push(clause);
-        for tag in tags {
-            filters.push_text_only(&tag);
-        }
-        filters
-    }
-
-    /// The filters of a **log**: everything is there.
-    fn logs(query: &ReportQuery) -> Self {
-        let mut filters = Filters {
-            clauses: vec!["website_id = ?".to_string()],
-            values: vec![query.website_id.clone().into()],
-        };
-        filters.push_value("created_at >= ?", ts(query.range.start));
-        filters.push_value("created_at < ?", ts(query.range.end));
-
-        for (column, value) in query.dimensions.filters() {
-            if let Some(value) = value.as_ref().filter(|v| !v.is_empty()) {
-                filters.clauses.push(format!("{column} = ?"));
-                filters.values.push(value.clone().into());
-            }
-        }
-
-        filters
-    }
-
-    fn push_value(&mut self, clause: &str, value: i64) {
-        self.clauses.push(clause.to_string());
-        self.values.push(value.into());
-    }
-
-    /// Add a text value **without** a condition — for a condition that was
-    /// built as one piece (the marker clause).
-    fn push_text_only(&mut self, value: &str) {
-        self.values.push(value.to_string().into());
-    }
-
-    fn clause(&self) -> String {
-        self.clauses.join(" AND ")
-    }
-
-    fn params(&self) -> Vec<&dyn rusqlite::ToSql> {
-        self.values
-            .iter()
-            .map(|v| v as &dyn rusqlite::ToSql)
-            .collect()
-    }
 }
 
 impl Storage for SqliteBackend {
@@ -837,59 +849,27 @@ INSERT INTO event (
 
 /// Compute the summary metrics for a window.
 fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
-    let filters = Filters::new(query);
-
-    // The page views are counted without the custom events; the visitors and
-    // the visits are counted over everything.
-    let sql = format!(
-        "SELECT COUNT(*) FILTER (WHERE {pageviews}),
-                COUNT(DISTINCT visitor_id),
-                COUNT(DISTINCT visit_id)
-         FROM event WHERE {filters}",
-        pageviews = PAGEVIEWS,
-        filters = filters.clause()
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let (pageviews, visitors, views) = match stmt.query(filters.params().as_slice())?.next()? {
-        Some(row) => (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
+    // The statement is the shared one (see `crate::query`).
+    let statement = crate::query::summary(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let (pageviews, visitors, views) = match stmt.query(params.as_slice())?.next()? {
+        Some(row) => (
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ),
         None => (0, 0, 0),
     };
     drop(stmt);
 
-    // Bounces (sessions with a single **page view**) and the average session
-    // length. A session that fired a custom event is not a bounce.
-    //
-    // The **anchor** of the length is the moment the session started, and it
-    // is the `session_start` the row carries — so it is the *algorithmic*
-    // start, not the first event the report happened to see. A session the
-    // client named has no start (there is no moment to remember), so those
-    // fall back to the span between the first and the last page view of the
-    // group.
-    let sql = format!(
-        "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
-                COALESCE(AVG(d), 0)
-         FROM (
-             SELECT visit_id,
-                    COUNT(*) FILTER (WHERE {pageviews}) AS n,
-                    MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
-                    CASE
-                        WHEN MAX(created_at) FILTER (WHERE {pageviews}) IS NULL THEN NULL
-                        ELSE MAX(
-                            MAX(created_at) FILTER (WHERE {pageviews})
-                            - CASE
-                                WHEN MIN(session_start) IS NULL
-                                    THEN MIN(created_at) FILTER (WHERE {pageviews})
-                                ELSE MIN(session_start)
-                              END, 0) / 1000000.0
-                    END AS d
-             FROM event WHERE {filters}
-             GROUP BY visit_id
-         )",
-        pageviews = PAGEVIEWS,
-        filters = filters.clause()
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let (bounces, duration) = match stmt.query(filters.params().as_slice())?.next()? {
+    // The bounces and the average session length.
+    let statement = crate::query::summary_sessions(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let (bounces, duration) = match stmt.query(params.as_slice())?.next()? {
         Some(row) => (row.get::<_, i64>(0)?, row.get::<_, f64>(1)?),
         None => (0, 0.0),
     };
@@ -910,39 +890,12 @@ fn breakdown(
     query: &ReportQuery,
     dimension: Dimension,
 ) -> Result<Vec<BreakdownRow>> {
-    // The breakdown of the **tags** is the report *about* the tagged traffic:
-    // it has to see it.
-    let filters = if dimension == Dimension::Tag {
-        Filters::logs(query)
-    } else {
-        Filters::new(query)
-    };
+    let statement = crate::query::breakdown(query, dimension, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    // Content dimensions count views, audience dimensions count visitors.
-    //
-    // The visitors are counted by their **id** — the hash of the address and
-    // the agent. It is stored, so the count does not depend on the raw
-    // address being stored too (it is not, by default).
-    let aggregate = match dimension.aggregate() {
-        "views" => "COUNT(*)",
-        _ => "COUNT(DISTINCT visitor_id)",
-    };
-
-    let sql = format!(
-        "SELECT COALESCE({column}, 'unknown') AS name, {aggregate} AS value
-         FROM event WHERE {where_clause} AND {pageviews}
-         GROUP BY name
-         ORDER BY value DESC, name ASC
-         LIMIT {limit}",
-        column = dimension.column(),
-        aggregate = aggregate,
-        where_clause = filters.clause(),
-        pageviews = PAGEVIEWS,
-        limit = query.limit.clamp(1, 1000),
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let name: String = row.get(0)?;
@@ -962,18 +915,12 @@ fn breakdown(
 
 /// The query strings of the visited pages, with how often each was seen.
 fn query_strings(conn: &Connection, query: &ReportQuery) -> Result<Vec<(String, i64)>> {
-    let filters = Filters::new(query);
+    let statement = crate::query::query_strings(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    let sql = format!(
-        "SELECT url_query, COUNT(*) AS value FROM event
-         WHERE {where_clause} AND {pageviews} AND url_query IS NOT NULL AND url_query <> ''
-         GROUP BY url_query ORDER BY value DESC LIMIT 1000",
-        where_clause = filters.clause(),
-        pageviews = PAGEVIEWS,
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push((row.get(0)?, row.get(1)?));
@@ -983,28 +930,12 @@ fn query_strings(conn: &Connection, query: &ReportQuery) -> Result<Vec<(String, 
 
 /// The page views over time.
 fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-    let filters = Filters::new(query);
+    let statement = crate::query::timeseries(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    // Bucket by hour for short windows, by day for long ones.
-    let format = if (query.range.end - query.range.start).num_seconds() <= 2 * 24 * 3600 {
-        "%Y-%m-%dT%H:00:00Z"
-    } else {
-        "%Y-%m-%dT00:00:00Z"
-    };
-
-    let sql = format!(
-        // `strftime` with the `unixepoch` modifier reads **seconds**; the
-        // timestamps are microseconds.
-        "SELECT strftime('{format}', created_at / 1000000.0, 'unixepoch') AS bucket, COUNT(*) AS value
-         FROM event WHERE {where_clause} AND {pageviews}
-         GROUP BY bucket
-         ORDER BY bucket ASC",
-        where_clause = filters.clause(),
-        pageviews = PAGEVIEWS,
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let name: String = row.get(0)?;
@@ -1020,18 +951,12 @@ fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow
 
 /// The custom events, grouped by name.
 fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-    let filters = Filters::new(query);
+    let statement = crate::query::events(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    let sql = format!(
-        "SELECT COALESCE(event_name, 'unknown') AS name, COUNT(*) AS value
-         FROM event WHERE {where_clause} AND event_type = 'event'
-         GROUP BY name
-         ORDER BY value DESC, name ASC",
-        where_clause = filters.clause(),
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push(BreakdownRow {
@@ -1046,51 +971,15 @@ fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
 
 /// The raw event log.
 fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
-    let filters = Filters::logs(query);
+    let statement = crate::query::event_log(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    let sql = format!(
-        "SELECT id, website_id, visit_id, created_at, event_name, url, hostname, channel, data,
-                referrer, referrer_path, referrer_query, country, city, browser, os,
-                utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
-         FROM event WHERE {where_clause}
-         ORDER BY created_at DESC, id DESC
-         LIMIT {limit} OFFSET {offset}",
-        where_clause = filters.clause(),
-        limit = query.limit.clamp(1, 1000),
-        offset = query.offset.max(0),
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
-        out.push(EventRow {
-            id: row.get::<_, i64>(0)?.to_string(),
-            website_id: row.get(1)?,
-            session_id: row
-                .get::<_, Option<String>>(2)?
-                .map(|id| crate::session::format_visit_id(parse_uuid(&id))),
-            created_at: from_ts(row.get(3)?),
-            name: row.get(4)?,
-            url: row.get(5)?,
-            hostname: row.get(6)?,
-            channel: row.get(7)?,
-            data: row.get(8)?,
-            referrer: row.get(9)?,
-            referrer_path: row.get(10)?,
-            referrer_query: row.get(11)?,
-            country: row.get(12)?,
-            city: row.get(13)?,
-            browser: row.get(14)?,
-            os: row.get(15)?,
-            device: row.get(22)?,
-            utm_source: row.get(16)?,
-            utm_medium: row.get(17)?,
-            utm_campaign: row.get(18)?,
-            lcp: row.get(19)?,
-            inp: row.get(20)?,
-            cls: row.get(21)?,
-        });
+        out.push(crate::row::event_log_row(&SqliteRow(row))?);
     }
     Ok(out)
 }
@@ -1101,76 +990,38 @@ fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
 /// rows, not the whole window, so its cost does not grow with the size of the
 /// database.
 fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
-    let filters = Filters::logs(query);
-    let sql = format!(
-        "SELECT id, visit_id, session_start, created_at, url, title, referrer, referrer_path,
-                hostname, channel, browser, os, device, country, region, city, language, screen,
-                ip_prefix, user_agent
-         FROM event WHERE {where_clause}
-         ORDER BY created_at DESC, id DESC
-         LIMIT {limit}",
-        where_clause = filters.clause(),
-        limit = limit.clamp(1, 1_000_000),
-    );
+    let statement = crate::query::recent_events(query, limit, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
-        out.push(SessionEvent {
-            id: row.get(0)?,
-            visit_id: parse_uuid(&row.get::<_, String>(1)?),
-            session_start: row.get::<_, Option<i64>>(2)?.map(from_ts),
-            created_at: from_ts(row.get(3)?),
-            url: row.get(4)?,
-            title: row.get(5)?,
-            referrer: row.get(6)?,
-            referrer_path: row.get(7)?,
-            hostname: row.get(8)?,
-            channel: row.get(9)?,
-            browser: row.get(10)?,
-            os: row.get(11)?,
-            device: row.get(12)?,
-            country: row.get(13)?,
-            region: row.get(14)?,
-            city: row.get(15)?,
-            language: row.get(16)?,
-            screen: row.get(17)?,
-            ip_prefix: row.get::<_, String>(18)?,
-            user_agent: row.get::<_, String>(19)?,
-        });
+        out.push(crate::row::session_event_row(&SqliteRow(row))?);
     }
     Ok(out)
 }
 
 /// The revenue of a website over a window.
 fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<Revenue>> {
-    let filters = Filters::logs(query);
+    let statement = crate::query::revenue(query, &SqliteDialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
-    let sql = format!(
-        "SELECT id, website_id, visit_id, event_id, event_name, currency, revenue, created_at
-         FROM revenue WHERE {where_clause}
-         ORDER BY created_at DESC, id DESC
-         LIMIT {limit} OFFSET {offset}",
-        where_clause = filters.clause(),
-        limit = query.limit.clamp(1, 1000),
-        offset = query.offset.max(0),
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(filters.params().as_slice())?;
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
+        let row = SqliteRow(row);
         out.push(Revenue {
-            website_id: row.get(1)?,
-            visit_id: row
-                .get::<_, Option<String>>(2)?
-                .map(|id| parse_uuid(&id)),
-            event_id: row.get(3)?,
-            event_name: row.get(4)?,
-            currency: row.get(5)?,
-            revenue: row.get(6)?,
-            created_at: from_ts(row.get(7)?),
+            website_id: crate::row::Row::text(&row, "website_id")?.unwrap_or_default(),
+            visit_id: crate::row::Row::uuid(&row, "visit_id")?,
+            event_id: crate::row::Row::int(&row, "event_id")?,
+            event_name: crate::row::Row::text(&row, "event_name")?,
+            currency: crate::row::Row::text(&row, "currency")?.unwrap_or_default(),
+            revenue: crate::row::Row::float(&row, "revenue")?.unwrap_or_default(),
+            created_at: crate::row::Row::time(&row, "created_at")?.unwrap_or_default(),
         });
     }
     Ok(out)
