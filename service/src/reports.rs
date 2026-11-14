@@ -25,7 +25,7 @@ use crate::storage::{
 ///
 /// Everything else — the columns, the conditions, the counts — is in the
 /// shared queries (see [`crate::query`]).
-struct Duck;
+pub struct Duck;
 
 impl Dialect for Duck {
     /// DuckDB's parameters are positional: the number does not matter.
@@ -59,7 +59,7 @@ impl Dialect for Duck {
 }
 
 /// A row of DuckDB, read by the name of its column.
-struct DuckRow<'a>(&'a duckdb::Row<'a>);
+pub struct DuckRow<'a>(pub &'a duckdb::Row<'a>);
 
 impl crate::row::Row for DuckRow<'_> {
     fn text(&self, name: &str) -> Result<Option<String>> {

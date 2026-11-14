@@ -203,7 +203,14 @@ fn not_marked(included: &[String], dialect: &dyn Dialect, start: usize) -> (Stri
         clause.push(')');
     }
 
-    (clause, values)
+    // **The parentheses are not decoration.** The clause is joined to the
+    // others with `AND`, and `AND` binds tighter than `OR` — so an unbracketed
+    // `tag IS NULL OR (...)` turns the whole condition into
+    // `(... AND tag IS NULL) OR (...)`: the second half has no website and no
+    // time in it, and every unmarked row of the database gets counted.
+    //
+    // ⇒ ⇒ The clause is bracketed, so it is one condition among the others.
+    (format!("({clause})"), values)
 }
 
 /// A statement and the values that go with it.
@@ -413,8 +420,12 @@ pub fn recent_events(query: &ReportQuery, limit: i64, dialect: &dyn Dialect) -> 
 }
 
 /// The revenue of a window.
+///
+/// The revenue is written by the site owner, not by the tracker — so it has no
+/// marker, and the `revenue` table has no `tag` column to leave the marked
+/// traffic out by. ⇒ ⇒ The filters of a **log**, then.
 pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
-    let filters = Filters::new(query, dialect);
+    let filters = Filters::logs(query, dialect);
     let sql = format!(
         "SELECT id, website_id, visit_id, event_id, event_name, currency, revenue, created_at
          FROM revenue WHERE {where_clause}
@@ -425,4 +436,93 @@ pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
         offset = query.offset.max(0),
     );
     Statement::of(sql, filters.values().to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::TimeRange;
+
+    /// A dialect that numbers its placeholders — the one PostgreSQL uses.
+    struct Numbered;
+
+    impl Dialect for Numbered {
+        fn placeholder(&self, n: usize) -> String {
+            format!("${n}")
+        }
+        fn epoch_us(&self, expr: &str) -> String {
+            expr.to_string()
+        }
+        fn greatest(&self, a: &str, b: &str) -> String {
+            format!("GREATEST({a}, {b})")
+        }
+        fn cast_double(&self, expr: &str) -> String {
+            format!("CAST({expr} AS DOUBLE PRECISION)")
+        }
+        fn bucket(&self, granularity: Granularity, expr: &str) -> String {
+            format!("bucket({granularity:?}, {expr})")
+        }
+    }
+
+    #[test]
+    fn the_placeholders_are_numbered_in_order() {
+        let mut query = ReportQuery::new("site-1", TimeRange::last_days(7));
+        query.dimensions.url = Some("/pricing".to_string());
+        query.dimensions.browser = Some("Chrome".to_string());
+
+        let filters = Filters::logs(&query, &Numbered);
+        assert_eq!(
+            filters.clause(),
+            "website_id = $1 AND created_at >= $2 AND created_at < $3 AND url = $4 AND browser = $5"
+        );
+        assert_eq!(filters.values().len(), 5);
+    }
+
+    #[test]
+    fn an_empty_dimension_is_not_a_condition() {
+        let mut query = ReportQuery::new("site-1", TimeRange::last_days(7));
+        query.dimensions.url = Some(String::new());
+        query.dimensions.referrer = Some("https://example.com".to_string());
+
+        let filters = Filters::logs(&query, &Numbered);
+        assert_eq!(
+            filters.clause(),
+            "website_id = $1 AND created_at >= $2 AND created_at < $3 AND referrer = $4"
+        );
+        assert_eq!(filters.values().len(), 4);
+    }
+
+    #[test]
+    fn the_placeholders_stay_contiguous() {
+        let query = ReportQuery::new("site-1", TimeRange::last_days(7));
+        let filters = Filters::logs(&query, &Numbered);
+        assert_eq!(
+            filters.clause(),
+            "website_id = $1 AND created_at >= $2 AND created_at < $3"
+        );
+        assert_eq!(filters.values().len(), 3);
+    }
+
+    #[test]
+    fn the_marked_traffic_is_numbered_after_the_rest() {
+        let query = ReportQuery::new("site-1", TimeRange::last_days(7));
+        let filters = Filters::new(&query, &Numbered);
+        // The website, the two moments, and then one placeholder per marker.
+        let markers = crate::storage::marker_tags().len();
+        assert_eq!(filters.values().len(), 3 + markers);
+        assert!(filters.clause().contains(&format!("tag <> ${}", 4)));
+    }
+}
+
+/// The raw rows of a website — the deep read.
+///
+/// The field-level check reads the rows as they are stored, so the columns it
+/// asks for are the shared list (see [`crate::row::EVENT_COLUMNS`]).
+pub fn event_rows(website_id: &str, dialect: &dyn Dialect) -> Statement {
+    let sql = format!(
+        "SELECT {columns} FROM event WHERE website_id = {website} ORDER BY id ASC",
+        columns = crate::row::EVENT_COLUMNS,
+        website = dialect.placeholder(1),
+    );
+    Statement::of(sql, vec![Param::Text(website_id.to_string())])
 }

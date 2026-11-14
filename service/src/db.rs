@@ -79,6 +79,9 @@ impl crate::schema::Types for Duck {
     fn int(&self) -> String {
         "BIGINT".to_string()
     }
+    fn small(&self) -> String {
+        "INTEGER".to_string()
+    }
     fn real(&self) -> String {
         "DOUBLE".to_string()
     }

@@ -38,6 +38,8 @@ pub enum Kind {
     Uuid,
     /// A whole number.
     Int,
+    /// A small whole number — a count of days, a flag.
+    Small,
     /// A number with a fraction.
     Real,
     /// A moment in time — microseconds since the epoch.
@@ -121,6 +123,9 @@ pub trait Types {
     /// A whole number.
     fn int(&self) -> String;
 
+    /// A small whole number.
+    fn small(&self) -> String;
+
     /// A number with a fraction.
     fn real(&self) -> String;
 
@@ -142,6 +147,7 @@ pub fn column_ddl(column: &Column, types: &dyn Types) -> String {
         Kind::Text => types.text(),
         Kind::Uuid => types.uuid(),
         Kind::Int => types.int(),
+        Kind::Small => types.small(),
         Kind::Real => types.real(),
         Kind::Time => types.time(),
     });
@@ -288,7 +294,7 @@ pub const WEBSITE: &[Column] = &[
     Column::new("domain", Kind::Text),
     Column::required("created_at", Kind::Time),
     Column::required("updated_at", Kind::Time),
-    Column::with_default("retention_days", Kind::Int, "0"),
+    Column::with_default("retention_days", Kind::Small, "0"),
     Column::new("country_header", Kind::Text),
 ];
 
@@ -318,6 +324,9 @@ mod tests {
         fn int(&self) -> String {
             "BIGINT".to_string()
         }
+        fn small(&self) -> String {
+            "INTEGER".to_string()
+        }
         fn real(&self) -> String {
             "DOUBLE".to_string()
         }
@@ -340,6 +349,9 @@ mod tests {
             "TEXT".to_string()
         }
         fn int(&self) -> String {
+            "INTEGER".to_string()
+        }
+        fn small(&self) -> String {
             "INTEGER".to_string()
         }
         fn real(&self) -> String {
@@ -365,6 +377,9 @@ mod tests {
         }
         fn int(&self) -> String {
             "BIGINT".to_string()
+        }
+        fn small(&self) -> String {
+            "INTEGER".to_string()
         }
         fn real(&self) -> String {
             "DOUBLE PRECISION".to_string()

@@ -52,6 +52,9 @@ impl crate::schema::Types for Sqlite {
     fn int(&self) -> String {
         "INTEGER".to_string()
     }
+    fn small(&self) -> String {
+        "INTEGER".to_string()
+    }
     fn real(&self) -> String {
         "REAL".to_string()
     }
@@ -76,7 +79,7 @@ const TABLES: &[(&str, &[crate::schema::Column])] = &[
 ///
 /// Everything else — the columns, the conditions, the counts — is in the
 /// shared queries (see [`crate::query`]).
-struct SqliteDialect;
+pub struct SqliteDialect;
 
 impl Dialect for SqliteDialect {
     /// SQLite's parameters are numbered: `?1`, `?2`, …
@@ -109,7 +112,7 @@ impl Dialect for SqliteDialect {
 }
 
 /// A row of SQLite, read by the name of its column.
-struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
+pub struct SqliteRow<'a>(pub &'a rusqlite::Row<'a>);
 
 impl crate::row::Row for SqliteRow<'_> {
     fn text(&self, name: &str) -> Result<Option<String>> {
