@@ -60,103 +60,48 @@ use duckdb::Connection;
 ///   worked out of a bucket is not the fact.
 pub const SCHEMA_VERSION: i64 = 10;
 
-/// The columns of the `event` table.
-///
-/// One row per page view (or custom event). The field set mirrors Umami's
-/// `website_event` row for row.
-pub const EVENT_COLUMNS: &str = "
-    id              BIGINT NOT NULL,
-    website_id      VARCHAR NOT NULL,
-    visit_id        UUID NOT NULL,
-    visitor_id      UUID NOT NULL,
-    session_start   TIMESTAMP,
-    ip              VARCHAR NOT NULL DEFAULT '',
-    ip_prefix       VARCHAR NOT NULL DEFAULT '',
-    user_agent      VARCHAR NOT NULL DEFAULT '',
-    user_id         UUID,
-    created_at      TIMESTAMP NOT NULL,
+/// How DuckDB spells the kinds.
+pub struct Duck;
 
-    url             VARCHAR,
-    url_query       VARCHAR,
-    title           VARCHAR,
-
-    referrer        VARCHAR,
-    referrer_path   VARCHAR,
-    referrer_query  VARCHAR,
-    referrer_name   VARCHAR,
-    hostname        VARCHAR,
-    channel         VARCHAR,
-
-    browser         VARCHAR,
-    browser_version VARCHAR,
-    os              VARCHAR,
-    os_version      VARCHAR,
-    device          VARCHAR,
-    screen          VARCHAR,
-    language        VARCHAR,
-    country         VARCHAR,
-    region          VARCHAR,
-    city            VARCHAR,
-    latitude        DOUBLE,
-    longitude       DOUBLE,
-
-    utm_source      VARCHAR,
-    utm_medium      VARCHAR,
-    utm_campaign    VARCHAR,
-    utm_content     VARCHAR,
-    utm_term        VARCHAR,
-
-    gclid           VARCHAR,
-    fbclid          VARCHAR,
-    msclkid         VARCHAR,
-    ttclid          VARCHAR,
-    lifatid         VARCHAR,
-    twclid          VARCHAR,
-
-    lcp             DOUBLE,
-    inp             DOUBLE,
-    cls             DOUBLE,
-    fcp             DOUBLE,
-    ttfb            DOUBLE,
-
-    event_type      VARCHAR,
-    event_name      VARCHAR,
-    tag             VARCHAR,
-    data            VARCHAR";
-
-/// The columns of the `revenue` table.
-pub const REVENUE_COLUMNS: &str = "
-    id          BIGINT NOT NULL,
-    website_id  VARCHAR NOT NULL,
-    visit_id    UUID,
-    event_id    BIGINT,
-    event_name  VARCHAR,
-    currency    VARCHAR NOT NULL DEFAULT 'USD',
-    revenue     DOUBLE NOT NULL,
-    created_at  TIMESTAMP NOT NULL";
-
-/// The columns of the `website` table.
-pub const WEBSITE_COLUMNS: &str = "
-    id                VARCHAR PRIMARY KEY,
-    name              VARCHAR NOT NULL,
-    domain            VARCHAR,
-    created_at        TIMESTAMP NOT NULL,
-    updated_at        TIMESTAMP NOT NULL,
-    retention_days    INTEGER NOT NULL DEFAULT 0,
-    country_header    VARCHAR";
-
-/// The columns of the `meta` table.
-pub const META_COLUMNS: &str = "
-    key   VARCHAR PRIMARY KEY,
-    value VARCHAR";
+impl crate::schema::Types for Duck {
+    fn row_id(&self) -> String {
+        // **No key.** The fact tables are append only and are only ever read
+        // as a filtered scan, so a primary key would buy nothing and cost a
+        // lot (see the module's note).
+        "BIGINT NOT NULL".to_string()
+    }
+    fn text(&self) -> String {
+        "VARCHAR".to_string()
+    }
+    fn uuid(&self) -> String {
+        "UUID".to_string()
+    }
+    fn int(&self) -> String {
+        "BIGINT".to_string()
+    }
+    fn real(&self) -> String {
+        "DOUBLE".to_string()
+    }
+    fn time(&self) -> String {
+        "TIMESTAMP".to_string()
+    }
+}
 
 /// The tables of the schema, with their columns.
-const TABLES: &[(&str, &str)] = &[
-    ("event", EVENT_COLUMNS),
-    ("revenue", REVENUE_COLUMNS),
-    ("website", WEBSITE_COLUMNS),
-    ("meta", META_COLUMNS),
+///
+/// **The columns are the shared list** (see [`crate::schema`]) — one list for
+/// every engine, spelled here in DuckDB's dialect.
+const TABLES: &[(&str, &[crate::schema::Column])] = &[
+    ("event", crate::schema::EVENT),
+    ("revenue", crate::schema::REVENUE),
+    ("website", crate::schema::WEBSITE),
+    ("meta", crate::schema::META),
 ];
+
+/// The columns of a table, in DuckDB's spelling.
+fn columns_of(columns: &[crate::schema::Column]) -> String {
+    crate::schema::columns_ddl(columns, &Duck)
+}
 
 /// Create the schema if it does not exist.
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -168,7 +113,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             *table
         };
         conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS {quoted} ({columns});"
+            "CREATE TABLE IF NOT EXISTS {quoted} ({});",
+            columns_of(columns)
         ))?;
     }
 
@@ -203,7 +149,19 @@ pub fn schema_version(conn: &Connection) -> i64 {
 
 /// The names of the `event` table's columns, in order.
 pub fn event_columns() -> Vec<String> {
-    column_names(EVENT_COLUMNS)
+    crate::schema::names(crate::schema::EVENT)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The columns of the `event` table, in DuckDB's spelling.
+///
+/// The measurement examples ask for the schema this way — they need the same
+/// columns with **one** thing changed (a primary key, a different id type), and
+/// a string they can cut up cannot say that.
+pub fn event_columns_ddl() -> String {
+    columns_of(crate::schema::EVENT)
 }
 
 /// Copy the database into a new file, and say where the new file is.
@@ -229,13 +187,15 @@ pub fn compact_to_new_file(path: &Path, conn: &Connection) -> Result<PathBuf> {
 
     for (table, columns) in TABLES {
         let quoted = if *table == "user" { "\"user\"" } else { *table };
-        conn.execute_batch(&format!("CREATE TABLE fresh.{quoted} ({columns});"))?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE fresh.{quoted} ({});",
+            columns_of(columns)
+        ))?;
         // A table the file never had stays empty rather than failing the copy.
         if table_exists(conn, table) {
-            let names = column_names(columns);
+            let names = crate::schema::names(columns).join(", ");
             conn.execute_batch(&format!(
                 "INSERT INTO fresh.{quoted} ({names}) SELECT {names} FROM main.{quoted};",
-                names = names.join(", "),
             ))?;
         }
     }
@@ -355,19 +315,6 @@ pub fn event_row<'a>(
         &hit.tag,
         &hit.data,
     ]
-}
-
-/// The columns of a column definition, in order.
-///
-/// The definitions are written one per line, so the first word of each part is the
-/// column name.
-fn column_names(columns: &str) -> Vec<String> {
-    columns
-        .split(',')
-        .filter_map(|part| part.split_whitespace().next())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 /// Now, as a naive UTC timestamp.

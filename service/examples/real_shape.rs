@@ -18,8 +18,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use sumimi_service::db::EVENT_COLUMNS;
+use sumimi_service::db::Duck;
 use sumimi_service::pool::Db;
+use sumimi_service::schema;
 
 /// The traffic: a plausible spread.
 const VISITORS: i64 = 1_000_000;
@@ -130,8 +131,12 @@ fn main() -> anyhow::Result<()> {
         let path = PathBuf::from("/tmp/real-shape.duckdb");
         let _ = std::fs::remove_file(&path);
         let db = Db::open(&path, "512MB")?;
-        // The real columns, plus the identity column.
-        let columns = EVENT_COLUMNS.replace("visit_id        BIGINT NOT NULL,", &format!("visit_id BIGINT NOT NULL, {},", shape.ddl));
+        // The real columns, with the identity column's width changed.
+        let columns = schema::columns_ddl_with(
+            schema::EVENT,
+            &Duck,
+            &[("visitor_id", shape.ddl)],
+        );
         db.with_read(|conn| {
             conn.execute_batch(&format!("CREATE TABLE probe ({columns});"))?;
             Ok::<_, anyhow::Error>(())

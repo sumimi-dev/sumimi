@@ -22,6 +22,7 @@ pub mod pool;
 pub mod queue;
 pub mod reports;
 pub mod rss;
+pub mod schema;
 pub mod server;
 pub mod session;
 pub mod sqlite;

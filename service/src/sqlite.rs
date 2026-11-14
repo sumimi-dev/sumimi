@@ -31,6 +31,46 @@ use crate::storage::{
     SummaryMetrics, WebsitePatch, PAGEVIEWS,
 };
 
+/// How SQLite spells the kinds.
+///
+/// **A uuid is text.** SQLite has no uuid type, so the id is written as its
+/// text — the same way the session and the visitor's id are.
+struct Sqlite;
+
+impl crate::schema::Types for Sqlite {
+    fn row_id(&self) -> String {
+        // The rowid alias: SQLite counts the rows itself.
+        "INTEGER PRIMARY KEY".to_string()
+    }
+    fn text(&self) -> String {
+        "TEXT".to_string()
+    }
+    fn uuid(&self) -> String {
+        "TEXT".to_string()
+    }
+    fn int(&self) -> String {
+        "INTEGER".to_string()
+    }
+    fn real(&self) -> String {
+        "REAL".to_string()
+    }
+    fn time(&self) -> String {
+        // Microseconds since the epoch — an integer comparison.
+        "INTEGER".to_string()
+    }
+}
+
+/// The tables of the schema, with their columns.
+///
+/// **The columns are the shared list** (see [`crate::schema`]) — one list for
+/// every engine, spelled here in SQLite's dialect.
+const TABLES: &[(&str, &[crate::schema::Column])] = &[
+    ("event", crate::schema::EVENT),
+    ("revenue", crate::schema::REVENUE),
+    ("website", crate::schema::WEBSITE),
+    ("meta", crate::schema::META),
+];
+
 /// The SQLite backend.
 ///
 /// **One writer, a pool of readers.** SQLite in WAL mode lets many readers work
@@ -121,102 +161,20 @@ impl SqliteBackend {
         conn.pragma_update(None, "busy_timeout", 5_000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
-        conn.execute_batch(
-            r#"
--- One row per page view (or custom event). The field set mirrors Umami's
--- `website_event` row for row. No primary key beyond the row id: this table is
--- append only and is only ever read as a filtered scan.
-CREATE TABLE IF NOT EXISTS event (
-    id              INTEGER PRIMARY KEY,
-    website_id      TEXT NOT NULL,
-    visit_id        TEXT NOT NULL,
-    visitor_id      TEXT NOT NULL,
-    session_start   INTEGER,
-    ip              TEXT NOT NULL DEFAULT '',
-    ip_prefix       TEXT NOT NULL DEFAULT '',
-    user_agent      TEXT NOT NULL DEFAULT '',
-    user_id         BLOB,
-    created_at      INTEGER NOT NULL,
-
-    url             TEXT,
-    url_query       TEXT,
-    title           TEXT,
-
-    referrer        TEXT,
-    referrer_path   TEXT,
-    referrer_query  TEXT,
-    referrer_name   TEXT,
-    hostname        TEXT,
-    channel         TEXT,
-
-    browser         TEXT,
-    browser_version TEXT,
-    os              TEXT,
-    os_version      TEXT,
-    device          TEXT,
-    screen          TEXT,
-    language        TEXT,
-    country         TEXT,
-    region          TEXT,
-    city            TEXT,
-    latitude        REAL,
-    longitude       REAL,
-
-    utm_source      TEXT,
-    utm_medium      TEXT,
-    utm_campaign    TEXT,
-    utm_content     TEXT,
-    utm_term        TEXT,
-
-    gclid           TEXT,
-    fbclid          TEXT,
-    msclkid         TEXT,
-    ttclid          TEXT,
-    lifatid         TEXT,
-    twclid          TEXT,
-
-    lcp             REAL,
-    inp             REAL,
-    cls             REAL,
-    fcp             REAL,
-    ttfb            REAL,
-
-    event_type      TEXT,
-    event_name      TEXT,
-    tag             TEXT,
-    data            TEXT
-);
-CREATE INDEX IF NOT EXISTS event_website_created ON event (website_id, created_at);
-
-CREATE TABLE IF NOT EXISTS revenue (
-    id          INTEGER PRIMARY KEY,
-    website_id  TEXT NOT NULL,
-    visit_id    TEXT,
-    event_id    INTEGER,
-    event_name  TEXT,
-    currency    TEXT NOT NULL DEFAULT 'USD',
-    revenue     REAL NOT NULL,
-    created_at  INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS revenue_website_created ON revenue (website_id, created_at);
-
-CREATE TABLE IF NOT EXISTS website (
-    id              TEXT PRIMARY KEY,
-    name            TEXT NOT NULL,
-    domain          TEXT,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
-    retention_days  INTEGER NOT NULL DEFAULT 0,
-    country_header  TEXT
-);
-
-CREATE TABLE IF NOT EXISTS meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-);
-
-"#,
-        )?;
+        // The schema is **the shared list** (see [`crate::schema`]) in SQLite's
+        // dialect — one row per page view (or custom event), the field set
+        // mirroring Umami's `website_event` row for row.
+        let mut ddl = String::new();
+        for (table, columns) in TABLES {
+            ddl.push_str(&crate::schema::table_ddl(table, columns, &Sqlite));
+            ddl.push('\n');
+        }
+        // The two indexes the reports read by.
+        ddl.push_str(
+            "CREATE INDEX IF NOT EXISTS event_website_created ON event (website_id, created_at);\n\
+             CREATE INDEX IF NOT EXISTS revenue_website_created ON revenue (website_id, created_at);\n",
+        );
+        conn.execute_batch(&ddl)?;
 
         write_schema_version(conn)?;
         Ok(())
@@ -688,7 +646,7 @@ INSERT INTO event (
                     hit.ip,
                     hit.ip_prefix,
                     hit.user_agent,
-                    hit.user_id.map(|id| id.as_bytes().to_vec()),
+                    hit.user_id.map(|id| id.to_string()),
                     ts(hit.created_at),
                     hit.url,
                     hit.url_query,

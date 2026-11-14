@@ -42,10 +42,12 @@ fn main() -> anyhow::Result<()> {
     let conn = Connection::open(&path)?;
     conn.execute_batch(&format!("SET memory_limit='{limit}'; SET threads=2;"))?;
 
-    let plain_ddl = sumimi_service::db::EVENT_COLUMNS.to_string();
-    let pk_ddl = plain_ddl.replace(
-        "id              BIGINT NOT NULL",
-        "id              BIGINT PRIMARY KEY",
+    // The same columns — the row id spelled with a primary key, or without.
+    let plain_ddl = sumimi_service::db::event_columns_ddl();
+    let pk_ddl = sumimi_service::schema::columns_ddl_with(
+        sumimi_service::schema::EVENT,
+        &sumimi_service::db::Duck,
+        &[("id", "id BIGINT PRIMARY KEY")],
     );
     let ddl = if with_pk { pk_ddl.clone() } else { plain_ddl.clone() };
     conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;

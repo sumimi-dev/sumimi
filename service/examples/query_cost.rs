@@ -145,12 +145,13 @@ fn build(path: &std::path::Path, pk: bool, rows: i64) -> anyhow::Result<Db> {
     )?;
 
     let ddl = if pk {
-        sumimi_service::db::EVENT_COLUMNS.replace(
-            "id              BIGINT NOT NULL",
-            "id              BIGINT PRIMARY KEY",
+        sumimi_service::schema::columns_ddl_with(
+            sumimi_service::schema::EVENT,
+            &sumimi_service::db::Duck,
+            &[("id", "id BIGINT PRIMARY KEY")],
         )
     } else {
-        sumimi_service::db::EVENT_COLUMNS.to_string()
+        sumimi_service::db::event_columns_ddl()
     };
     conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
 

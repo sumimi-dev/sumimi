@@ -20,8 +20,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sumimi_service::db::EVENT_COLUMNS;
+use sumimi_service::db::Duck;
 use sumimi_service::pool::Db;
+use sumimi_service::schema;
 
 const VISITORS: i64 = 1_000_000;
 const EVENTS_PER_VISITOR: i64 = 30;
@@ -127,10 +128,8 @@ fn measure(path: &PathBuf, rows: i64, layout: &Layout, wide: bool) -> anyhow::Re
     let _ = std::fs::remove_file(path);
     let db = Db::open(path, "512MB")?;
     let ddl = if wide { "visitor_id HUGEINT" } else { "visitor_id BIGINT" };
-    let columns = EVENT_COLUMNS.replace(
-        "visit_id        BIGINT NOT NULL,",
-        &format!("visit_id BIGINT NOT NULL, {ddl},"),
-    );
+    // The real columns, with the identity column's width changed.
+    let columns = schema::columns_ddl_with(schema::EVENT, &Duck, &[("visitor_id", ddl)]);
     db.with_read(|conn| {
         conn.execute_batch(&format!("CREATE TABLE probe ({columns});"))?;
         Ok::<_, anyhow::Error>(())
@@ -201,7 +200,7 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .and_then(|v| v.parse().ok())
         .unwrap_or(10_000_000);
-    println!("{rows} rows, the real EVENT_COLUMNS, {VISITORS} visitors, {EVENTS_PER_VISITOR} events each\n");
+    println!("{rows} rows, the real columns, {VISITORS} visitors, {EVENTS_PER_VISITOR} events each\n");
     println!(
         "  {:<46} {:>10} {:>10} {:>12}",
         "the layout", "8 bytes", "16 bytes", "the difference"

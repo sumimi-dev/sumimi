@@ -47,7 +47,7 @@ fn parity() -> anyhow::Result<()> {
         // The real schema: the same 42 columns, the same expressions.
         conn.execute_batch(&format!(
             "CREATE TABLE event ({ddl});",
-            ddl = sumimi_service::db::EVENT_COLUMNS,
+            ddl = sumimi_service::db::event_columns_ddl(),
         ))?;
         let row = row_with(vec![
             ("session_id", uuid("md5((1 + (i / 2))::text || '-s')")),
@@ -286,15 +286,15 @@ fn build_ids(
     style: &str,
 ) -> anyhow::Result<f64> {
     let conn = Connection::open(path)?;
-    let ddl = sumimi_service::db::EVENT_COLUMNS
-        .replace(
-            "session_id      UUID NOT NULL",
-            &format!("session_id      {id_type} NOT NULL"),
-        )
-        .replace(
-            "visitor_id      UUID NOT NULL",
-            &format!("visitor_id      {id_type} NOT NULL"),
-        );
+    // The same columns, with the ids spelled in another type.
+    let ddl = sumimi_service::schema::columns_ddl_with(
+        sumimi_service::schema::EVENT,
+        &sumimi_service::db::Duck,
+        &[
+            ("visit_id", &format!("visit_id {id_type} NOT NULL")),
+            ("visitor_id", &format!("visitor_id {id_type} NOT NULL")),
+        ],
+    );
     conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
 
     // The three forms the ids are measured in: a short text, the 36-character
@@ -465,15 +465,15 @@ fn migration() -> anyhow::Result<()> {
     {
         let conn = Connection::open(&path)?;
         // The v3 schema: the same table, with the ids as text.
-        let ddl = sumimi_service::db::EVENT_COLUMNS
-            .replace(
-                "session_id      UUID NOT NULL",
-                "session_id      VARCHAR NOT NULL",
-            )
-            .replace(
-                "visitor_id      UUID NOT NULL",
-                "visitor_id      VARCHAR NOT NULL",
-            );
+        // The v3 schema: the same table, with the ids as text.
+        let ddl = sumimi_service::schema::columns_ddl_with(
+            sumimi_service::schema::EVENT,
+            &sumimi_service::db::Duck,
+            &[
+                ("visit_id", "visit_id VARCHAR NOT NULL"),
+                ("visitor_id", "visitor_id VARCHAR NOT NULL"),
+            ],
+        );
         conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
         conn.execute_batch(
             "CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR);

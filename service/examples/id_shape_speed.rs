@@ -18,8 +18,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use sumimi_service::db::EVENT_COLUMNS;
+use sumimi_service::db::Duck;
 use sumimi_service::pool::Db;
+use sumimi_service::schema;
 
 const VISITORS: i64 = 1_000_000;
 const EVENTS_PER_VISITOR: i64 = 30;
@@ -188,12 +189,13 @@ fn main() -> anyhow::Result<()> {
         // The real columns, with the two ids in this version's shape.
         // The real columns, with the visitor id put in where the row has it:
         // right after the visit id.
-        let columns = EVENT_COLUMNS.replace(
-            "visit_id        BIGINT NOT NULL,",
-            &format!(
-                "visit_id {} NOT NULL, visitor_id {},",
-                version.visit, version.visitor
-            ),
+        let columns = schema::columns_ddl_with(
+            schema::EVENT,
+            &Duck,
+            &[
+                ("visit_id", &format!("visit_id {} NOT NULL", version.visit)),
+                ("visitor_id", &format!("visitor_id {}", version.visitor)),
+            ],
         );
         db.with_read(|conn| {
             conn.execute_batch(&format!("CREATE TABLE probe ({columns});"))?;
