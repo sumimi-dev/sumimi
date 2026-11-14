@@ -33,6 +33,14 @@ use uuid::Uuid;
 /// out the id, and if it does not match the one the report used, the row was
 /// filed under the wrong session.
 ///
+/// **Nothing depends on that property.** It is a property of the rows *we*
+/// wrote, not of the type: a session the **client** named has an id that is a
+/// hash of its token and carries no start at all, and the rows imported from
+/// another system carry that system's ids. The reports group by the id and take
+/// the anchor of a duration from the stored `session_start` — they never work
+/// the id out again. ⇒ ⇒ So an id that came from elsewhere is **as good as one
+/// we made**: nothing has to be recomputed for it to be right.
+///
 /// The **start** itself is not in the id — sixteen bytes have no room for it —
 /// so it is **stored beside it** (`session_start`). The start is a fact: it is
 /// not worked out of a bucket.
