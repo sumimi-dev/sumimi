@@ -21,12 +21,67 @@
 //! ```
 //!
 //! and the fields it does not name keep the defaults they have everywhere else.
+//!
+//! **The kit is here, not in the private repository.** The dataset and the
+//! numbers it computes for itself are the **口径** — the truth the backends are
+//! measured against — and a truth that lives in the private repository only
+//! guards the private engines. ⇒ ⇒ So they live here, and every engine (the
+//! open-source ones and the private ones) is measured against the same truth.
+//!
+//! That is not tidiness either: the parenthesis bug in the reports (see
+//! [`crate::query`]) was invisible to every test in this repository — both
+//! engines had it, so they agreed with each other — and it was the independent
+//! expectations **here** that found it.
 
+pub mod conformance;
+pub mod dataset;
+pub mod deep;
+pub mod deep_duckdb;
+pub mod deep_sqlite;
+
+pub use conformance::{run, run_deep, write_rows, Failures};
+pub use dataset::{
+    query_for, start_date, Dataset, Expectations, Window, WindowExpectation, DAYS, SITES,
+};
+pub use deep::{diff, DeepRead, StoredRow};
+
+use anyhow::Result;
 use chrono::NaiveDateTime;
 use uuid::Uuid;
 
 use crate::models::{Hit, HitKind};
+use crate::storage::Storage;
 use crate::ua::uuid_from_text;
+
+/// Run the whole suite against one backend.
+///
+/// The websites are created first — the backend assigns their ids — and the dataset
+/// is built around those ids, so the traffic always lands on the right sites.
+///
+/// `deep` is optional: it is the field-level check, which needs a backend that can
+/// hand back its raw rows.
+pub fn run_all(
+    storage: &dyn Storage,
+    deep: Option<&dyn DeepRead>,
+    visitors_per_day: i64,
+) -> Result<()> {
+    let dataset = prepare(storage, visitors_per_day)?;
+    run(storage, &dataset)?;
+    if let Some(deep) = deep {
+        run_deep(deep, &dataset)?;
+    }
+    Ok(())
+}
+
+/// Create the websites and build the dataset around their ids.
+pub fn prepare(storage: &dyn Storage, visitors_per_day: i64) -> Result<Dataset> {
+    let mut ids = Vec::new();
+    for (name, domain) in SITES {
+        let website = storage.create_website(name, Some(domain), 0, None)?;
+        ids.push(website.id);
+    }
+    Ok(dataset::build(visitors_per_day, &ids))
+}
 
 /// The text fields of a hit.
 ///

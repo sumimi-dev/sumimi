@@ -438,6 +438,20 @@ pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     Statement::of(sql, filters.values().to_vec())
 }
 
+
+/// The raw rows of a website — the deep read.
+///
+/// The field-level check reads the rows as they are stored, so the columns it
+/// asks for are the shared list (see [`crate::row::EVENT_COLUMNS`]).
+pub fn event_rows(website_id: &str, dialect: &dyn Dialect) -> Statement {
+    let sql = format!(
+        "SELECT {columns} FROM event WHERE website_id = {website} ORDER BY id ASC",
+        columns = crate::row::EVENT_COLUMNS,
+        website = dialect.placeholder(1),
+    );
+    Statement::of(sql, vec![Param::Text(website_id.to_string())])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,17 +526,4 @@ mod tests {
         assert_eq!(filters.values().len(), 3 + markers);
         assert!(filters.clause().contains(&format!("tag <> ${}", 4)));
     }
-}
-
-/// The raw rows of a website — the deep read.
-///
-/// The field-level check reads the rows as they are stored, so the columns it
-/// asks for are the shared list (see [`crate::row::EVENT_COLUMNS`]).
-pub fn event_rows(website_id: &str, dialect: &dyn Dialect) -> Statement {
-    let sql = format!(
-        "SELECT {columns} FROM event WHERE website_id = {website} ORDER BY id ASC",
-        columns = crate::row::EVENT_COLUMNS,
-        website = dialect.placeholder(1),
-    );
-    Statement::of(sql, vec![Param::Text(website_id.to_string())])
 }
