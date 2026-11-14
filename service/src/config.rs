@@ -228,6 +228,21 @@ pub struct Config {
     /// geolocate an address himself) turns them on with
     /// `SUMIMI_STORE_RAW=1`.
     pub store_raw: bool,
+    /// Store the **crawlers'** hits.
+    ///
+    /// **On by default**: a crawler is kept and **marked** (`bot-ai-…`,
+    /// `bot-se-…`, `bot-social-…`, `bot-other-…`), and the marked traffic is
+    /// left out of the numbers unless the dashboard asks for it.
+    ///
+    /// Turn it off with `SUMIMI_STORE_BOTS=0` and the crawlers are **dropped at
+    /// the door**, the way Umami drops them: the rows never exist, and the
+    /// answer still carries the token, so the client's session continues.
+    ///
+    /// **The trade**: the storage (crawlers can outnumber the humans a
+    /// hundredfold — mneme#105) against the ability to ask "how many AI
+    /// crawlers came?" at all. With them dropped, that question has no answer
+    /// for the past — only for what comes after.
+    pub store_bots: bool,
     /// Store the page title with every session.
     ///
     /// On by default: Umami stores the title, and that is the baseline. Turn it off
@@ -383,6 +398,10 @@ impl Config {
         let store_titles = env_flag("SUMIMI_STORE_TITLES", true);
         // The raw address and the raw agent: **off** by default.
         let store_raw = env_flag("SUMIMI_STORE_RAW", false);
+        // The crawlers: **on** by default — they are kept and marked, and the
+        // marked traffic is left out of the numbers. Turn it off and they are
+        // dropped at the door, the way Umami drops them.
+        let store_bots = env_flag("SUMIMI_STORE_BOTS", true);
         let store_full_referrer = env_flag("SUMIMI_STORE_FULL_REFERRER", true);
 
         let keep_query = env_flag("SUMIMI_KEEP_QUERY", true);
@@ -440,6 +459,7 @@ impl Config {
             country_header,
             keep_query,
             store_raw,
+            store_bots,
             store_titles,
             store_full_referrer,
             js_dir,

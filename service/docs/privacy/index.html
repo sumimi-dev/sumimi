@@ -179,6 +179,11 @@ Retention is a
             <td>Sixteen bytes — a hash of the visitor and the second the session began. Not reversible.</td>
           </tr>
           <tr>
+            <td>Crawlers</td>
+            <td>The <code>User-Agent</code> header</td>
+            <td>A crawler is <strong>kept and marked</strong> (<code>bot-ai-…</code>, <code>bot-se-…</code>, <code>bot-social-…</code>, <code>bot-other-unknown</code>) ⇒ ⇒ the marked traffic is left out of the numbers unless the dashboard asks for it. Set <code>SUMIMI_STORE_BOTS=0</code> and the crawlers are <strong>not kept at all</strong> — the rows never exist.</td>
+          </tr>
+          <tr>
             <td>Custom event properties</td>
             <td>You</td>
             <td>Free-form, stored verbatim. <strong>Your responsibility</strong> — see the warning below.</td>

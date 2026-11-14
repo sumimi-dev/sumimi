@@ -39,6 +39,14 @@ impl Drop for WriterGuard {
 /// The writer's guard comes back with it: the thread has to live as long as
 /// the test, and stop when the test ends.
 fn app(name: &str) -> (axum::Router, std::sync::Arc<Db>, std::path::PathBuf, WriterGuard) {
+    app_with(name, |_| {})
+}
+
+/// The application, with the configuration changed first.
+fn app_with(
+    name: &str,
+    tweak: impl FnOnce(&mut Config),
+) -> (axum::Router, std::sync::Arc<Db>, std::path::PathBuf, WriterGuard) {
     let path = temp_db(name);
     let db = std::sync::Arc::new(Db::open(&path, "256MB").unwrap());
     db.with_write(|conn| {
@@ -66,6 +74,7 @@ fn app(name: &str) -> (axum::Router, std::sync::Arc<Db>, std::path::PathBuf, Wri
     )
     .unwrap();
     config.jwt_secret = "test-secret".to_string();
+    tweak(&mut config);
 
     // A short flush interval: the tests look at what was written.
     let (writer, _handle) = Writer::spawn_with(db.clone(), std::time::Duration::from_millis(200), 64, 100);
@@ -101,6 +110,19 @@ async fn written(db: &Db, sql: &str) -> i64 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     0
+}
+
+/// How many rows the query finds — **now**, without waiting.
+async fn count(db: &Db, sql: &str) -> i64 {
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare(sql)?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get::<_, i64>(0)?),
+            None => Ok(0),
+        }
+    })
+    .unwrap()
 }
 
 /// The body of a request, as a string.
@@ -496,6 +518,51 @@ async fn a_bot_is_stored_not_dropped() {
     // The hit is stored — the rows are there, they are just marked.
     let stored = written(&db, "SELECT count(*) FROM event").await;
     assert_eq!(stored, 1, "the bot's hit is stored");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// With the crawlers dropped (`SUMIMI_STORE_BOTS=0`), their hits never exist.
+///
+/// The answer still carries the token — the client cannot tell the difference,
+/// and its session continues.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_can_be_dropped_at_the_door() {
+    let (app, db, path, _guard) = app_with("bot-dropped", |config| {
+        config.store_bots = false;
+    });
+
+    let response = app
+        .clone()
+        .oneshot(umami_request(
+            r#"{"type":"event","payload":{"website":"website-1","url":"/one","userAgent":"Mozilla/5.0 (compatible; Googlebot/2.1)"}}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The token still goes back: the client's session continues.
+    let body = body_of(response).await;
+    assert!(body.contains("cache"), "the token still goes back: {body}");
+
+    // And nothing was written — the row never exists.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let stored = count(&db, "SELECT count(*) FROM event").await;
+    assert_eq!(stored, 0, "the crawler's hit was dropped");
+
+    // A human's hit is still stored — the switch is about the crawlers.
+    let response = app
+        .clone()
+        .oneshot(umami_request(
+            r#"{"type":"event","payload":{"website":"website-1","url":"/two","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = written(&db, "SELECT count(*) FROM event").await;
+    assert_eq!(stored, 1, "the human's hit is still stored");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

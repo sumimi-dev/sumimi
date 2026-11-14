@@ -389,6 +389,16 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         keep the raw address and the raw user agent as well; then the visitor identifier can be
         worked out again from the row, which is a privacy trade the site owner makes on
         purpose.</li>
+      <li><code>SUMIMI_STORE_BOTS</code> — whether to store the <strong>crawlers'</strong>
+        hits. It is <strong>on</strong> by default: a crawler is kept and
+        <strong>marked</strong> (<code>bot-ai-…</code>, <code>bot-se-…</code>,
+        <code>bot-social-…</code>, <code>bot-other-unknown</code>), and the marked
+        traffic is left out of the numbers unless the dashboard asks for it. Set it
+        to <code>0</code> and the crawlers are <strong>dropped at the door</strong>, the
+        way Umami drops them: the rows never exist. The trade is the storage
+        (crawlers can outnumber the humans a hundredfold) against the ability to ask
+        “how many AI crawlers came?” at all — with them dropped, that question has
+        no answer for the past, only for what comes after.</li>
       <li><code>SUMIMI_KEEP_QUERY</code> — whether to store the query string of the
         collected URLs. It is <strong>on</strong> by default, because that is what Umami
         stores and the marketing parameters (UTM, ad click ids) live in it — they are

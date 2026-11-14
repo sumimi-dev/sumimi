@@ -42,6 +42,29 @@ pub const DEVELOPER_IDS: [(&str, &str); 4] = [
 ];
 
 /// Read a header, ours first and Umami's second.
+/// The agent string of a request: **the payload's wins over the header's**.
+///
+/// One place, so the marker and the "is this a crawler" decision cannot
+/// disagree about which string they are looking at.
+fn agent<'a>(raw: &'a Payload, headers: &'a HeaderMap) -> &'a str {
+    raw.user_agent
+        .as_deref()
+        .filter(|agent| !agent.is_empty())
+        .unwrap_or_else(|| {
+            headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+        })
+}
+
+/// Is this request a crawler?
+///
+/// The same rule the marker uses — `ua::bot_kind` on the same string.
+fn is_crawler(raw: &Payload, headers: &HeaderMap) -> bool {
+    ua::bot_kind(agent(raw, headers)).is_some()
+}
+
 fn header<'a>(headers: &'a HeaderMap, names: [&str; 2]) -> Option<&'a str> {
     for name in names {
         if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
@@ -111,6 +134,11 @@ pub async fn send(
     let claims = header(&headers, CACHE_HEADERS)
         .and_then(|token| token::verify(&state.jwt_secret, token));
 
+    // A crawler the site owner does not want to keep: the hit is **dropped at
+    // the door**, the way Umami drops it. The token still goes back, so the
+    // client's session continues — the answer looks the same as always.
+    let crawler = is_crawler(&raw, &headers);
+
     let (hit, claims) = build_hit(
         &state,
         &headers,
@@ -122,8 +150,10 @@ pub async fn send(
     )?;
 
     // An error report is not an event: it is not stored and it does not count
-    // as one. The token still goes back, so the client keeps its session.
-    if kind != HitKind::Error {
+    // as one. A crawler is dropped when the site owner says so
+    // (`SUMIMI_STORE_BOTS=0`). The token still goes back in both cases, so the
+    // client keeps its session.
+    if kind != HitKind::Error && (state.config.store_bots || !crawler) {
         let taken = state.writer.push(hit);
 
         // The server is over capacity: the event was **not** stored. The client is
@@ -187,6 +217,10 @@ pub async fn collect(
         ..Default::default()
     };
 
+    // A crawler the site owner does not want to keep is dropped at the door
+    // (`SUMIMI_STORE_BOTS=0`), the way Umami drops it.
+    let crawler = is_crawler(&raw, &headers);
+
     let hit = build_hit(
         &state,
         &headers,
@@ -197,6 +231,9 @@ pub async fn collect(
         None,
     )?
     .0;
+    if crawler && !state.config.store_bots {
+        return Ok(StatusCode::OK.into_response());
+    }
     let taken = state.writer.push(hit);
 
     // The server is over capacity: the event was **not** stored. The client is
@@ -304,14 +341,7 @@ pub fn build_hit(
     // **The client may say who the visitor is** — Umami's rule. A server-side
     // import knows the visitor's address and browser better than the server
     // does: the server only sees the importer.
-    let user_agent = match raw.user_agent.as_deref() {
-        Some(agent) if !agent.is_empty() => agent.to_string(),
-        _ => headers
-            .get(axum::http::header::USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string(),
-    };
+    let user_agent = agent(&raw, headers).to_string();
     let info = ua::classify(&user_agent);
 
     let ip = match raw.ip.as_deref() {
@@ -436,17 +466,9 @@ pub fn build_hit(
     let tag = match tag {
         Some(tag) => Some(tag),
         None => {
-            let agent = raw
-                .user_agent
-                .as_deref()
-                .or_else(|| {
-                    headers
-                        .get(axum::http::header::USER_AGENT)
-                        .and_then(|v| v.to_str().ok())
-                })
-                .unwrap_or("");
-            // A crawler: marked with its kind (`bot`, `bot-ai`, `bot-google`, …).
-            ua::bot_kind(agent).map(str::to_string)
+            // A crawler: marked with its kind (`bot-ai-…`, `bot-se-…`,
+            // `bot-social-…`, `bot-other-unknown`).
+            ua::bot_kind(agent(&raw, headers)).map(str::to_string)
         }
     };
 
