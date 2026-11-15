@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     conn.execute_batch(&format!(
         r#"
 INSERT INTO event (
-    id, website_id, session_id, visitor_id, created_at,
+    id, website_id, visit_id, session_id, created_at,
     url, title, referrer, referrer_path, hostname,
     browser, browser_version, os, os_version, device, screen, language, country,
     utm_source, utm_medium, utm_campaign,
@@ -199,7 +199,7 @@ FROM generate_series(1, {rows}) t(i);
         backend.with_connection(|conn| {
             conn.execute_batch("SET preserve_insertion_order=false")?;
             let m = conn.query_row(
-                "SELECT COUNT(*), COUNT(DISTINCT visitor_id), COUNT(DISTINCT session_id)
+                "SELECT COUNT(*), COUNT(DISTINCT session_id), COUNT(DISTINCT visit_id)
                  FROM event WHERE website_id = 'w1'
                    AND created_at >= TIMESTAMP '2024-12-01' AND created_at < TIMESTAMP '2024-12-31'",
                 [],

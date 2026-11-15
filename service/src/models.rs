@@ -18,15 +18,16 @@ pub struct Hit {
     /// The visit: a stretch of activity inside one visit window.
     ///
     /// This is what Umami calls a `visit_id` (its `session_id` is our
-    /// `visitor_id`). We name it after what it is.
+    /// visitor). We name it after what it is.
     ///
     /// It is **sixteen bytes** (see [`crate::session::VisitId`]).
     pub visit_id: crate::session::VisitId,
     /// The visitor.
     ///
-    /// This is what Umami calls a `session_id`. It is a pure function of the
-    /// address prefix, the user agent and the website — so it is the same on
-    /// every server, and the reports count the visitors out of it.
+    /// This is what Umami calls a `session_id` — and the **column** is called
+    /// that too, so the two tables can be read as one. It is a pure function
+    /// of the address prefix, the user agent and the website — so it is the
+    /// same on every server, and the reports count the visitors out of it.
     pub visitor_id: Uuid,
     /// The moment the session started.
     ///
@@ -667,8 +668,10 @@ pub struct EventRow {
     pub id: String,
     /// The website it belongs to.
     pub website_id: String,
-    /// The session it belongs to.
+    /// The visitor it belongs to — Umami's `session_id`.
     pub session_id: Option<String>,
+    /// The stretch of activity it belongs to — Umami's `visit_id`.
+    pub visit_id: Option<String>,
     /// When it happened.
     pub created_at: chrono::NaiveDateTime,
     /// The event name (`pageview` for a plain page view).

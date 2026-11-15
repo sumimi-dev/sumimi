@@ -76,8 +76,8 @@ pub struct WindowExpectation {
     pub timeseries: Vec<(String, i64)>,
     /// The sessions: `(session id, views, duration in seconds)`.
     pub sessions: Vec<(String, i64, i64)>,
-    /// The event log rows, newest first: `(id, url, name, created at)`.
-    pub event_log: Vec<(String, Option<String>, Option<String>, NaiveDateTime)>,
+    /// The event log rows, newest first: `(visit id, visitor id, url, name, created at)`.
+    pub event_log: Vec<EventLogRow>,
     /// The revenue records in the window.
     pub revenue: Vec<(String, String, f64)>,
 }
@@ -97,8 +97,8 @@ pub struct Expectations {
     pub sessions: usize,
 }
 
-/// One row of the event log: the session, the page, the event name and when.
-type EventLogRow = (String, Option<String>, Option<String>, NaiveDateTime);
+/// One row of the event log: the two ids, the page, the event name and when.
+pub type EventLogRow = (String, String, Option<String>, Option<String>, NaiveDateTime);
 
 /// The dataset itself.
 #[derive(Debug)]
@@ -1334,6 +1334,7 @@ fn compute_expectations(
                     (
                         (
                             crate::session::format_visit_id(hit.visit_id),
+                            hit.visitor_id.to_string(),
                             hit.url.clone(),
                             hit.name.clone(),
                             hit.created_at,
@@ -1342,7 +1343,7 @@ fn compute_expectations(
                     )
                 })
                 .collect();
-        event_log.sort_by(|a, b| b.0 .3.cmp(&a.0 .3).then_with(|| b.1.cmp(&a.1)));
+        event_log.sort_by(|a, b| b.0 .4.cmp(&a.0 .4).then_with(|| b.1.cmp(&a.1)));
         event_log.truncate(window.limit.clamp(1, 1000) as usize);
         let event_log: Vec<EventLogRow> = event_log.into_iter().map(|(row, _)| row).collect();
 

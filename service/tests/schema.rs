@@ -79,7 +79,7 @@ fn the_ids_are_unique_without_a_constraint() {
     for i in 0..500 {
         db.with_write(|conn| {
             conn.execute(
-                "INSERT INTO event (id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent, created_at, url)
+                "INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url)
                  VALUES (?1, 'w', ?2, ?3, '', '203.0.113', 'UA', now(), '/x')",
                 duckdb::params![
                     i as i64,
@@ -123,7 +123,7 @@ fn deleting_a_website_removes_its_events() {
         )?;
         for (id, website) in [(1i64, "w1"), (2, "w1"), (3, "w2")] {
             conn.execute(
-                "INSERT INTO event (id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent, created_at, url)
+                "INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url)
                  VALUES (?1, ?2, ?3, ?4, '', '203.0.113', 'UA', now(), '/x')",
                 duckdb::params![
                     id,
@@ -338,12 +338,15 @@ fn an_older_database_is_replaced_by_an_empty_one() {
 
         let visitor_id: i64 = conn.query_row(
             "SELECT count(*) FROM duckdb_columns()
-             WHERE table_name = 'event' AND column_name = 'visitor_id'
+             WHERE table_name = 'event' AND column_name = 'session_id'
                AND data_type = 'UUID'",
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(visitor_id, 1, "the visitor id is stored again, as sixteen bytes");
+        assert_eq!(
+            visitor_id, 1,
+            "the visitor id is stored again, as sixteen bytes, under Umami's name"
+        );
 
         assert_eq!(primary_keys(conn, "event"), 0, "the index must be gone");
         Ok::<_, anyhow::Error>(())

@@ -245,7 +245,7 @@ and event rows carry.
 | Referrer | `referrer` (host), `referrer_path`, `referrer_query`, `referrer_name` (the display name) |
 | Site | `hostname` |
 | Environment | `browser`, `browser_version`, `os`, `os_version`, `device`, `screen`, `language`, `country`, `region`, `city`, `latitude`, `longitude` |
-| Identity | `visitor_id` (the visitor), `visit_id` (the session), `user_id` (the visitor as the site owner knows them), `session_start` (when the session began) |
+| Identity | `session_id` (the visitor — Umami's name for it), `visit_id` (the session), `user_id` (the visitor as the site owner knows them), `session_start` (when the session began) |
 | Marketing | `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term` |
 | Ad click ids | `gclid`, `fbclid`, `msclkid`, `ttclid`, `lifatid`, `twclid` |
 | Performance | `lcp`, `inp`, `cls`, `fcp`, `ttfb` (Core Web Vitals) |
@@ -538,7 +538,7 @@ event(
     website_id,
     created_at,
 
-    visitor_id UUID,         -- the visitor: 16 bytes (schema v10)
+    session_id UUID,         -- the visitor: 16 bytes (schema v10; named in v11)
     visit_id UUID,           -- the session: 16 bytes (schema v10)
     user_id UUID,            -- the visitor as the site owner knows them (nullable)
     session_start TIMESTAMP, -- when the session began: a fact, stored (schema v10)
@@ -585,10 +585,17 @@ cost at report time.
 the readings (country, region, city, browser, system, device) are all that the reports
 need. ⇒ ⇒ The default is the clean one and the switch is the site owner's.
 
-**The session id is sixteen bytes** (schema v10): `SHA-256(visitor_id ‖ the second the
+**The session id is sixteen bytes** (schema v10): `SHA-256(session_id ‖ the second the
 session began)`. ⇒ ⇒ **The start itself is not in the id** — sixteen bytes have no room
 for it — so it is **stored beside it**, in `session_start` ⇒ ⇒ the start of a session is
 a fact about what happened, and it is written down rather than worked out of a bucket.
+
+**The two ids carry Umami's names** (schema v11): `session_id` is the visitor (their
+"session" is our visitor) and `visit_id` is the session (their "visit" is our session).
+⇒ ⇒ The two tables can be read as one, and a row that came from Umami sits in the same
+columns with Umami's ids in them ⇒ ⇒ **what an id is made of is not in the table**: a
+column of UUIDs holds the id whoever made it, so the numbers of two datasets are only
+comparable **within** one of them.
 
 ⇒ ⇒ A session is cut by a **30-minute idle timeout**, made when the event arrives ⇒ ⇒
 the state that decides it lives in the **client's signed token** (`x-sumimi-cache`, or
@@ -774,11 +781,15 @@ Two things follow from it ✓:
 **writing the same data into both and comparing row by row** ✓ ✓ (the parity
 suite in the private edition ✓ ✓): every field, every value ✓ ✓.
 
-Our names differ from the reference implementation's ✓ — `visitor_id` for
-`user_id` ✓, `url` for `url_path` ✓, `title` for `page_title` ✓, `referrer` for
-`referrer_domain` ✓, and `channel` for `referrer_type` ✓ ✓ — but **the value
-sets have to match** ✓ ✓ (the channel buckets: direct ✓, paidAds ✓, referral ✓,
-affiliate ✓, sms ✓, llm ✓, Search ✓, Social ✓, email ✓, Shopping ✓, Video ✓ ✓).
+Our names differ from the reference implementation's ✓ — `url` for `url_path` ✓,
+`title` for `page_title` ✓, `referrer` for `referrer_domain` ✓, and `channel`
+for `referrer_type` ✓ ✓ — but **the value sets have to match** ✓ ✓ (the channel
+buckets: direct ✓, paidAds ✓, referral ✓, affiliate ✓, sms ✓, llm ✓, Search ✓,
+Social ✓, email ✓, Shopping ✓, Video ✓ ✓).
+
+**The two ids do not differ any more** ✓ (schema v11) — `session_id` is the
+visitor on both sides ✓ ✓, `visit_id` is the session on both sides ✓ ✓ ⇒ ⇒ the
+two tables can be read as one ✓ ✓.
 
 **The fields the reference does not have** ✓ — the coordinates ✓, the referrer's
 display name ✓ — we carry anyway ✓ ✓: a field is a capability ✓, and the rule is

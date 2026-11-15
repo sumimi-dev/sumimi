@@ -6,7 +6,7 @@
 //! report reads — and a column that one engine has and the other does not is
 //! a report that answers a different question on each of them.
 //!
-//! That is not a theory. When v10 added `visitor_id` and `session_start`, the
+//! That is not a theory. When v10 added the visitor id and `session_start`, the
 //! two engines of this repository were changed by hand and the third
 //! (PostgreSQL, in the private repository) was missed: its reports were still
 //! counting the visitors of v9 and were still anchoring the session's length
@@ -218,11 +218,24 @@ pub fn names(columns: &[Column]) -> Vec<&'static str> {
 /// `website_event` row for row. The row id is the engine's own; the two ids
 /// are sixteen bytes (a UUID); the session's start is a fact, stored beside
 /// the id.
+///
+/// **The two ids are named the way Umami names them.** Umami's `session_id`
+/// is the identity that spans many visits (their "session" is our visitor),
+/// and their `visit_id` is one stretch of that identity's activity. Ours are
+/// the same two things — the identity is our **visitor**, the stretch is our
+/// **session** — so the columns are `session_id` and `visit_id`, and the two
+/// tables can be read as one.
+///
+/// **What an id is made of is not in the table.** A column of UUIDs holds the
+/// id whoever made it: ours are made by our rule (see [`crate::ua`]), and a
+/// row that came from Umami carries the id Umami's rule made (see
+/// [`crate::session`]). That is why the two can share the column — and why
+/// the numbers of two datasets are only comparable within one of them.
 pub const EVENT: &[Column] = &[
     Column::required("id", Kind::RowId),
     Column::required("website_id", Kind::Text),
     Column::required("visit_id", Kind::Uuid),
-    Column::required("visitor_id", Kind::Uuid),
+    Column::required("session_id", Kind::Uuid),
     Column::new("session_start", Kind::Time),
     Column::with_default("ip", Kind::Text, "''"),
     Column::with_default("ip_prefix", Kind::Text, "''"),

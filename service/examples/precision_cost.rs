@@ -49,11 +49,11 @@ const UNITS: [(&str, &str); 4] = [
 
 /// The id the report works out for itself when the pair is stored instead of
 /// an id: a 128-bit hash of the visitor and the window start, as a UUID.
-const MD5_KEY: &str = "CAST(substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 1, 8) \
- || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 9, 4) \
- || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 13, 4) \
- || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 17, 4) \
- || '-' || substr(md5(visitor_id::VARCHAR || '-' || window_start::VARCHAR), 21, 12) AS UUID)";
+const MD5_KEY: &str = "CAST(substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 1, 8) \
+ || '-' || substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 9, 4) \
+ || '-' || substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 13, 4) \
+ || '-' || substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 17, 4) \
+ || '-' || substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 21, 12) AS UUID)";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -162,7 +162,7 @@ fn real(path: &Path) -> Result<()> {
         .into_iter()
         .filter(|c| names.iter().any(|n| n == c))
         .collect();
-    let ids: Vec<&str> = ["session_id", "visit_id", "visitor_id", "user_id"]
+    let ids: Vec<&str> = ["session_id", "visit_id", "user_id"]
         .into_iter()
         .filter(|c| names.iter().any(|n| n == c))
         .collect();
@@ -263,10 +263,12 @@ fn variants(path: &Path) -> Result<()> {
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let has = |name: &str| names.iter().any(|n| n == name);
-    let session_col = if has("session_id") {
-        "session_id"
-    } else if has("visit_id") {
+    // The column that identifies **one stretch of activity** — ours is
+    // `visit_id`; the older schemas called it `session_id`.
+    let session_col = if has("visit_id") {
         "visit_id"
+    } else if has("session_id") {
+        "session_id"
     } else {
         return Err(anyhow!("the event table has no session id column"));
     };
@@ -314,7 +316,7 @@ fn variants(path: &Path) -> Result<()> {
             // started, as one string. No hash — the id says what it is.
             name: "visitor+second",
             select: format!(
-                "* EXCLUDE ({session_col}), visitor_id::VARCHAR || '-' || \
+                "* EXCLUDE ({session_col}), session_id::VARCHAR || '-' || \
                           hash({session_col})::VARCHAR AS visit_id"
             ),
             key: Some("visit_id".to_string()),
@@ -339,7 +341,7 @@ fn variants(path: &Path) -> Result<()> {
             select: format!(
                 "* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS window_start"
             ),
-            key: Some("hash(visitor_id, window_start)".to_string()),
+            key: Some("hash(session_id, window_start)".to_string()),
             bucket: "created_at",
             time: true,
         },
@@ -348,7 +350,7 @@ fn variants(path: &Path) -> Result<()> {
             select: format!(
                 "* EXCLUDE ({session_col}), hash({session_col})::UBIGINT AS window_start"
             ),
-            key: Some("(visitor_id, window_start)".to_string()),
+            key: Some("(session_id, window_start)".to_string()),
             bucket: "created_at",
             time: true,
         },
@@ -374,7 +376,7 @@ fn variants(path: &Path) -> Result<()> {
             if variant.time {
                 if let Some(key) = &variant.key {
                     let summary = format!(
-                        "SELECT COUNT(*), COUNT(DISTINCT visitor_id), COUNT(DISTINCT {key}) FROM t"
+                        "SELECT COUNT(*), COUNT(DISTINCT session_id), COUNT(DISTINCT {key}) FROM t"
                     );
                     let group = format!(
                         "SELECT COUNT(*) FROM (SELECT {key} k, COUNT(*) n FROM t GROUP BY 1)"

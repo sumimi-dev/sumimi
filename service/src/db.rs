@@ -58,7 +58,11 @@ use duckdb::Connection;
 ///   bytes have no room for the segment's start, so the start is stored
 ///   **beside** the id (`session_start`) — it is a fact, and a fact that is
 ///   worked out of a bucket is not the fact.
-pub const SCHEMA_VERSION: i64 = 10;
+/// * v11 — the visitor's column is called **`session_id`**, the name Umami
+///   gives it: Umami's `session_id` is the visitor and their `visit_id` is
+///   the stretch of activity, which is what our `visit_id` is. The ids
+///   themselves did not change — the column did.
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// How DuckDB spells the kinds.
 pub struct Duck;

@@ -43,7 +43,7 @@ CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
 CREATE OR REPLACE MACRO session_of(n) AS uuid_of('session-' || n);
 
 INSERT INTO event (
-    id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent, created_at, url, url_query, title,
+    id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url, url_query, title,
     referrer, referrer_path, referrer_query, hostname,
     browser, browser_version, os, os_version, device, screen, language,
     country, region, city,
@@ -73,7 +73,7 @@ FROM generate_series(1, 50000) t(i);
 "#,
         )?;
         conn.execute(
-            "INSERT INTO event (id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent,
+            "INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
                     created_at, url, hostname,
                     event_type, event_name, tag, data)
              VALUES (999999, 'w1', session_of(1), uuid_of('visitor-1'), '203.0.113.7', '203.0.113',

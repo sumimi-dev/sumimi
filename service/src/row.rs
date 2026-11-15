@@ -46,7 +46,10 @@ pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
     Ok(EventRow {
         id: row.int("id")?.unwrap_or_default().to_string(),
         website_id: row.text("website_id")?.unwrap_or_default(),
-        session_id: row.uuid("visit_id")?.map(format_visit_id),
+        // The two ids, named the way Umami names them: the `session_id` is
+        // the visitor, the `visit_id` is the stretch of activity it is in.
+        session_id: row.uuid("session_id")?.map(|id| id.to_string()),
+        visit_id: row.uuid("visit_id")?.map(format_visit_id),
         created_at: row.time("created_at")?.unwrap_or_default(),
         name: row.text("event_name")?,
         url: row.text("url")?,
@@ -106,7 +109,7 @@ pub fn visit_id_text(id: VisitId) -> String {
 /// The statement that reads them is the shared one (see [`crate::query`]); the
 /// list is here so that the three engines ask for the same columns in the
 /// same order.
-pub const EVENT_COLUMNS: &str = "id, website_id, visit_id, visitor_id, session_start, \
+pub const EVENT_COLUMNS: &str = "id, website_id, visit_id, session_id, session_start, \
      ip, ip_prefix, user_agent, user_id, created_at, \
      url, url_query, title, \
      referrer, referrer_path, referrer_query, referrer_name, hostname, channel, \
@@ -127,7 +130,8 @@ pub fn hit_row(row: &dyn Row) -> Result<Hit> {
     Ok(Hit {
         website_id: row.text("website_id")?.unwrap_or_default(),
         visit_id: row.uuid("visit_id")?.unwrap_or_else(Uuid::nil),
-        visitor_id: row.uuid("visitor_id")?.unwrap_or_else(Uuid::nil),
+        // The visitor — the column is `session_id`, the name Umami gives it.
+        visitor_id: row.uuid("session_id")?.unwrap_or_else(Uuid::nil),
         session_start: row.time("session_start")?,
         ip: row.text("ip")?.unwrap_or_default(),
         ip_prefix: row.text("ip_prefix")?.unwrap_or_default(),

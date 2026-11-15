@@ -11,6 +11,10 @@ use crate::storage::{Dimension, Storage};
 use super::dataset::{query_for, Dataset, WindowExpectation};
 use super::deep::DeepRead;
 
+/// One row of the event log as the two sides compare it: the two ids, the
+/// page, the event name and the moment.
+type LoggedRow = (String, String, Option<String>, Option<String>, i64);
+
 /// What went wrong, if something did.
 #[derive(Debug, Default)]
 pub struct Failures {
@@ -243,12 +247,16 @@ fn check_window(storage: &dyn Storage, expected: &WindowExpectation, failures: &
     }
 
     // The event log. Same: the ties are not part of the contract.
+    //
+    // Both ids are checked: the `visit_id` is the stretch of activity, the
+    // `session_id` is the visitor (Umami's names for the two).
     match storage.event_log(&query) {
         Ok(rows) => {
-            let mut got: Vec<(String, Option<String>, Option<String>, i64)> = rows
+            let mut got: Vec<LoggedRow> = rows
                 .into_iter()
                 .map(|row| {
                     (
+                        row.visit_id.unwrap_or_default(),
                         row.session_id.unwrap_or_default(),
                         row.url,
                         row.name,
@@ -257,12 +265,13 @@ fn check_window(storage: &dyn Storage, expected: &WindowExpectation, failures: &
                 })
                 .collect();
             got.sort();
-            let mut want: Vec<(String, Option<String>, Option<String>, i64)> = expected
+            let mut want: Vec<LoggedRow> = expected
                 .event_log
                 .iter()
-                .map(|(session, url, name, at)| {
+                .map(|(visit, visitor, url, name, at)| {
                     (
-                        session.clone(),
+                        visit.clone(),
+                        visitor.clone(),
                         url.clone(),
                         name.clone(),
                         at.and_utc().timestamp_millis(),

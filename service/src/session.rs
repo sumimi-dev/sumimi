@@ -166,8 +166,11 @@ impl Sessions {
 /// **The shape is sixteen bytes**, the same as the visitor's id:
 ///
 /// ```text
-/// visit_id = sha256(visitor_id ‖ the second the session started)
+/// visit_id = sha256(session_id ‖ the second the session started)
 /// ```
+///
+/// (`session_id` is the visitor's id — the column carries Umami's name for
+/// it.)
 ///
 /// ⇒ Two sessions can only collide if their visitors are the same and they
 /// start in the same second — which is the same session anyway.

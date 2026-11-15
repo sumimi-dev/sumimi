@@ -220,7 +220,7 @@ Retention is a
       Analytics needs some way to say "this is the same person as yesterday". Sumimi does
       that with <strong>one one-way hash</strong>:
     </p>
-    <pre class="shell"><code>visitor_id = SHA-256(address ‖ user_agent ‖ website_id)</code></pre>
+    <pre class="shell"><code>session_id = SHA-256(address ‖ user_agent ‖ website_id)</code></pre>
     <p>
       The first sixteen bytes of that digest are the visitor's identifier. It is written to
       every row, and the visitor count is the number of distinct identifiers in the window.

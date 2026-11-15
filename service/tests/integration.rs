@@ -246,7 +246,7 @@ async fn api_matches_the_shared_report_layer() {
             let (ip, ip_prefix, user_agent) =
                 sumimi_service::testing::visitor_identity(&sumimi_service::ua::uuid_from_text(visitor));
             conn.execute(
-                "INSERT INTO event (id, website_id, visit_id, visitor_id, ip, ip_prefix, user_agent,
+                "INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
                         created_at, url, event_type, browser, os, device)
                  VALUES (?1, 'website-1', ?2, ?7, ?3, ?4, ?5, now(), ?6, 'pageview', 'Chrome', 'macOS', 'desktop')",
                 duckdb::params![

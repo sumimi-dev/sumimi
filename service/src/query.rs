@@ -233,11 +233,16 @@ impl Statement {
 /// The page views are counted without the custom events; the visitors and the
 /// visits are counted over everything — a visitor who only fired a custom
 /// event is still a visitor.
+///
+/// **The two ids are the ones Umami counts.** The visitors are the distinct
+/// `session_id` (our visitor — Umami's name for the same thing) and the
+/// visits are the distinct `visit_id` (our session). The names are the
+/// reference implementation's, so the two statements are the same statement.
 pub fn summary(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::new(query, dialect);
     let sql = format!(
         "SELECT COUNT(*) FILTER (WHERE {pageviews}),
-                COUNT(DISTINCT visitor_id),
+                COUNT(DISTINCT session_id),
                 COUNT(DISTINCT visit_id)
          FROM event WHERE {filters}",
         pageviews = PAGEVIEWS,
@@ -309,10 +314,11 @@ pub fn breakdown(
 
     // The visitors are counted by their **id** — the hash of the address and
     // the agent. It is stored, so the count does not depend on the raw
-    // address being stored too (it is not, by default).
+    // address being stored too (it is not, by default). The column is
+    // `session_id` (Umami's name for the visitor).
     let aggregate = match dimension.aggregate() {
         "views" => "COUNT(*)",
-        _ => "COUNT(DISTINCT visitor_id)",
+        _ => "COUNT(DISTINCT session_id)",
     };
 
     let sql = format!(
@@ -386,7 +392,7 @@ pub fn query_strings(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT id, website_id, visit_id, created_at, event_name, url, hostname, channel, data,
+        "SELECT id, website_id, visit_id, session_id, created_at, event_name, url, hostname, channel, data,
                 referrer, referrer_path, referrer_query, country, city, browser, os,
                 utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
          FROM event WHERE {where_clause}

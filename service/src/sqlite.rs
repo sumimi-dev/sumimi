@@ -350,7 +350,11 @@ fn ts(value: chrono::NaiveDateTime) -> i64 {
 ///   bytes have no room for the segment's start, so the start is stored
 ///   **beside** the id (`session_start`) — it is a fact, and a fact that is
 ///   worked out of a bucket is not the fact.
-const SCHEMA_VERSION: i64 = 10;
+/// * v11 — the visitor's column is called **`session_id`**, the name Umami
+///   gives it: Umami's `session_id` is the visitor and their `visit_id` is
+///   the stretch of activity, which is what our `visit_id` is. The ids
+///   themselves did not change — the column did.
+const SCHEMA_VERSION: i64 = 11;
 
 /// The schema version the database was written with (`0` for a fresh file).
 fn read_schema_version(conn: &Connection) -> Result<i64> {
@@ -639,7 +643,7 @@ INSERT INTO event (
     gclid, fbclid, msclkid, ttclid, lifatid, twclid,
     lcp, inp, cls, fcp, ttfb,
     event_type, event_name, tag, data,
-    visitor_id, session_start
+    session_id, session_start
 ) VALUES (
     NULL, ?1, ?2, ?3, ?4, ?5,
     ?6, ?7, ?8,
