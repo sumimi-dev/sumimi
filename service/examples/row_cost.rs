@@ -44,21 +44,22 @@ fn parity() -> anyhow::Result<()> {
     for rows in [100_000i64, 1_000_000] {
         let path = dir.join(format!("parity-{rows}.duckdb"));
         let conn = Connection::open(&path)?;
-        // The real schema: the same 42 columns, the same expressions.
+        // The real schema: the same columns, the same expressions.
         conn.execute_batch(&format!(
-            "CREATE TABLE event ({ddl});",
+            "CREATE TABLE website_event ({ddl});",
             ddl = sumimi_service::db::event_columns_ddl(),
         ))?;
         let row = row_with(vec![
-            ("session_id", uuid("md5((1 + (i / 2))::text || '-s')")),
-            ("visitor_id", uuid("md5((i % 3000)::text || '-v')")),
-            ("url", "'/post/' || (i % 5000)::VARCHAR".to_string()),
+            // The visitor's id is `session_id`; the session's own id is `visit_id`.
+            ("session_id", uuid("md5((i % 3000)::text || '-v')")),
+            ("visit_id", uuid("md5((1 + (i / 2))::text || '-s')")),
+            ("url_path", "'/post/' || (i % 5000)::VARCHAR".to_string()),
             (
                 "url_query",
                 "'utm_source=twitter&utm_campaign=spring&utm_medium=cpc'".to_string(),
             ),
             (
-                "title",
+                "page_title",
                 "'A reasonably long article title number ' || (i % 2000)::VARCHAR".to_string(),
             ),
             (
@@ -82,7 +83,12 @@ fn parity() -> anyhow::Result<()> {
                 "CASE WHEN i % 9 = 0 THEN 'gclid-' || i::VARCHAR ELSE NULL END".to_string(),
             ),
         ]);
-        conn.execute_batch(&fill_sql(&row, rows)?)?;
+        conn.execute_batch(&fill_sql(
+            &row,
+            rows,
+            "website_event",
+            &sumimi_service::db::event_columns(),
+        )?)?;
         conn.execute_batch("CHECKPOINT")?;
         let size = std::fs::metadata(&path)?.len();
         println!("  {rows:>9} views -> {:>8.2} MB", size as f64 / 1e6);
@@ -104,17 +110,26 @@ fn parity() -> anyhow::Result<()> {
 type Row = Vec<(&'static str, String)>;
 
 /// The columns that are the same in every measurement.
+///
+/// The names are the schema's, so a column the schema has and this row does
+/// not is an error rather than a silently misplaced value.
 fn standard_row() -> Row {
     vec![
-        ("id", "i".to_string()),
+        ("event_id", "i".to_string()),
         ("website_id", "'w1'".to_string()),
         ("visit_id", "NULL".to_string()),
+        ("session_id", "NULL".to_string()),
+        ("session_start", "NULL".to_string()),
+        ("ip", "''".to_string()),
+        ("ip_prefix", "''".to_string()),
+        ("user_agent", "''".to_string()),
+        ("user_id", "NULL".to_string()),
         (
             "created_at",
             "now()::TIMESTAMP - INTERVAL (i % 30000000) MINUTE".to_string(),
         ),
         (
-            "referrer",
+            "referrer_domain",
             "(ARRAY['news.ycombinator.com','www.google.com','github.com','x.com'])[1 + (i % 4)]"
                 .to_string(),
         ),
@@ -163,7 +178,7 @@ fn standard_row() -> Row {
         ),
         ("msclkid", "NULL".to_string()),
         ("ttclid", "NULL".to_string()),
-        ("lifatid", "NULL".to_string()),
+        ("li_fat_id", "NULL".to_string()),
         ("twclid", "NULL".to_string()),
         ("lcp", "600.0 + (i % 1800)".to_string()),
         ("inp", "30.0 + (i % 260)".to_string()),
@@ -189,15 +204,18 @@ fn row_with(overrides: Vec<(&'static str, String)>) -> Row {
     row
 }
 
-/// The SQL that fills the `event` table with one row per generated id.
+/// The SQL that fills the `website_event` table with one row per generated id.
 ///
 /// The columns are the schema's, in the schema's order, and every value is
 /// looked up **by column name** — so a column the schema has and this row
 /// does not is an error, not a silently misplaced value.
-fn fill_sql(row: &Row, rows: i64) -> anyhow::Result<String> {
-    let columns = sumimi_service::db::event_columns();
+///
+/// The table and its column names are given, because the **old** shape (the
+/// one a v11 file holds) called the table `event` and five of its columns
+/// something else.
+fn fill_sql(row: &Row, rows: i64, table: &str, columns: &[String]) -> anyhow::Result<String> {
     let mut values = Vec::with_capacity(columns.len());
-    for column in &columns {
+    for column in columns {
         let expression = row
             .iter()
             .find(|(name, _)| name == column)
@@ -206,17 +224,34 @@ fn fill_sql(row: &Row, rows: i64) -> anyhow::Result<String> {
         values.push(expression);
     }
     Ok(format!(
-        "INSERT INTO event ({}) SELECT {} FROM generate_series(1, {rows}) t(i);",
+        "INSERT INTO {table} ({}) SELECT {} FROM generate_series(1, {rows}) t(i);",
         columns.join(", "),
         values.join(", "),
     ))
 }
 
+/// The columns of the **old** shape — the ones a v11 file holds.
+///
+/// Five of them were renamed in v12; the rest kept their names.
+fn old_columns() -> Vec<String> {
+    sumimi_service::db::event_columns()
+        .into_iter()
+        .map(|name| match name.as_str() {
+            "event_id" => "id".to_string(),
+            "url_path" => "url".to_string(),
+            "page_title" => "title".to_string(),
+            "referrer_domain" => "referrer".to_string(),
+            "li_fat_id" => "lifatid".to_string(),
+            _ => name,
+        })
+        .collect()
+}
+
 /// How the ids are written.
 struct Ids {
-    /// The expression for the session id.
+    /// The expression for the session's id — the column is `visit_id`.
     session: String,
-    /// The expression for the visitor id.
+    /// The expression for the visitor's id — the column is `session_id`.
     visitor: String,
 }
 
@@ -277,7 +312,7 @@ fn ids() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the `event` table with the id columns in a given type.
+/// Build the `website_event` table with the id columns in a given type.
 fn build_ids(
     path: &std::path::Path,
     level: &Level,
@@ -287,15 +322,16 @@ fn build_ids(
 ) -> anyhow::Result<f64> {
     let conn = Connection::open(path)?;
     // The same columns, with the ids spelled in another type.
+    // The visitor's id is `session_id`; the session's own id is `visit_id`.
     let ddl = sumimi_service::schema::columns_ddl_with(
         sumimi_service::schema::EVENT,
         &sumimi_service::db::Duck,
         &[
             ("visit_id", &format!("visit_id {id_type} NOT NULL")),
-            ("visitor_id", &format!("visitor_id {id_type} NOT NULL")),
+            ("session_id", &format!("session_id {id_type} NOT NULL")),
         ],
     );
-    conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
+    conn.execute_batch(&format!("CREATE TABLE website_event ({ddl});"))?;
 
     // The three forms the ids are measured in: a short text, the 36-character
     // text the server sends, and the 16 bytes it stores.
@@ -321,16 +357,17 @@ fn build_ids(
     let (session, visitor) = (session.to_string(), visitor.to_string());
 
     let row = row_with(vec![
-        ("session_id", session),
-        ("visitor_id", visitor),
-        ("url", level.url.clone()),
+        // The session's id is `visit_id`; the visitor's is `session_id`.
+        ("visit_id", session),
+        ("session_id", visitor),
+        ("url_path", level.url.clone()),
         (
             "url_query",
             "'utm_source=twitter&utm_medium=cpc&utm_campaign=campaign-' || (i % 200)::VARCHAR
              || '&utm_content=cta&utm_term=term'"
                 .to_string(),
         ),
-        ("title", level.title.clone()),
+        ("page_title", level.title.clone()),
         ("referrer_path", level.referrer.clone()),
         ("referrer_query", level.query.clone()),
         ("hostname", format!("'{}'", level.host)),
@@ -340,7 +377,12 @@ fn build_ids(
             "CASE WHEN i % 3 = 0 THEN 'gclid-' || i::VARCHAR ELSE NULL END".to_string(),
         ),
     ]);
-    conn.execute_batch(&fill_sql(&row, rows)?)?;
+    conn.execute_batch(&fill_sql(
+        &row,
+        rows,
+        "website_event",
+        &sumimi_service::db::event_columns(),
+    )?)?;
     conn.execute_batch("CHECKPOINT")?;
     Ok(std::fs::metadata(path)?.len() as f64)
 }
@@ -427,7 +469,7 @@ fn main() -> anyhow::Result<()> {
 
         // What the index of a PRIMARY KEY would have cost, on this exact schema.
         let before = size;
-        conn.execute_batch("CREATE INDEX idx_event_id ON event (id)")?;
+        conn.execute_batch("CREATE INDEX idx_event_id ON website_event (event_id)")?;
         conn.execute_batch("CHECKPOINT")?;
         let after = std::fs::metadata(&path)?.len();
         println!(
@@ -449,44 +491,61 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What does the v3 → v4 migration do to the file?
+/// What does the v11 → v12 migration do to the file?
 ///
-/// The v3 database stores the session and visitor ids as **text**; v4 stores
-/// them as 16-byte UUIDs. The migration rewrites the file — DuckDB frees the
-/// blocks of a dropped table instead of truncating the file, so the question is
-/// whether the space is actually given back.
+/// **The migration v12 has is the split** (one file per site, since `D-046`):
+/// the old file is rewritten, the facts move into a file of their own, and the
+/// old file is kept beside the new one. DuckDB frees the blocks of a dropped
+/// table instead of truncating the file, so the question is whether the space
+/// is actually given back — now in the file that holds the rows.
+///
+/// The old file is written in the **v11 shape**: the table is `event` and five
+/// of its columns have their old names (`id`, `url`, `title`, `referrer`,
+/// `lifatid`); the two ids are the sixteen-byte UUIDs they have always been.
 fn migration() -> anyhow::Result<()> {
-    println!("=== the v3 -> v4 migration ===");
+    println!("=== the v11 -> v12 migration ===");
     let dir = std::env::temp_dir().join("sumimi-row-cost-migrate");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
 
-    let path = dir.join("v3.duckdb");
+    let path = dir.join("v11.duckdb");
     {
         let conn = Connection::open(&path)?;
-        // The v3 schema: the same table, with the ids as text.
-        // The v3 schema: the same table, with the ids as text.
+        // The v11 shape: the same columns, with the names they had before v12.
         let ddl = sumimi_service::schema::columns_ddl_with(
             sumimi_service::schema::EVENT,
             &sumimi_service::db::Duck,
             &[
-                ("visit_id", "visit_id VARCHAR NOT NULL"),
-                ("visitor_id", "visitor_id VARCHAR NOT NULL"),
+                ("event_id", "id BIGINT NOT NULL"),
+                ("url_path", "url VARCHAR"),
+                ("page_title", "title VARCHAR"),
+                ("referrer_domain", "referrer VARCHAR"),
+                ("li_fat_id", "lifatid VARCHAR"),
             ],
         );
         conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
+        // The site the rows belong to — the split needs to know which file
+        // each row goes into. The `revenue` table is here too, because the
+        // split copies it as well.
         conn.execute_batch(
-            "CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR);
-             INSERT INTO meta VALUES ('schema_version', '3');",
+            "CREATE TABLE website (id VARCHAR PRIMARY KEY, name VARCHAR, domain VARCHAR,
+                created_at TIMESTAMP, updated_at TIMESTAMP, retention_days INTEGER,
+                country_header VARCHAR);
+             INSERT INTO website VALUES ('w1', 'the site', 'example.com', now(), now(), 0, NULL);
+             CREATE TABLE revenue (id BIGINT NOT NULL, website_id VARCHAR NOT NULL,
+                visit_id UUID, event_id BIGINT, event_name VARCHAR, currency VARCHAR,
+                revenue DOUBLE NOT NULL, created_at TIMESTAMP NOT NULL);
+             CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR);
+             INSERT INTO meta VALUES ('schema_version', '11');",
         )?;
         fill_text(&conn, &levels()[1], 100_000)?;
         conn.execute_batch("CHECKPOINT")?;
     }
 
     let before = std::fs::metadata(&path)?.len();
-    println!("  a v3 database with 100000 views: {}", fmt_bytes(before));
+    println!("  a v11 database with 100000 views: {}", fmt_bytes(before));
 
-    // Opening it migrates it: the file is rebuilt and swapped in.
+    // Opening it migrates it: the file is split and the facts move out.
     {
         let db = sumimi_service::pool::Db::open(&path, "256MB")?;
         db.with_read(|conn| {
@@ -494,7 +553,9 @@ fn migration() -> anyhow::Result<()> {
             Ok::<_, anyhow::Error>(())
         })?;
     }
-    let after = std::fs::metadata(&path)?.len();
+    // The rows are in the site's own file now.
+    let site_file = sumimi_service::db::site_path(&path, "w1", "duckdb");
+    let after = std::fs::metadata(&site_file)?.len();
     println!("  after the migration:              {}", fmt_bytes(after));
 
     // And what a fresh database of the same data costs.
@@ -515,7 +576,7 @@ fn migration() -> anyhow::Result<()> {
         conn.execute_batch("CHECKPOINT")?;
     }
     let fresh = std::fs::metadata(&fresh_path)?.len();
-    println!("  a fresh v3 database:              {}", fmt_bytes(fresh));
+    println!("  a fresh v12 database:             {}", fmt_bytes(fresh));
     println!(
         "  -> the migrated file is {:+.1} B/view against a fresh database",
         (after as f64 - fresh as f64) / 100_000.0
@@ -525,30 +586,64 @@ fn migration() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Fill the event table with a dataset of the given level.
-/// Fill the table with the ids as **text** — what a v3 database holds.
+/// Fill the `event` table with a dataset of the given level.
+///
+/// The table is the **old** one — `event`, with the names the columns had
+/// before v12.
 fn fill_text(conn: &Connection, level: &Level, rows: i64) -> anyhow::Result<()> {
-    fill(
+    fill_old(
         conn,
         level,
         rows,
         Ids {
-            session: level.session.clone(),
-            visitor: level.visitor.clone(),
+            session: uuid(&level.session),
+            visitor: uuid(&level.visitor),
         },
     )
 }
 
 /// Fill the table with the dataset of a level.
 ///
-/// The ids are given as expressions, because the two measurements differ in
-/// how the ids are written — as text (what a v3 database holds) or as the
-/// 16-byte UUID the server writes today.
+/// The ids are given as expressions, because the measurements differ in how
+/// the ids are written — as the 16-byte UUID the server writes today, or as
+/// text (what [`fill_text`] writes into the old shape).
 fn fill(conn: &Connection, level: &Level, rows: i64, ids: Ids) -> anyhow::Result<()> {
+    fill_shape(
+        conn,
+        level,
+        rows,
+        ids,
+        "website_event",
+        &sumimi_service::db::event_columns(),
+        false,
+    )
+}
+
+/// Fill the table in the **old** shape — the one a v11 file holds.
+fn fill_old(conn: &Connection, level: &Level, rows: i64, ids: Ids) -> anyhow::Result<()> {
+    fill_shape(conn, level, rows, ids, "event", &old_columns(), true)
+}
+
+/// Fill a table whose columns are spelled the way the target spells them.
+///
+/// `old` says whether the target is the **old** shape — then the row's keys
+/// are spelled the way that shape spells them.
+fn fill_shape(
+    conn: &Connection,
+    level: &Level,
+    rows: i64,
+    ids: Ids,
+    table: &str,
+    columns: &[String],
+    old: bool,
+) -> anyhow::Result<()> {
+    // The row is written in the **new** names; they are translated to the
+    // target's spelling here, so the two shapes cannot drift apart.
     let row = row_with(vec![
-        ("session_id", ids.session),
-        ("visitor_id", ids.visitor),
-        ("url", level.url.clone()),
+        // The session's id is `visit_id`; the visitor's is `session_id`.
+        ("visit_id", ids.session),
+        ("session_id", ids.visitor),
+        ("url_path", level.url.clone()),
         (
             "url_query",
             format!(
@@ -557,14 +652,31 @@ fn fill(conn: &Connection, level: &Level, rows: i64, ids: Ids) -> anyhow::Result
                 utm = level.utm,
             ),
         ),
-        ("title", level.title.clone()),
+        ("page_title", level.title.clone()),
         ("referrer_path", level.referrer.clone()),
         ("referrer_query", level.query.clone()),
         ("hostname", format!("'{}'", level.host)),
         ("utm_source", level.utm.clone()),
         ("gclid", level.click.clone()),
     ]);
-    conn.execute_batch(&fill_sql(&row, rows)?)?;
+    let row = if old {
+        row.into_iter()
+            .map(|(name, expression)| {
+                let name = match name {
+                    "event_id" => "id",
+                    "url_path" => "url",
+                    "page_title" => "title",
+                    "referrer_domain" => "referrer",
+                    "li_fat_id" => "lifatid",
+                    other => other,
+                };
+                (name, expression)
+            })
+            .collect()
+    } else {
+        row
+    };
+    conn.execute_batch(&fill_sql(&row, rows, table, columns)?)?;
     Ok(())
 }
 

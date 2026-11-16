@@ -28,12 +28,15 @@ const COMMON: &str = "browser VARCHAR, browser_version VARCHAR, os VARCHAR, os_v
      city VARCHAR, latitude DOUBLE, longitude DOUBLE, url VARCHAR, url_query VARCHAR, title VARCHAR";
 
 /// The identity columns of each variant.
+///
+/// The candidate under test is the **visitor's** id, which the v12 schema
+/// names `session_id` (Umami's name for the same thing).
 fn identity(kind: &str) -> &'static str {
     match kind {
-        "hash" => "visitor_id UUID",
+        "hash" => "session_id UUID",
         "pair" => "ip_prefix VARCHAR, user_agent VARCHAR",
         "raw" => "ip VARCHAR, user_agent VARCHAR",
-        _ => "visitor_id VARCHAR",
+        _ => "session_id VARCHAR",
     }
 }
 
@@ -81,16 +84,16 @@ fn common_values() -> String {
 /// no row values — it concatenates.
 fn distinct(kind: &str, engine: &str) -> String {
     match kind {
-        "hash" => "SELECT count(DISTINCT visitor_id) FROM event".to_string(),
+        "hash" => "SELECT count(DISTINCT session_id) FROM website_event".to_string(),
         "pair" | "raw" => {
             let address = if kind == "pair" { "ip_prefix" } else { "ip" };
             if engine == "duckdb" {
-                format!("SELECT count(DISTINCT ({address}, user_agent)) FROM event")
+                format!("SELECT count(DISTINCT ({address}, user_agent)) FROM website_event")
             } else {
-                format!("SELECT count(DISTINCT {address} || char(31) || user_agent) FROM event")
+                format!("SELECT count(DISTINCT {address} || char(31) || user_agent) FROM website_event")
             }
         }
-        _ => "SELECT count(DISTINCT visitor_id) FROM event".to_string(),
+        _ => "SELECT count(DISTINCT session_id) FROM website_event".to_string(),
     }
 }
 
@@ -112,11 +115,11 @@ fn main() -> anyhow::Result<()> {
             let size = if engine == "duckdb" {
                 let conn = duckdb::Connection::open(&path)?;
                 conn.execute_batch(&format!(
-                    "CREATE TABLE event (id BIGINT, website_id VARCHAR, visit_id BIGINT, {}, {COMMON});",
+                    "CREATE TABLE website_event (event_id BIGINT, website_id VARCHAR, visit_id BIGINT, {}, {COMMON});",
                     identity(kind)
                 ))?;
                 let sql = format!(
-                    "INSERT INTO event SELECT i, 'w1', i, {}, {} \
+                    "INSERT INTO website_event SELECT i, 'w1', i, {}, {} \
                      FROM generate_series(1, {ROWS}) t(i);",
                     values(kind, engine),
                     common_values()
@@ -128,11 +131,11 @@ fn main() -> anyhow::Result<()> {
             } else {
                 let conn = rusqlite::Connection::open(&path)?;
                 conn.execute_batch(&format!(
-                    "CREATE TABLE event (id BIGINT, website_id VARCHAR, visit_id BIGINT, {}, {COMMON});",
+                    "CREATE TABLE website_event (event_id BIGINT, website_id VARCHAR, visit_id BIGINT, {}, {COMMON});",
                     identity(kind).replace("BIGINT", "INTEGER").replace("UUID", "BLOB")
                 ))?;
                 let sql = format!(
-                    "INSERT INTO event SELECT i, 'w1', i, {}, {} \
+                    "INSERT INTO website_event SELECT i, 'w1', i, {}, {} \
                      FROM (WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < {ROWS}) \
                      SELECT x AS i FROM seq) t;",
                     values(kind, engine),

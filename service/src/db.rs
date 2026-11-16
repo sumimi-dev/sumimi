@@ -1,6 +1,6 @@
 //! The schema.
 //!
-//! **One fact table.** Every page view is one row in `event`, carrying the same fields
+//! **One fact table.** Every page view is one row in `website_event`, carrying the same fields
 //! Umami carries — that is the baseline, and the storage engine is what makes it
 //! affordable. Sessions, visitors and page views are all *derived* from it, so nothing
 //! is stored twice and nothing can drift apart.
@@ -8,7 +8,19 @@
 //! `revenue` is a separate table because it is written by the owner (imported from
 //! Carbon Ads, AdSense, …), not by the tracker.
 //!
-//! **No index on the fact tables.** `event` and `revenue` are append only, and every
+//! **One file per site** (since v12). The main file holds the sites (`website`)
+//! and the bookkeeping (`meta`); the facts of each site live in a file of that
+//! site's own, attached under the site's name. The reason is measured, not
+//! guessed — see `D-046` and `examples/site_split.rs`: a query for one site
+//! over a table that holds every site's rows reads the whole table's
+//! aggregates, and the buffer manager holds every site's rows, not just the
+//! one being asked about.
+//!
+//! ⇒ ⇒ The **shape** of the storage is the engine's business; the **口径**
+//! (the numbers) is not — the statements are written once and the engine says
+//! how it spells the table's name (see [`crate::query`]).
+//!
+//! **No index on the fact tables.** `website_event` and `revenue` are append only, and every
 //! query over them is a filtered scan (`WHERE website_id = ? AND created_at BETWEEN ?`).
 //! DuckDB answers those with **zone maps** — one min/max per column per row group,
 //! maintained automatically and stored with the data — so a `PRIMARY KEY` would buy
@@ -16,7 +28,7 @@
 //! to disk (measured: **+10.5 bytes per row**, about 12% of a realistic database),
 //! slows every append by ~9%, and enforces the uniqueness constraint on every row.
 //! The ids are handed out by the writer (from a counter in memory, seeded from
-//! the table when the database is opened), so the constraint protects nothing.
+//! the tables when the database is opened), so the constraint protects nothing.
 //!
 //! The small dimension table (`website`, `meta`) keeps its keys: they hold a handful
 //! of rows, and `meta` needs its primary key for `ON CONFLICT` to work. The accounts
@@ -26,6 +38,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 use duckdb::Connection;
 
@@ -62,7 +75,12 @@ use duckdb::Connection;
 ///   gives it: Umami's `session_id` is the visitor and their `visit_id` is
 ///   the stretch of activity, which is what our `visit_id` is. The ids
 ///   themselves did not change — the column did.
-pub const SCHEMA_VERSION: i64 = 11;
+/// * v12 — **every site has a file of its own** (the facts), and the names are
+///   **Umami's**: the table is `website_event`, the row id is `event_id`, the
+///   page is `url_path`, its title is `page_title`, the referrer's host is
+///   `referrer_domain`, and the click id is `li_fat_id`. ⇒ ⇒ The main file
+///   holds the sites and the bookkeeping; each site's file holds its facts.
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// How DuckDB spells the kinds.
 pub struct Duck;
@@ -94,45 +112,365 @@ impl crate::schema::Types for Duck {
     }
 }
 
-/// The tables of the schema, with their columns.
+/// The tables of the **main** file: the sites and the bookkeeping.
 ///
 /// **The columns are the shared list** (see [`crate::schema`]) — one list for
 /// every engine, spelled here in DuckDB's dialect.
-const TABLES: &[(&str, &[crate::schema::Column])] = &[
-    ("event", crate::schema::EVENT),
-    ("revenue", crate::schema::REVENUE),
+const MAIN_TABLES: &[(&str, &[crate::schema::Column])] = &[
     ("website", crate::schema::WEBSITE),
     ("meta", crate::schema::META),
 ];
+
+/// The tables of a **site's** file: the facts.
+///
+/// The names are Umami's — `website_event` is the table their rows come from
+/// and their tools read.
+const SITE_TABLES: &[(&str, &[crate::schema::Column])] = &[
+    ("website_event", crate::schema::EVENT),
+    ("revenue", crate::schema::REVENUE),
+];
+
+/// The columns of the fact table that were **renamed** in v12, and the names
+/// they had before.
+///
+/// ⇒ ⇒ The migration reads the old file with the old names and writes the new
+/// files with the new ones ⇒ ⇒ ⇒ the rows are carried over, not recomputed.
+const RENAMED: &[(&str, &str)] = &[
+    ("event_id", "id"),
+    ("url_path", "url"),
+    ("page_title", "title"),
+    ("referrer_domain", "referrer"),
+    ("li_fat_id", "lifatid"),
+];
+
+/// The name a column had before v12.
+fn old_name(name: &str) -> &str {
+    RENAMED
+        .iter()
+        .find(|(new, _)| *new == name)
+        .map(|(_, old)| *old)
+        .unwrap_or(name)
+}
 
 /// The columns of a table, in DuckDB's spelling.
 fn columns_of(columns: &[crate::schema::Column]) -> String {
     crate::schema::columns_ddl(columns, &Duck)
 }
 
-/// Create the schema if it does not exist.
-pub fn init_schema(conn: &Connection) -> Result<()> {
-    for (table, columns) in TABLES {
-        // `user` is a reserved word.
-        let quoted = if *table == "user" {
-            "\"user\""
-        } else {
-            *table
-        };
-        conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS {quoted} ({});",
-            columns_of(columns)
-        ))?;
+/// The name of a table, as it is written in a statement.
+///
+/// A table in another database is written `catalog.table`; a table in this one
+/// is written plain.
+fn table_name(catalog: Option<&str>, table: &str) -> String {
+    match catalog {
+        Some(catalog) => format!("{catalog}.{table}"),
+        None => table.to_string(),
     }
+}
 
+/// Create a table if it does not exist.
+fn create_table(
+    conn: &Connection,
+    catalog: Option<&str>,
+    table: &str,
+    columns: &[crate::schema::Column],
+) -> Result<()> {
+    // `user` is a reserved word.
+    let quoted = if table == "user" {
+        "\"user\""
+    } else {
+        table
+    };
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {} ({});",
+        table_name(catalog, quoted),
+        columns_of(columns)
+    ))?;
+    Ok(())
+}
+
+/// Write the schema version into the `meta` table.
+fn write_version(conn: &Connection, catalog: Option<&str>) -> Result<()> {
     conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('schema_version', ?) \
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        &format!(
+            "INSERT INTO {} (key, value) VALUES ('schema_version', ?) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            table_name(catalog, "meta")
+        ),
         [SCHEMA_VERSION.to_string()],
     )?;
+    Ok(())
+}
+
+/// Create the **whole** schema in one database.
+///
+/// This is the **single-file** shape: the sites, the bookkeeping and the facts
+/// side by side. The tools that measure things use it (they want one file to
+/// look at), and so does the archive reader.
+///
+/// ⇒ ⇒ The server does **not** use this — it uses [`init_main_schema`] and
+/// [`init_site_schema`], one file per site (see [`attach_site`]).
+pub fn init_schema(conn: &Connection) -> Result<()> {
+    for (table, columns) in MAIN_TABLES.iter().chain(SITE_TABLES.iter()) {
+        create_table(conn, None, table, columns)?;
+    }
+    write_version(conn, None)?;
+    Ok(())
+}
+
+/// Create the **main** file's schema: the sites and the bookkeeping.
+pub fn init_main_schema(conn: &Connection) -> Result<()> {
+    init_main_schema_at(conn, None)
+}
+
+/// Create the main file's schema in the database attached under `catalog`.
+pub fn init_main_schema_at(conn: &Connection, catalog: Option<&str>) -> Result<()> {
+    for (table, columns) in MAIN_TABLES {
+        create_table(conn, catalog, table, columns)?;
+    }
+    write_version(conn, catalog)?;
+    Ok(())
+}
+
+/// Create a **site's** schema in the database attached under `catalog`.
+pub fn init_site_schema(conn: &Connection, catalog: &str) -> Result<()> {
+    for (table, columns) in SITE_TABLES {
+        create_table(conn, Some(catalog), table, columns)?;
+    }
+    Ok(())
+}
+
+/// The directory that holds the sites' files.
+///
+/// `data.duckdb` ⇒ `data.sites/`. The files live beside the main file, in a
+/// directory of their own, so the instance is still **one directory** to back
+/// up, move or delete.
+pub fn sites_dir(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sumimi.duckdb".to_string());
+    name.push_str(".sites");
+    path.with_file_name(name)
+}
+
+/// The alias a site's file is attached under.
+///
+/// **It has to be a valid identifier** — the site's id is a uuid, and a uuid
+/// has dashes in it — and it has to be **the same every time**, so a restart
+/// finds the file that was written before.
+///
+/// ⇒ ⇒ The alias is the site's id with everything that is not a letter or a
+/// digit turned into an underscore, plus a short hash of the id ⇒ ⇒ ⇒ it is
+/// always a valid identifier, always stable, and never two sites' alike.
+pub fn site_alias(website_id: &str) -> String {
+    let mut alias = String::from("s_");
+    for character in website_id.chars() {
+        if character.is_ascii_alphanumeric() {
+            alias.push(character);
+        } else {
+            alias.push('_');
+        }
+    }
+    alias.push('_');
+    alias.push_str(&short_hash(website_id));
+    alias
+}
+
+/// A short hash of a string — the first eight bytes of its SHA-256, in hex.
+fn short_hash(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    digest[..8].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The file of a site.
+///
+/// The extension is the engine's (`duckdb`, `sqlite`) — the site's file is
+/// beside the main file, in the directory of [`sites_dir`].
+pub fn site_path(path: &Path, website_id: &str, extension: &str) -> PathBuf {
+    sites_dir(path).join(format!("{}.{extension}", site_alias(website_id)))
+}
+
+/// The files of an instance: the main file and every site's file.
+pub fn instance_files(path: &Path, extension: &str) -> Vec<PathBuf> {
+    let mut files = vec![path.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(sites_dir(path)) {
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let file = entry.path();
+            if file.extension().and_then(|e| e.to_str()) == Some(extension) {
+                files.push(file);
+            }
+        }
+    }
+    files
+}
+
+/// Attach a site's file, and make sure its tables are there.
+///
+/// **The file is created if it is not there** — a site that has never been
+/// written to still gets a file of its own, so the operator can see one file
+/// per site.
+///
+/// The alias is the site's own: `ATTACH … AS s_<the site's id>` ⇒ ⇒ the
+/// statements can say `s_….website_event` and mean **that site's** rows.
+///
+/// **A read-only connection attaches read-only.** DuckDB gives an `ATTACH` the
+/// access mode of the database it is attached to — so a plain `ATTACH` under a
+/// read-only connection is read-only too. The mode is spelled out anyway
+/// (`READ_ONLY`), because the alternative — letting it be inherited — means
+/// the mode of the site files is decided by the main file's, and a reader
+/// that forgot to say so would open the facts **writable**.
+pub fn attach_site(conn: &Connection, path: &Path, website_id: &str) -> Result<String> {
+    let alias = site_alias(website_id);
+    let file = site_path(path, website_id, "duckdb");
+    let read_only = is_read_only(conn);
+
+    if let Some(parent) = file.parent() {
+        if !parent.as_os_str().is_empty() {
+            // A read-only connection must not make a directory either — the
+            // file it attaches has to be there already.
+            if read_only && !parent.exists() {
+                anyhow::bail!(
+                    "the site's directory {} is not there — the instance looks incomplete",
+                    parent.display()
+                );
+            }
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!("creating the sites directory {}: {e}", parent.display())
+            })?;
+        }
+    }
+
+    let escaped = file.to_string_lossy().replace('\'', "''");
+    let mode = if read_only { " (READ_ONLY)" } else { "" };
+    conn.execute_batch(&format!("ATTACH IF NOT EXISTS '{escaped}' AS {alias}{mode}"))?;
+    // **The tables are only made when they can be.** A read-only connection
+    // cannot run `CREATE TABLE` at all — DuckDB refuses the statement before
+    // it looks at whether the table is there — so a reader that needs the
+    // tables to exist is a writer, and the two cannot be the same connection.
+    if !read_only {
+        init_site_schema(conn, &alias)?;
+    }
+    Ok(alias)
+}
+
+/// Is this connection read-only?
+///
+/// DuckDB keeps the access mode as a setting of the connection, so it can be
+/// asked: `current_setting('access_mode')` answers `read_only` or `read_write`.
+pub fn is_read_only(conn: &Connection) -> bool {
+    conn.query_row("SELECT current_setting('access_mode')", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .map(|mode| mode.eq_ignore_ascii_case("read_only"))
+    .unwrap_or(false)
+}
+
+/// The ids of the sites in the main file.
+pub fn site_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM website ORDER BY created_at ASC")?;
+    let mut rows = stmt.query([])?;
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next()? {
+        ids.push(row.get(0)?);
+    }
+    Ok(ids)
+}
+
+/// The largest id in a fact table — in the database attached under `catalog`.
+///
+/// The counter that hands the ids out starts above this, so the ids stay
+/// unique across the sites and across restarts.
+pub fn largest_event_id(conn: &Connection, catalog: Option<&str>) -> Result<i64> {
+    let sql = format!(
+        "SELECT COALESCE(MAX(event_id), 0) FROM {}",
+        table_name(catalog, "website_event")
+    );
+    Ok(conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(0))
+}
+
+/// Split a database of the old shape into the new one: **one file per site**.
+///
+/// The old file holds the sites, the bookkeeping and the facts in one place.
+/// The new one holds the sites and the bookkeeping in the main file, and the
+/// facts of each site in a file of its own.
+///
+/// **The rows are carried over.** This is the first change of the schema that
+/// does not throw the data away: the sites' rows move into their own files
+/// (with the columns renamed on the way), and the old file is kept beside the
+/// new one as `….v11.bak`.
+///
+/// Returns the path of the **new main file** — the caller closes the old
+/// connection and swaps the two over.
+pub fn split_into_sites(path: &Path, conn: &Connection) -> Result<PathBuf> {
+    let ids = site_ids(conn)?;
+
+    // Every site's rows move into a file of its own.
+    for id in &ids {
+        let alias = attach_site(conn, path, id)?;
+        copy_site_rows(conn, &alias, id)?;
+    }
+
+    // The new main file: the sites and the bookkeeping, and nothing else.
+    //
+    // **It is written from this connection** — the old file is locked by it, so
+    // it cannot be opened a second time to be read from.
+    let new_path = new_main_path(path);
+    let _ = std::fs::remove_file(&new_path);
+    let escaped = new_path.to_string_lossy().replace('\'', "''");
+    conn.execute_batch(&format!("ATTACH '{escaped}' AS new"))?;
+    init_main_schema_at(conn, Some("new"))?;
+    conn.execute("INSERT INTO new.website SELECT * FROM main.website", [])?;
+    conn.execute_batch("DETACH new")?;
+
+    Ok(new_path)
+}
+
+/// Where the new main file is written, before it is swapped in.
+fn new_main_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sumimi.duckdb".to_string());
+    name.push_str(".v12.new");
+    path.with_file_name(name)
+}
+
+/// Copy one site's rows into its own file.
+///
+/// The old file's table is `event`; the new one is `website_event`, and five
+/// of the columns were renamed on the way ⇒ ⇒ the copy names the old column
+/// on the right-hand side and the new one on the left-hand side.
+fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()> {
+    if table_exists(conn, "event") {
+        let new_names: Vec<&str> = crate::schema::EVENT.iter().map(|c| c.name).collect();
+        let old_names: Vec<&str> = crate::schema::EVENT.iter().map(|c| old_name(c.name)).collect();
+        conn.execute(
+            &format!(
+                "INSERT INTO {alias}.website_event ({new}) SELECT {old} FROM main.event WHERE website_id = ?",
+                new = new_names.join(", "),
+                old = old_names.join(", "),
+            ),
+            [website_id],
+        )?;
+    }
+
+    if table_exists(conn, "revenue") {
+        let names: Vec<&str> = crate::schema::REVENUE.iter().map(|c| c.name).collect();
+        let names = names.join(", ");
+        conn.execute(
+            &format!(
+                "INSERT INTO {alias}.revenue ({names}) SELECT {names} FROM main.revenue WHERE website_id = ?"
+            ),
+            [website_id],
+        )?;
+    }
 
     Ok(())
 }
+
 
 /// The schema version the database was written with (`0` for a fresh file).
 pub fn schema_version(conn: &Connection) -> i64 {
@@ -192,28 +530,34 @@ pub fn compact_to_new_file(path: &Path, conn: &Connection) -> Result<PathBuf> {
     let escaped = new_path.to_string_lossy().replace('\'', "''");
     conn.execute_batch(&format!("ATTACH '{escaped}' AS fresh"))?;
 
-    for (table, columns) in TABLES {
+    for (table, columns) in MAIN_TABLES.iter().chain(SITE_TABLES.iter()) {
+        // A table the file never had stays empty rather than failing the copy.
+        if !table_exists(conn, table) {
+            continue;
+        }
         let quoted = if *table == "user" { "\"user\"" } else { *table };
         conn.execute_batch(&format!(
             "CREATE TABLE fresh.{quoted} ({});",
             columns_of(columns)
         ))?;
-        // A table the file never had stays empty rather than failing the copy.
-        if table_exists(conn, table) {
-            let names = crate::schema::names(columns).join(", ");
-            conn.execute_batch(&format!(
-                "INSERT INTO fresh.{quoted} ({names}) SELECT {names} FROM main.{quoted};",
-            ))?;
-        }
+        let names = crate::schema::names(columns).join(", ");
+        conn.execute_batch(&format!(
+            "INSERT INTO fresh.{quoted} ({names}) SELECT {names} FROM main.{quoted};",
+        ))?;
     }
 
     // The copy still says it was written by the old version — fix that, or the
     // new file would be replaced again the next time it is opened.
-    conn.execute(
-        "INSERT INTO fresh.meta (key, value) VALUES ('schema_version', ?) \
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        [SCHEMA_VERSION.to_string()],
-    )?;
+    //
+    // ⇒ ⇒ A file that has no `meta` — **a site's file** — has no version to
+    // write, and the write would fail on a table that is not there.
+    if table_exists(conn, "meta") {
+        conn.execute(
+            "INSERT INTO fresh.meta (key, value) VALUES ('schema_version', ?) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [SCHEMA_VERSION.to_string()],
+        )?;
+    }
 
     conn.execute_batch("DETACH fresh")?;
     Ok(new_path)

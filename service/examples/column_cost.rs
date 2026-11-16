@@ -75,19 +75,19 @@ fn columns() -> Vec<(String, String, String)> {
             low32(),
         ),
         // The identity, in the shapes it can take.
-        ("visitor_id UUID".to_string(), "UUID".to_string(), uuid),
+        ("session_id UUID".to_string(), "UUID".to_string(), uuid),
         (
-            "visitor_id HUGEINT".to_string(),
+            "session_id HUGEINT".to_string(),
             "HUGEINT".to_string(),
             huge,
         ),
         (
-            "visitor_id BLOB (16 bytes)".to_string(),
+            "session_id BLOB (16 bytes)".to_string(),
             "BLOB".to_string(),
             format!("unhex(substr({}, 1, 32))", hash16()),
         ),
         (
-            "visitor_id BIGINT (8 bytes)".to_string(),
+            "session_id BIGINT (8 bytes)".to_string(),
             "BIGINT".to_string(),
             format!("CAST(hash('v' || {}) % 9223372036854775807 AS BIGINT)", visitor()),
         ),
@@ -95,7 +95,7 @@ fn columns() -> Vec<(String, String, String)> {
         // The owner's idea: the column is sixteen bytes wide, and today only
         // eight of them carry anything — the other eight are zero.
         (
-            "visitor_id UUID (8 bytes + 8 zeros)".to_string(),
+            "session_id UUID (8 bytes + 8 zeros)".to_string(),
             "UUID".to_string(),
             format!(
                 "CAST(substr({h}, 1, 8) || '-0000-0000-0000-000000000000' AS UUID)",
@@ -103,7 +103,7 @@ fn columns() -> Vec<(String, String, String)> {
             ),
         ),
         (
-            "visitor_id BLOB (8 bytes)".to_string(),
+            "session_id BLOB (8 bytes)".to_string(),
             "BLOB".to_string(),
             format!("unhex(substr({}, 1, 16))", hash16()),
         ),

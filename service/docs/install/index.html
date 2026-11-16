@@ -268,16 +268,18 @@ sumimi service stop --dir ~/sumimi</code></pre>
         </tbody>
       </table>
     </p>
-    <p>Three files live inside the instance directory:</p>
+    <p>The instance directory holds the data and the state:</p>
     <pre class="shell"><code>~/sumimi/
-├── data.duckdb      the events
-├── instance.sqlite  the accounts, the log, the imports, the cache
-├── acme/            the TLS certificate cache
-├── jwt-secret       the signing secret
+├── data.duckdb          the sites and the bookkeeping
+├── data.sites/          the events — one file per site
+│   └── s_&lt;site&gt;.duckdb
+├── instance.sqlite      the accounts, the log, the imports, the cache
+├── acme/                the TLS certificate cache
+├── jwt-secret           the signing secret
 └── service/
-    ├── status.json   the state of the service, rewritten every heartbeat
-    ├── log           the server's output
-    └── stop          the stop request</code></pre>
+    ├── status.json       the state of the service, rewritten every heartbeat
+    ├── log               the server's output
+    └── stop              the stop request</code></pre>
     <p>
       The server's output goes to <code>service/log</code>, so <code>tail -f</code> on it is
       the log. If the server keeps dying, the supervisor says so in the status
@@ -361,7 +363,7 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         </thead>
         <tbody>
           <tr><td><code>--dir &lt;path&gt;</code></td><td><code>SUMIMI_DIR</code></td><td><code>sumimi</code></td><td>The instance directory: the events, the accounts, the log, the imports and the cache all live inside it.</td></tr>
-          <tr><td><code>--db &lt;path&gt;</code></td><td><code>SUMIMI_DB</code></td><td><code>&lt;dir&gt;/data.duckdb</code></td><td>Path of the data file — for keeping the events on a bigger disk than the rest.</td></tr>
+          <tr><td><code>--db &lt;path&gt;</code></td><td><code>SUMIMI_DB</code></td><td><code>&lt;dir&gt;/data.duckdb</code></td><td>Path of the main data file — for keeping the events on a bigger disk than the rest. The events themselves live in <code>&lt;path&gt;.sites/</code>, one file per site, beside it.</td></tr>
           <tr><td><code>--backend &lt;name&gt;</code></td><td><code>SUMIMI_BACKEND</code></td><td><code>duckdb</code></td><td>The data engine: <code>duckdb</code> or <code>sqlite</code>. Both store the same tables and answer the same reports; DuckDB is smaller and faster on the heavy aggregations and it costs more memory (its ingestion is the peak, and a long aggregate grows with the range), SQLite is an ordinary file that many readers can open at once and it stays small.</td></tr>
           <tr><td><code>--host &lt;addr&gt;</code></td><td><code>SUMIMI_HOST</code></td><td><code>0.0.0.0</code></td><td>Address to bind to.</td></tr>
           <tr><td><code>--port &lt;port&gt;</code></td><td><code>SUMIMI_PORT</code></td><td><code>3000</code></td><td>Port to listen on.</td></tr>

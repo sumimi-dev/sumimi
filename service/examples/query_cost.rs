@@ -148,18 +148,28 @@ fn build(path: &std::path::Path, pk: bool, rows: i64) -> anyhow::Result<Db> {
         sumimi_service::schema::columns_ddl_with(
             sumimi_service::schema::EVENT,
             &sumimi_service::db::Duck,
-            &[("id", "id BIGINT PRIMARY KEY")],
+            &[("event_id", "event_id BIGINT PRIMARY KEY")],
         )
     } else {
         sumimi_service::db::event_columns_ddl()
     };
-    conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
+    conn.execute_batch(&format!("CREATE TABLE website_event ({ddl});"))?;
+
+    // The two ids are UUIDs — the shape has been sixteen bytes since v10.
+    conn.execute_batch(
+        r#"
+CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
+    substr(sha256(s), 1, 8) || '-' || substr(sha256(s), 9, 4) || '-' ||
+    substr(sha256(s), 13, 4) || '-' || substr(sha256(s), 17, 4) || '-' ||
+    substr(sha256(s), 21, 12) AS UUID);
+"#,
+    )?;
 
     conn.execute_batch(&format!(
         r#"
-INSERT INTO event (
-    id, website_id, session_id, visitor_id, created_at,
-    url, url_query, title, referrer, referrer_path, hostname,
+INSERT INTO website_event (
+    event_id, website_id, visit_id, session_id, session_start, created_at,
+    url_path, url_query, page_title, referrer_domain, referrer_path, hostname,
     browser, browser_version, os, os_version, device, screen, language, country,
     utm_source, utm_medium, utm_campaign,
     lcp, inp, cls, fcp, ttfb,
@@ -168,8 +178,10 @@ INSERT INTO event (
 SELECT
   i,
   'w1',
-  md5((1 + (i / 3))::text || '-s'),
-  md5((i % 300000)::text || '-v'),
+  -- The session's own id is `visit_id`; the visitor's is `session_id`.
+  CAST(uuid_of('session-' || (1 + (i / 3))::text) AS UUID),
+  CAST(uuid_of('visitor-' || (i % 300000)::text) AS UUID),
+  NULL,
   TIMESTAMP '2024-01-01' + to_seconds((i * 7919) % 31536000),
   '/blog/post-' || (i % 500000)::VARCHAR || '-slug-' || (i % 977)::VARCHAR,
   'utm_source=twitter&utm_medium=cpc&utm_campaign=campaign-' || (i % 200)::VARCHAR,
@@ -204,7 +216,11 @@ FROM generate_series(1, {rows}) t(i);
         size as f64 / rows as f64
     );
 
-    let db = Db::from_connection(path, conn);
+    //
+    // **The shape is flat here** — one file, one table — which is what a
+    // measurement wants: the two databases have to hold the *same* data, and a
+    // file per site would make them different files.
+    let db = Db::from_connection(path, conn)?;
     // Now the production budget: 128 MB, two threads.
     db.with_connection(|conn| {
         conn.execute_batch("SET memory_limit='128MB'; SET threads=2;")?;

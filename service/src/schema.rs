@@ -212,12 +212,18 @@ pub fn names(columns: &[Column]) -> Vec<&'static str> {
     columns.iter().map(|column| column.name).collect()
 }
 
-/// The columns of the `event` table — **the** list.
+/// The columns of the `website_event` table — **the** list.
 ///
 /// One row per page view (or custom event). The field set mirrors Umami's
 /// `website_event` row for row. The row id is the engine's own; the two ids
 /// are sixteen bytes (a UUID); the session's start is a fact, stored beside
 /// the id.
+///
+/// **The names are Umami's** (since v12): the table is `website_event`, the
+/// row id is `event_id`, the page is `url_path`, its title is `page_title`,
+/// the referrer's host is `referrer_domain`, and the click id is `li_fat_id`.
+/// ⇒ ⇒ A row that came from Umami sits in this table under the same names
+/// ⇒ ⇒ ⇒ and the two tables can be read as one.
 ///
 /// **The two ids are named the way Umami names them.** Umami's `session_id`
 /// is the identity that spans many visits (their "session" is our visitor),
@@ -232,7 +238,7 @@ pub fn names(columns: &[Column]) -> Vec<&'static str> {
 /// [`crate::session`]). That is why the two can share the column — and why
 /// the numbers of two datasets are only comparable within one of them.
 pub const EVENT: &[Column] = &[
-    Column::required("id", Kind::RowId),
+    Column::required("event_id", Kind::RowId),
     Column::required("website_id", Kind::Text),
     Column::required("visit_id", Kind::Uuid),
     Column::required("session_id", Kind::Uuid),
@@ -242,10 +248,10 @@ pub const EVENT: &[Column] = &[
     Column::with_default("user_agent", Kind::Text, "''"),
     Column::new("user_id", Kind::Uuid),
     Column::required("created_at", Kind::Time),
-    Column::new("url", Kind::Text),
+    Column::new("url_path", Kind::Text),
     Column::new("url_query", Kind::Text),
-    Column::new("title", Kind::Text),
-    Column::new("referrer", Kind::Text),
+    Column::new("page_title", Kind::Text),
+    Column::new("referrer_domain", Kind::Text),
     Column::new("referrer_path", Kind::Text),
     Column::new("referrer_query", Kind::Text),
     Column::new("referrer_name", Kind::Text),
@@ -272,7 +278,7 @@ pub const EVENT: &[Column] = &[
     Column::new("fbclid", Kind::Text),
     Column::new("msclkid", Kind::Text),
     Column::new("ttclid", Kind::Text),
-    Column::new("lifatid", Kind::Text),
+    Column::new("li_fat_id", Kind::Text),
     Column::new("twclid", Kind::Text),
     Column::new("lcp", Kind::Real),
     Column::new("inp", Kind::Real),
@@ -289,6 +295,9 @@ pub const EVENT: &[Column] = &[
 ///
 /// The revenue is written by the site owner (imported from Carbon Ads,
 /// AdSense, …), not by the tracker — so it is a table of its own.
+///
+/// **The row id stays `id`** — the `event_id` here is the **event's** id (the
+/// one the revenue belongs to), not this row's.
 pub const REVENUE: &[Column] = &[
     Column::required("id", Kind::RowId),
     Column::required("website_id", Kind::Text),
@@ -404,9 +413,12 @@ mod tests {
 
     #[test]
     fn the_row_id_is_the_engines_own() {
-        assert_eq!(column_ddl(&EVENT[0], &Duck), "id BIGINT NOT NULL");
-        assert_eq!(column_ddl(&EVENT[0], &Sqlite), "id INTEGER PRIMARY KEY");
-        assert_eq!(column_ddl(&EVENT[0], &Pg), "id BIGSERIAL NOT NULL");
+        assert_eq!(column_ddl(&EVENT[0], &Duck), "event_id BIGINT NOT NULL");
+        assert_eq!(
+            column_ddl(&EVENT[0], &Sqlite),
+            "event_id INTEGER PRIMARY KEY"
+        );
+        assert_eq!(column_ddl(&EVENT[0], &Pg), "event_id BIGSERIAL NOT NULL");
     }
 
     #[test]

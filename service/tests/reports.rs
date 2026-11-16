@@ -148,9 +148,14 @@ fn query(website: &str) -> ReportQuery {
 
 /// The summary: the four numbers at the top of the dashboard.
 ///
-/// Four events, three visitors, three sessions. Two of the sessions had a
-/// single view, so they are bounces — and the one session with two views
-/// lasted a minute, so the average is 20 seconds.
+/// Four events, **two** visitors, **two** sessions. Two of the sessions had a
+/// single view, so one of them is a bounce — and the one session with two views
+/// lasted a minute, so the average is 30 seconds.
+///
+/// ⇒ ⇒ The rule is the reference implementation's (since v12): the visitors and
+/// the visits are counted over the groups that have **at least one page view** —
+/// so a visitor whose only event was a custom event is not a visitor, and the
+/// visit it was in is not a visit.
 #[test]
 fn the_summary_counts_the_traffic() {
     let (db, website) = database("summary");
@@ -160,15 +165,18 @@ fn the_summary_counts_the_traffic() {
     // one, and the reference implementation excludes it from every pageview
     // metric too (`event_type NOT IN (2, 5)`).
     assert_eq!(summary.pageviews, 3, "the custom event is not a page view");
-    // The visitors and the visits are counted over everything: a visitor who
-    // only fired a custom event is still a visitor.
-    assert_eq!(summary.visitors, 3, "three visitors came");
-    assert_eq!(summary.views, 3, "in three sessions");
+    // The visitors and the visits are counted over the groups that have a page
+    // view — so the third visitor, who only fired a custom event, is neither a
+    // visitor nor a visit.
+    assert_eq!(summary.visitors, 2, "two visitors came");
+    assert_eq!(summary.views, 2, "in two sessions");
     // One bounce: the session with a single page view. The session that only
     // fired a custom event has no page view at all, and the session with two
     // page views is not a bounce either.
     assert_eq!(summary.bounces, 1, "one session had a single page view");
-    assert_eq!(summary.visit_duration, 30.0, "the average session is a minute");
+    // The average is over the sessions that have a page view: one lasted a
+    // minute, the other had a single view.
+    assert_eq!(summary.visit_duration, 30.0, "the average session is half a minute");
 }
 
 /// The timeseries: the views over time.

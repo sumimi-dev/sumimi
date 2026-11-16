@@ -2,7 +2,8 @@
 //!
 //! The identity column's compression is RLE — repeated values in a row run
 //! cost the value once plus the run length. So its cost depends on **how
-//! adjacent a visitor's events are**:
+//! adjacent a visitor's events are** (the visitor's id is `session_id` —
+//! the session's id is `visit_id`):
 //!
 //! - **clustered**: one visitor's events land next to each other (what a real
 //!   single-site burst looks like),
@@ -27,6 +28,18 @@ use sumimi_service::schema;
 const VISITORS: i64 = 1_000_000;
 const EVENTS_PER_VISITOR: i64 = 30;
 const SITES: i64 = 5;
+
+/// The macro the session's id is written with — DuckDB has no `uuid_of` of its own.
+///
+/// The session's own id (`visit_id`) is a UUID (sixteen bytes); only the
+/// **visitor's** id (`session_id`) is the column whose width this probe
+/// changes.
+const UUID_MACRO: &str = r#"
+CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
+    substr(sha256(s), 1, 8) || '-' || substr(sha256(s), 9, 4) || '-' ||
+    substr(sha256(s), 13, 4) || '-' || substr(sha256(s), 17, 4) || '-' ||
+    substr(sha256(s), 21, 12) AS UUID);
+"#;
 
 /// How the rows sit.
 #[derive(Clone, Copy)]
@@ -54,13 +67,23 @@ fn layouts() -> Vec<Layout> {
 }
 
 /// The traffic, in the real columns.
+///
+/// The columns are named, not positional — the schema's order changes, and a
+/// positional insert that no longer matches silently measures another shape.
 fn traffic(visitor: &str) -> String {
     format!(
         "INSERT INTO probe
-         SELECT i AS id,
+         (event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, user_id,
+          created_at, url_path, url_query, page_title, referrer_domain, referrer_path,
+          referrer_query, referrer_name, hostname, channel, browser, browser_version, os,
+          os_version, device, screen, language, country, region, city, latitude, longitude,
+          utm_source, utm_medium, utm_campaign, utm_content, utm_term, gclid, fbclid,
+          msclkid, ttclid, li_fat_id, twclid, lcp, inp, cls, fcp, ttfb, event_type,
+          event_name, tag, data)
+         SELECT i AS event_id,
             'site-' || (i % {SITES}) AS website_id,
-            (((i / {{E}}) / 4)::BIGINT << 32) | (hash('v' || ({visitor})) % 4294967296) AS visit_id,
-            CAST(hash('v' || ({visitor})) % 9223372036854775807 AS BIGINT) AS visitor_id,
+            CAST(uuid_of('session-' || (i / {{E}})::VARCHAR) AS UUID) AS visit_id,
+            {visitor} AS session_id,
             '203.0.113.' || CAST(i % 40000 AS VARCHAR) AS ip,
             '203.0.' || CAST(i % 256 AS VARCHAR) || '.0' AS ip_prefix,
             CASE (i % 50)
@@ -72,10 +95,10 @@ fn traffic(visitor: &str) -> String {
             END AS user_agent,
             CASE WHEN i % 3 = 0 THEN NULL ELSE uuid() END AS user_id,
             TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i * 4) SECOND AS created_at,
-            '/blog/post-' || (i % 5000) AS url,
+            '/blog/post-' || (i % 5000) AS url_path,
             CASE WHEN i % 7 = 0 THEN 'utm_source=twitter&utm_campaign=spring' ELSE '' END AS url_query,
-            'A reasonably long article title number ' || (i % 1000) AS title,
-            CASE WHEN i % 3 = 0 THEN 'https://www.google.com/search?q=some+term&x=1' ELSE '' END AS referrer,
+            'A reasonably long article title number ' || (i % 1000) AS page_title,
+            CASE WHEN i % 3 = 0 THEN 'https://www.google.com/search?q=some+term&x=1' ELSE '' END AS referrer_domain,
             CASE WHEN i % 3 = 0 THEN '/search' ELSE '' END AS referrer_path,
             '' AS referrer_query, '' AS referrer_name,
             'example.com' AS hostname, 'Search' AS channel,
@@ -90,7 +113,7 @@ fn traffic(visitor: &str) -> String {
             '1920x1080' AS screen, 'en-US' AS language, 'DE' AS country, 'Berlin' AS region,
             'Berlin' AS city, 52.52 AS latitude, 13.405 AS longitude,
             '' AS utm_source, '' AS utm_medium, '' AS utm_campaign, '' AS utm_content, '' AS utm_term,
-            '' AS gclid, '' AS fbclid, '' AS msclkid, '' AS ttclid, '' AS lifatid, '' AS twclid,
+            '' AS gclid, '' AS fbclid, '' AS msclkid, '' AS ttclid, '' AS li_fat_id, '' AS twclid,
             0.01 AS lcp, 0.02 AS inp, 0.03 AS cls, 0.4 AS fcp, 0.8 AS ttfb,
             'pageview' AS event_type, '' AS event_name, '' AS tag, '' AS data
         FROM generate_series(1, {{rows}}) t(i)"
@@ -104,7 +127,7 @@ fn compression(path: &Path) -> String {
         Err(_) => return "?".to_string(),
     };
     let sql = "SELECT compression, COUNT(*), SUM(\"count\") FROM pragma_storage_info('probe') \
-               WHERE column_name = 'visitor_id' GROUP BY 1 ORDER BY 1";
+               WHERE column_name = 'session_id' GROUP BY 1 ORDER BY 1";
     let text: Result<String, anyhow::Error> = db.with_read(|conn| {
         let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query([])?;
@@ -127,10 +150,11 @@ fn compression(path: &Path) -> String {
 fn measure(path: &PathBuf, rows: i64, layout: &Layout, wide: bool) -> anyhow::Result<f64> {
     let _ = std::fs::remove_file(path);
     let db = Db::open(path, "512MB")?;
-    let ddl = if wide { "visitor_id HUGEINT" } else { "visitor_id BIGINT" };
+    let ddl = if wide { "session_id HUGEINT" } else { "session_id BIGINT" };
     // The real columns, with the identity column's width changed.
-    let columns = schema::columns_ddl_with(schema::EVENT, &Duck, &[("visitor_id", ddl)]);
+    let columns = schema::columns_ddl_with(schema::EVENT, &Duck, &[("session_id", ddl)]);
     db.with_read(|conn| {
+        conn.execute_batch(UUID_MACRO)?;
         conn.execute_batch(&format!("CREATE TABLE probe ({columns});"))?;
         Ok::<_, anyhow::Error>(())
     })?;
@@ -158,7 +182,7 @@ fn measure(path: &PathBuf, rows: i64, layout: &Layout, wide: bool) -> anyhow::Re
         .replace("{V}", &VISITORS.to_string())
         .replace("{rows}", &rows.to_string());
     if wide {
-        let at = sql.find("AS visitor_id").unwrap_or(0);
+        let at = sql.find("AS session_id").unwrap_or(0);
         let from = at.saturating_sub(260);
         let head: String = sql.chars().skip(from).take(300).collect();
         println!("      the SQL: …{head}…");
@@ -178,8 +202,10 @@ fn measure(path: &PathBuf, rows: i64, layout: &Layout, wide: bool) -> anyhow::Re
     let range: String = {
         let db = Db::open(path, "512MB")?;
         let text: String = db.with_read(|conn| {
-            let (lo, hi): (i64, i64) = conn.query_row(
-                "SELECT min(visitor_id), max(visitor_id) FROM probe",
+            // Cast to text: the column's width changes with the measurement
+            // (BIGINT or HUGEINT), and the range is only shown.
+            let (lo, hi): (String, String) = conn.query_row(
+                "SELECT min(session_id)::VARCHAR, max(session_id)::VARCHAR FROM probe",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;

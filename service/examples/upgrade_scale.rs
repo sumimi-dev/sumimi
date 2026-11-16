@@ -36,7 +36,7 @@ fn build(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "CREATE TABLE probe (
-             id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT, user_id VARCHAR,
+             id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT, user_id VARCHAR,
              created_at TIMESTAMP, url VARCHAR, title VARCHAR, browser VARCHAR, country VARCHAR);",
     )?;
     conn.execute_batch(&format!(
@@ -91,7 +91,7 @@ fn one(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
 
     let conn = Connection::open(path)?;
     let started = Instant::now();
-    conn.execute_batch("ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT")?;
+    conn.execute_batch("ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT")?;
     let alter = started.elapsed().as_secs_f64() * 1000.0;
 
     let started = Instant::now();
@@ -106,7 +106,7 @@ fn one(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
 
     // The data is still there.
     let (rows_now, visitors): (i64, i64) = conn.query_row(
-        "SELECT count(*), count(DISTINCT visitor_id) FROM probe",
+        "SELECT count(*), count(DISTINCT session_id) FROM probe",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -170,7 +170,7 @@ fn concurrent(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
         std::thread::spawn(move || -> anyhow::Result<f64> {
             let conn = Connection::open(&path)?;
             let started = Instant::now();
-            conn.execute_batch("ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT")?;
+            conn.execute_batch("ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT")?;
             Ok(started.elapsed().as_secs_f64() * 1000.0)
         })
     };

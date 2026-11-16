@@ -114,7 +114,7 @@ fn the_server_writes_what_is_buffered_when_it_stops() {
     );
 
     // And the hit is in the file.
-    let rows = count_rows(&dir.join("data.duckdb"));
+    let rows = count_rows(&dir.join("data.duckdb"), &website);
     assert_eq!(
         rows, 1,
         "the hit was written before the process left — the file holds {rows} rows"
@@ -184,13 +184,19 @@ fn post(port: u16, path: &str, body: &str, token: Option<&str>) -> String {
         .unwrap_or(answer)
 }
 
-/// How many rows the data file holds.
-fn count_rows(path: &std::path::Path) -> i64 {
+/// How many rows the site's file holds.
+///
+/// ⇒ ⇒ Since v12 the facts of a site live in a file of that site's own, so the
+/// rows are counted in **that** file.
+fn count_rows(path: &std::path::Path, website_id: &str) -> i64 {
+    use sumimi_service::db;
     use sumimi_service::pool::Db;
 
     let db = Db::open(path, "256MB").expect("the data file opens");
+    let alias = db::site_alias(website_id);
     db.with_read(|conn| {
-        let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+        let mut stmt =
+            conn.prepare(&format!("SELECT count(*) FROM {alias}.website_event"))?;
         let mut rows = stmt.query([])?;
         match rows.next()? {
             Some(row) => Ok(row.get(0)?),

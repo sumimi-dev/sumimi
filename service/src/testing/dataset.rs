@@ -1144,12 +1144,28 @@ fn compute_expectations(
             })
             .collect();
 
+        // The **page views**: a custom event is not a page view, and neither
+        // is an identify call — the same rule the backends and the reference
+        // implementation use.
+        let pageviews: Vec<&Hit> = in_window
+            .iter()
+            .copied()
+            .filter(|hit| !is_custom(hit))
+            .collect();
+
         // A visitor is counted by its **id** — the hash of the address, the
         // agent and the site. It is what the backends count, and it is what
         // the 口径 says: the visitor is the id, not the pair.
+        //
+        // **The rule is the reference implementation's** (since v12): the
+        // visitors and the visits are counted over the groups that have **at
+        // least one page view** ⇒ ⇒ a visitor whose only event was a custom
+        // event is not a visitor, and the visit it was in is not a visit.
+        // ⇒ ⇒ So they are counted over the page views — the same rows the
+        // backends count them over.
         let mut visitors: HashSet<uuid::Uuid> = HashSet::new();
         let mut sessions: HashSet<uuid::Uuid> = HashSet::new();
-        for hit in &in_window {
+        for hit in &pageviews {
             visitors.insert(hit.visitor_id);
             sessions.insert(hit.visit_id);
         }
@@ -1192,15 +1208,6 @@ fn compute_expectations(
         } else {
             lengths.iter().sum::<f64>() / lengths.len() as f64
         };
-
-        // The **page views**: a custom event is not a page view, and neither
-        // is an identify call — the same rule the backends and the reference
-        // implementation use.
-        let pageviews: Vec<&Hit> = in_window
-            .iter()
-            .copied()
-            .filter(|hit| !is_custom(hit))
-            .collect();
 
         // The breakdowns.
         let mut breakdowns = BTreeMap::new();

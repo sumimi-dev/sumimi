@@ -9,13 +9,20 @@
 //! reports, the same numbers: the conformance suite runs against both.
 //!
 //! **One fact table**, exactly like the DuckDB backend: every page view is one row
-//! in `event`, and the sessions and visitors are derived from it. Timestamps are
-//! stored as **epoch seconds** (INTEGER), which is SQLite's natural representation
-//! and makes range filters a plain integer comparison.
+//! in `website_event`, and the sessions and visitors are derived from it. Timestamps
+//! are stored as **epoch microseconds** (INTEGER), which is SQLite's natural
+//! representation and makes range filters a plain integer comparison.
+//!
+//! **One file per site** (since v12), the same shape the DuckDB backend has: the
+//! main file holds the sites (`website`) and the bookkeeping (`meta`); each site's
+//! facts live in a file of that site's own, attached under the site's name. SQLite
+//! has no `USE`, so the tables of another file are named with the alias in front
+//! (`s_….website_event`) — the same shape DuckDB writes.
 //!
 //! The SQL is SQLite's dialect on purpose — bucketing, distinct counting and the
 //! "the row of the newest hit" lookups all differ between engines.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -28,8 +35,8 @@ use crate::models::{
 use crate::pool::{Pool, Pooled};
 use crate::query::{Dialect, Granularity, Param};
 use crate::storage::{
-    group_sessions, session_scan_limit, Dimension, ReportQuery, SessionEvent, Storage, StorageStats,
-    SummaryMetrics, WebsitePatch,
+    group_sessions, session_scan_limit, Dimension, Layout, ReportQuery, SessionEvent, Storage,
+    StorageStats, SummaryMetrics, WebsitePatch,
 };
 
 /// How SQLite spells the kinds.
@@ -64,22 +71,90 @@ impl crate::schema::Types for Sqlite {
     }
 }
 
-/// The tables of the schema, with their columns.
+/// The tables of the **main** file: the sites and the bookkeeping.
 ///
 /// **The columns are the shared list** (see [`crate::schema`]) — one list for
 /// every engine, spelled here in SQLite's dialect.
-const TABLES: &[(&str, &[crate::schema::Column])] = &[
-    ("event", crate::schema::EVENT),
-    ("revenue", crate::schema::REVENUE),
+const MAIN_TABLES: &[(&str, &[crate::schema::Column])] = &[
     ("website", crate::schema::WEBSITE),
     ("meta", crate::schema::META),
 ];
+
+/// The tables of a **site's** file: the facts.
+///
+/// The names are Umami's — `website_event` is the table their rows come from
+/// and their tools read.
+const SITE_TABLES: &[(&str, &[crate::schema::Column])] = &[
+    ("website_event", crate::schema::EVENT),
+    ("revenue", crate::schema::REVENUE),
+];
+
+/// The columns of the fact table that were **renamed** in v12, and the names
+/// they had before.
+///
+/// ⇒ ⇒ The migration reads the old file with the old names and writes the new
+/// files with the new ones ⇒ ⇒ ⇒ the rows are carried over, not recomputed.
+const RENAMED: &[(&str, &str)] = &[
+    ("event_id", "id"),
+    ("url_path", "url"),
+    ("page_title", "title"),
+    ("referrer_domain", "referrer"),
+    ("li_fat_id", "lifatid"),
+];
+
+/// The name a column had before v12.
+fn old_name(name: &str) -> &str {
+    RENAMED
+        .iter()
+        .find(|(new, _)| *new == name)
+        .map(|(_, old)| *old)
+        .unwrap_or(name)
+}
+
+/// The indexes the reports read by.
+///
+/// The facts are read by `(website_id, created_at)` — a filtered scan — so the
+/// index is on that pair and nothing else.
+///
+/// **The index's name carries the alias; the table's does not.** SQLite writes
+/// an index into the database the table is in, and the only way to say which
+/// database that is, is to qualify the index's name — qualifying the table's
+/// name is a syntax error (`near "."`).
+fn index_ddl(alias: &str) -> String {
+    format!(
+        "CREATE INDEX IF NOT EXISTS {alias}.website_event_website_created ON website_event (website_id, created_at);\n\
+         CREATE INDEX IF NOT EXISTS {alias}.revenue_website_created ON revenue (website_id, created_at);\n"
+    )
+}
 
 /// How SQLite spells the things that differ.
 ///
 /// Everything else — the columns, the conditions, the counts — is in the
 /// shared queries (see [`crate::query`]).
-pub struct SqliteDialect;
+///
+/// **The table's name is here too**, because where the rows live is the
+/// engine's business: in the shape of an instance every site has a file of
+/// its own, so the table is written `s_….website_event`; in the flat shape
+/// (an in-memory database) it is written plain.
+pub struct SqliteDialect {
+    /// How the fact tables are reached.
+    layout: Layout,
+}
+
+impl SqliteDialect {
+    /// The dialect of the given shape.
+    pub fn new(layout: Layout) -> Self {
+        Self { layout }
+    }
+
+    /// The alias a site's tables live under.
+    fn alias(&self, website_id: &str) -> Option<String> {
+        match self.layout {
+            Layout::PerSite => Some(crate::db::site_alias(website_id)),
+            Layout::Flat => None,
+        }
+    }
+}
 
 impl Dialect for SqliteDialect {
     /// SQLite's parameters are numbered: `?1`, `?2`, …
@@ -108,6 +183,20 @@ impl Dialect for SqliteDialect {
             Granularity::Day => "%Y-%m-%dT00:00:00Z",
         };
         format!("strftime('{format}', {expr} / 1000000.0, 'unixepoch')")
+    }
+
+    fn event_table(&self, website_id: &str) -> String {
+        match self.alias(website_id) {
+            Some(alias) => format!("{alias}.website_event"),
+            None => "website_event".to_string(),
+        }
+    }
+
+    fn revenue_table(&self, website_id: &str) -> String {
+        match self.alias(website_id) {
+            Some(alias) => format!("{alias}.revenue"),
+            None => "revenue".to_string(),
+        }
     }
 }
 
@@ -169,6 +258,14 @@ pub struct SqliteBackend {
     /// one connection.
     readers: Option<Pool<Connection>>,
     path: PathBuf,
+    /// How the fact tables are reached.
+    layout: Layout,
+    /// The sites whose file is attached.
+    ///
+    /// **Every connection has to attach the site's file for itself** — the
+    /// attachment belongs to the connection, not to the database — so the set
+    /// says which files exist, not which connections have them.
+    sites: Mutex<HashSet<String>>,
 }
 
 impl SqliteBackend {
@@ -185,82 +282,230 @@ impl SqliteBackend {
         // rows of an old file cannot be carried over. The old file is set aside
         // under its version number, so nothing is destroyed; the analysis data
         // and the site registrations are simply not carried over.
+        //
+        // **v11 is the exception**: the change to v12 is a change of *shape* —
+        // the facts move into a file per site, and five columns are renamed —
+        // and neither of those changes what a row *means*. ⇒ ⇒ So the rows
+        // are carried over: they move into their site's file, and the old file
+        // is kept beside the new one.
         let mut conn = Connection::open(path)?;
         let version = read_schema_version(&conn)?;
         if version > 0 && version < SCHEMA_VERSION {
             let backup = crate::db::versioned_backup_path(path, version);
-            tracing::warn!(
-                "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \
-                 the analysis data and the site registrations are not carried over; \
-                 the old file is kept as {}",
-                path.display(),
-                SCHEMA_VERSION,
-                backup.display()
-            );
-            // Fold the write-ahead log into the file first, so the copy that is
-            // kept aside really holds everything the old database had.
-            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-            drop(conn);
-            std::fs::rename(path, &backup).map_err(|e| {
-                anyhow::anyhow!(
-                    "setting the old database {} aside as {}: {e}",
+            if version == 11 {
+                tracing::warn!(
+                    "the database {} was written by schema v{version}: it is split into one file per \
+                     site — the rows are carried over, and the old file is kept as {}",
                     path.display(),
                     backup.display()
-                )
-            })?;
-            // The log and the index belong to the old file.
-            for suffix in ["-wal", "-shm"] {
-                let mut name = path.file_name().unwrap_or_default().to_os_string();
-                name.push(suffix);
-                let _ = std::fs::remove_file(path.with_file_name(name));
+                );
+                let rebuilt = split_into_sites(path, &conn)?;
+                // Fold the write-ahead log into the file first, so the copy that
+                // is kept aside really holds everything the old database had.
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+                drop(conn);
+                std::fs::rename(path, &backup).map_err(|e| {
+                    anyhow::anyhow!(
+                        "setting the old database {} aside as {}: {e}",
+                        path.display(),
+                        backup.display()
+                    )
+                })?;
+                // The log and the index belong to the old file.
+                remove_side_files(path);
+                std::fs::rename(&rebuilt, path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "putting the new database {} in place: {e}",
+                        path.display()
+                    )
+                })?;
+                conn = Connection::open(path)?;
+            } else {
+                tracing::warn!(
+                    "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \
+                     the analysis data and the site registrations are not carried over; \
+                     the old file is kept as {}",
+                    path.display(),
+                    SCHEMA_VERSION,
+                    backup.display()
+                );
+                // Fold the write-ahead log into the file first, so the copy that is
+                // kept aside really holds everything the old database had.
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+                drop(conn);
+                std::fs::rename(path, &backup).map_err(|e| {
+                    anyhow::anyhow!(
+                        "setting the old database {} aside as {}: {e}",
+                        path.display(),
+                        backup.display()
+                    )
+                })?;
+                // The log and the index belong to the old file.
+                remove_side_files(path);
+                conn = Connection::open(path)?;
             }
-            conn = Connection::open(path)?;
         }
 
-        Self::prepare(&conn)?;
-        Ok(Self {
+        let backend = Self {
             writer: Mutex::new(conn),
             readers: Some(Pool::new(4)),
             path: path.to_path_buf(),
-        })
+            layout: Layout::PerSite,
+            sites: Mutex::new(HashSet::new()),
+        };
+
+        // The main file holds the sites and the bookkeeping; the facts live in a
+        // file per site.
+        backend.prepare_main()?;
+        // Every site's file is attached — and created, if it is not there yet.
+        backend.attach_all_sites()?;
+
+        Ok(backend)
     }
 
     /// Open an in-memory database (tests).
+    ///
+    /// **The flat shape.** An in-memory database has no file to hang a site's
+    /// file on, so the facts stay in the database at hand — the same shape the
+    /// archive and the tools that measure things read.
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        Self::prepare(&conn)?;
+        let mut ddl = String::new();
+        for (table, columns) in MAIN_TABLES.iter().chain(SITE_TABLES.iter()) {
+            ddl.push_str(&crate::schema::table_ddl(table, columns, &Sqlite));
+            ddl.push('\n');
+        }
+        ddl.push_str(&index_ddl("main"));
+        conn.execute_batch(&ddl)?;
+        write_schema_version(&conn)?;
+
         Ok(Self {
             writer: Mutex::new(conn),
             readers: None,
             path: PathBuf::from(":memory:"),
+            layout: Layout::Flat,
+            sites: Mutex::new(HashSet::new()),
         })
     }
 
-    /// The pragmas and the schema.
+    /// The pragmas of a connection.
+    ///
+    /// WAL lets readers work while the writer is busy — the opposite of DuckDB,
+    /// which takes the exclusive lock on the file.
     fn prepare(conn: &Connection) -> Result<()> {
-        // WAL lets readers work while the writer is busy — the opposite of DuckDB,
-        // which takes an exclusive lock on the file.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "busy_timeout", 5_000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(())
+    }
+
+    /// The pragmas and the **main** file's schema.
+    fn prepare_main(&self) -> Result<()> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        Self::prepare(&conn)?;
 
         // The schema is **the shared list** (see [`crate::schema`]) in SQLite's
         // dialect — one row per page view (or custom event), the field set
         // mirroring Umami's `website_event` row for row.
         let mut ddl = String::new();
-        for (table, columns) in TABLES {
+        for (table, columns) in MAIN_TABLES {
             ddl.push_str(&crate::schema::table_ddl(table, columns, &Sqlite));
             ddl.push('\n');
         }
-        // The two indexes the reports read by.
-        ddl.push_str(
-            "CREATE INDEX IF NOT EXISTS event_website_created ON event (website_id, created_at);\n\
-             CREATE INDEX IF NOT EXISTS revenue_website_created ON revenue (website_id, created_at);\n",
-        );
         conn.execute_batch(&ddl)?;
+        write_schema_version(&conn)?;
+        Ok(())
+    }
 
-        write_schema_version(conn)?;
+    /// How the fact tables are reached.
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    /// The dialect of the given shape.
+    fn dialect(&self) -> SqliteDialect {
+        SqliteDialect::new(self.layout)
+    }
+
+    /// Attach every site's file — and create it, if it is not there yet.
+    ///
+    /// ⇒ ⇒ The operator sees **one file per site** beside the main file, which
+    /// is the shape the decision (`D-046`) is about.
+    fn attach_all_sites(&self) -> Result<()> {
+        if self.layout != Layout::PerSite {
+            return Ok(());
+        }
+        let ids = {
+            let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            site_ids(&conn)?
+        };
+        for id in ids {
+            self.attach_site(&id)?;
+        }
+        Ok(())
+    }
+
+    /// Make sure the site's file is attached to the writer, and return its alias.
+    ///
+    /// The file is created if it is not there — a site that has never been
+    /// written to still gets a file of its own.
+    fn attach_site(&self, website_id: &str) -> Result<String> {
+        let alias = crate::db::site_alias(website_id);
+        if self.layout != Layout::PerSite {
+            return Ok(alias);
+        }
+        {
+            let sites = self.sites.lock().unwrap_or_else(|e| e.into_inner());
+            if sites.contains(website_id) {
+                return Ok(alias);
+            }
+        }
+
+        let file = site_file(&self.path, website_id)?;
+
+        {
+            let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            attach_site(&conn, &file, &alias)?;
+            init_site_schema(&conn, &alias)?;
+        }
+
+        let mut sites = self.sites.lock().unwrap_or_else(|e| e.into_inner());
+        sites.insert(website_id.to_string());
+        Ok(alias)
+    }
+
+    /// Attach the site's file to a connection that does not have it yet.
+    ///
+    /// **Every connection has to do this for itself** — an attachment belongs to
+    /// the connection that made it, so a reader that was opened before the site
+    /// existed cannot see the site's file.
+    fn ensure_attached(&self, conn: &Connection, website_id: &str) -> Result<()> {
+        if self.layout != Layout::PerSite {
+            return Ok(());
+        }
+        let alias = crate::db::site_alias(website_id);
+        if is_attached(conn, &alias)? {
+            return Ok(());
+        }
+        self.attach_to(conn, website_id)
+    }
+
+    /// Take a site's file away: the site is gone, and so is its file.
+    fn drop_site(&self, website_id: &str) -> Result<()> {
+        if self.layout != Layout::PerSite {
+            return Ok(());
+        }
+        let alias = crate::db::site_alias(website_id);
+        {
+            let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = conn.execute_batch(&format!("DETACH {alias}"));
+        }
+        self.sites
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(website_id);
+        let _ = std::fs::remove_file(crate::db::site_path(&self.path, website_id, "sqlite"));
         Ok(())
     }
 
@@ -292,7 +537,27 @@ impl SqliteBackend {
     ///
     /// This is what the dashboard uses: the request takes a connection, reads and
     /// gives it back. Two requests do not wait for each other.
+    ///
+    /// **Every site's file is attached to it** — the attachment belongs to the
+    /// connection, not to the database, so a connection that hands out a site's
+    /// rows has to have that site's file attached to it.
     pub fn with_reader<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.with_reader_for("", f)
+    }
+
+    /// Run `f` with a connection from the reader pool, with the site's file
+    /// attached to it.
+    ///
+    /// **The attachment belongs to the connection, not to the database** — so a
+    /// reader that was opened before the site existed cannot see the site's
+    /// file, and it has to be attached again. The check is cheap (a row in
+    /// `pragma_database_list`), and it happens on every read because a report
+    /// may ask about a site that was created a moment ago.
+    fn with_reader_for<T>(
+        &self,
+        website_id: &str,
+        f: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
         let Some(readers) = &self.readers else {
             // No pool: an in-memory database has exactly one connection.
             let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
@@ -305,13 +570,75 @@ impl SqliteBackend {
             pool: readers,
             connection: Some(connection),
         };
+
+        // Every site's file is attached — a pooled connection may have been
+        // opened before a site existed.
+        //
+        // The set is the backend's own: it holds the sites that have a file,
+        // whether or not they are registered — a site that got rows before it
+        // was registered has one too.
+        let ids: Vec<String> = {
+            let writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut ids = site_ids(&writer)?;
+            for id in self.sites.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                if !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+            ids
+        };
+
+        // **What the connection already has is read once** — the list is a
+        // query, and a query per site per read would be a query per site per
+        // read on a busy instance.
+        let mut attached = attached_aliases(pooled.get())?;
+        for id in &ids {
+            let alias = crate::db::site_alias(id);
+            if attached.contains(&alias) {
+                continue;
+            }
+            self.attach_to(pooled.get(), id)?;
+            attached.push(alias);
+        }
+        // And the site the read is about, if it is not registered yet.
+        if !website_id.is_empty() {
+            let alias = crate::db::site_alias(website_id);
+            if !attached.contains(&alias) {
+                self.attach_to(pooled.get(), website_id)?;
+            }
+        }
+
         f(pooled.get())
+    }
+
+    /// Attach the site's file to a connection, and make sure its tables are
+    /// there.
+    fn attach_to(&self, conn: &Connection, website_id: &str) -> Result<()> {
+        if self.layout != Layout::PerSite {
+            return Ok(());
+        }
+        let alias = crate::db::site_alias(website_id);
+        let file = site_file(&self.path, website_id)?;
+        attach_site(conn, &file, &alias)?;
+        init_site_schema(conn, &alias)?;
+        Ok(())
     }
 
     /// Open one more connection to the same file.
     fn open_reader(&self) -> Result<Connection> {
         let conn = Connection::open(&self.path)?;
         Self::prepare(&conn)?;
+        // A new connection has to attach the sites' files for itself — the
+        // attachment belongs to the connection, not to the database.
+        if self.layout == Layout::PerSite {
+            let ids = {
+                let writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+                site_ids(&writer)?
+            };
+            for id in ids {
+                self.ensure_attached(&conn, &id)?;
+            }
+        }
         Ok(conn)
     }
 }
@@ -354,7 +681,12 @@ fn ts(value: chrono::NaiveDateTime) -> i64 {
 ///   gives it: Umami's `session_id` is the visitor and their `visit_id` is
 ///   the stretch of activity, which is what our `visit_id` is. The ids
 ///   themselves did not change — the column did.
-const SCHEMA_VERSION: i64 = 11;
+/// * v12 — **every site has a file of its own** (the facts), and the names are
+///   **Umami's**: the table is `website_event`, the row id is `event_id`, the
+///   page is `url_path`, its title is `page_title`, the referrer's host is
+///   `referrer_domain`, and the click id is `li_fat_id`. ⇒ ⇒ The main file
+///   holds the sites and the bookkeeping; each site's file holds its facts.
+const SCHEMA_VERSION: i64 = 12;
 
 /// The schema version the database was written with (`0` for a fresh file).
 fn read_schema_version(conn: &Connection) -> Result<i64> {
@@ -381,8 +713,8 @@ fn read_schema_version(conn: &Connection) -> Result<i64> {
 
 /// Write the schema version into the database.
 ///
-/// There is **no migration**: an older database is replaced, not rewritten
-/// (see [`SqliteBackend::open`]). So this only says which version the file
+/// There is **no migration** — except the one to v12, which carries the rows
+/// over (see [`SqliteBackend::open`]). So this only says which version the file
 /// was written with.
 fn write_schema_version(conn: &Connection) -> Result<()> {
     conn.execute(
@@ -391,6 +723,225 @@ fn write_schema_version(conn: &Connection) -> Result<()> {
         params![SCHEMA_VERSION.to_string()],
     )?;
     Ok(())
+}
+
+/// The ids of the sites in the main file.
+fn site_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM website ORDER BY created_at ASC")?;
+    let mut rows = stmt.query([])?;
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next()? {
+        ids.push(row.get(0)?);
+    }
+    Ok(ids)
+}
+
+/// Attach a site's file to a connection, under the given alias.
+///
+/// The alias is a valid identifier (see [`crate::db::site_alias`]), so the
+/// statements can say `s_….website_event` and mean **that site's** rows.
+fn attach_site(conn: &Connection, file: &Path, alias: &str) -> Result<()> {
+    let escaped = file.to_string_lossy().replace('\'', "''");
+    conn.execute_batch(&format!("ATTACH DATABASE '{escaped}' AS {alias}"))?;
+    Ok(())
+}
+
+/// The file of a site — and the directory that holds it.
+///
+/// ⇒ ⇒ The directory is made here, because a site that is registered but was
+/// never written to still gets a file of its own, and SQLite cannot open a
+/// file whose directory is not there.
+fn site_file(path: &Path, website_id: &str) -> Result<PathBuf> {
+    let file = crate::db::site_path(path, website_id, "sqlite");
+    if let Some(parent) = file.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!("creating the sites directory {}: {e}", parent.display())
+            })?;
+        }
+    }
+    Ok(file)
+}
+
+/// Is this database already attached under this alias?
+fn is_attached(conn: &Connection, alias: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_database_list WHERE name = ?1",
+        params![alias],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// The aliases this connection has attached.
+///
+/// ⇒ ⇒ The attachment belongs to the connection, so the list is the
+/// connection's own — a reader that was opened before a site existed does not
+/// have that site's file.
+fn attached_aliases(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT name FROM pragma_database_list")?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(row.get(0)?);
+    }
+    Ok(out)
+}
+
+/// Create a **site's** schema in the database attached under `alias`.
+///
+/// **The index is the odd one out.** SQLite writes a table's name with the
+/// alias in front (`s_….website_event`), but an index's **table** may not be
+/// qualified — it is a syntax error. The index's **own** name may be: naming
+/// it `s_….website_event_website_created` is what tells SQLite which database
+/// the table is in, and where the index is to live.
+fn init_site_schema(conn: &Connection, alias: &str) -> Result<()> {
+    let mut ddl = String::new();
+    for (table, columns) in SITE_TABLES {
+        ddl.push_str(&crate::schema::table_ddl(
+            &format!("{alias}.{table}"),
+            columns,
+            &Sqlite,
+        ));
+        ddl.push('\n');
+    }
+    ddl.push_str(&index_ddl(alias));
+    conn.execute_batch(&ddl)?;
+    Ok(())
+}
+
+/// Take away the log and the index that belong to a file.
+///
+/// They are the old file's own — a `-wal` left behind would be replayed into
+/// whatever took the file's place.
+fn remove_side_files(path: &Path) {
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(suffix);
+        let _ = std::fs::remove_file(path.with_file_name(name));
+    }
+}
+
+/// Where the new main file is written, before it is swapped in.
+fn new_main_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sumimi.sqlite".to_string());
+    name.push_str(".v12.new");
+    path.with_file_name(name)
+}
+
+/// Split a database of the old shape into the new one: **one file per site**.
+///
+/// The old file holds the sites, the bookkeeping and the facts in one place.
+/// The new one holds the sites and the bookkeeping in the main file, and the
+/// facts of each site in a file of its own.
+///
+/// **The rows are carried over.** This is the first change of the schema that
+/// does not throw the data away: the sites' rows move into their own files
+/// (with the columns renamed on the way), and the old file is kept beside the
+/// new one as `….v11.bak`.
+///
+/// Returns the path of the **new main file** — the caller closes the old
+/// connection and swaps the two over.
+fn split_into_sites(path: &Path, conn: &Connection) -> Result<PathBuf> {
+    let ids = site_ids(conn)?;
+
+    // Every site's rows move into a file of its own.
+    for id in &ids {
+        let alias = crate::db::site_alias(id);
+        let file = site_file(path, id)?;
+        attach_site(conn, &file, &alias)?;
+        init_site_schema(conn, &alias)?;
+        copy_site_rows(conn, &alias, id)?;
+    }
+
+    // The new main file: the sites and the bookkeeping, and nothing else.
+    let new_path = new_main_path(path);
+    let _ = std::fs::remove_file(&new_path);
+    {
+        let fresh = Connection::open(&new_path).map_err(|e| {
+            anyhow::anyhow!("creating the new database {}: {e}", new_path.display())
+        })?;
+        let mut ddl = String::new();
+        for (table, columns) in MAIN_TABLES {
+            ddl.push_str(&crate::schema::table_ddl(table, columns, &Sqlite));
+            ddl.push('\n');
+        }
+        fresh.execute_batch(&ddl)?;
+
+        // The registrations are read out of the **old** file — the new one is
+        // empty, and it is the new one that ends up in place.
+        let mut stmt = conn.prepare("SELECT id, name, domain, created_at, updated_at, retention_days, country_header FROM website")?;
+        let mut rows = stmt.query([])?;
+        let mut insert = fresh.prepare(
+            "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        while let Some(row) = rows.next()? {
+            insert.execute(params![
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ])?;
+        }
+        drop(insert);
+        drop(rows);
+        drop(stmt);
+
+        write_schema_version(&fresh)?;
+    }
+
+    Ok(new_path)
+}
+
+/// Copy one site's rows into its own file.
+///
+/// The old file's table is `event`; the new one is `website_event`, and five
+/// of the columns were renamed on the way ⇒ ⇒ the copy names the old column
+/// on the right-hand side and the new one on the left-hand side.
+fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()> {
+    if table_exists(conn, "event") {
+        let new_names: Vec<&str> = crate::schema::EVENT.iter().map(|c| c.name).collect();
+        let old_names: Vec<&str> = crate::schema::EVENT.iter().map(|c| old_name(c.name)).collect();
+        conn.execute(
+            &format!(
+                "INSERT INTO {alias}.website_event ({new}) SELECT {old} FROM main.event WHERE website_id = ?1",
+                new = new_names.join(", "),
+                old = old_names.join(", "),
+            ),
+            params![website_id],
+        )?;
+    }
+
+    if table_exists(conn, "revenue") {
+        let names: Vec<&str> = crate::schema::REVENUE.iter().map(|c| c.name).collect();
+        let names = names.join(", ");
+        conn.execute(
+            &format!(
+                "INSERT INTO {alias}.revenue ({names}) SELECT {names} FROM main.revenue WHERE website_id = ?1"
+            ),
+            params![website_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Does the database have this table?
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 /// A timestamp from epoch seconds.
@@ -489,6 +1040,9 @@ impl Storage for SqliteBackend {
             )?;
             Ok(())
         })?;
+        // The site gets a file of its own — attached, and created if it is not
+        // there yet, so the operator sees one file per site.
+        self.attach_site(&website.id)?;
         Ok(website)
     }
 
@@ -550,18 +1104,40 @@ impl Storage for SqliteBackend {
     }
 
     fn delete_website(&self, id: &str) -> Result<bool> {
-        self.with(|conn| {
+        // **A site that is not there is not an error** — it is nothing to do.
+        // ⇒ ⇒ The question is asked *before* the facts are touched: they live
+        // in the site's own file, and that file is gone with the site ⇒ ⇒ ⇒
+        // a second delete would be talking about a file that is not there.
+        //
+        // The question is asked on the **writer**: the `website` table is in
+        // the main file, and the reader would attach every site's file to
+        // answer a question about the main one.
+        let known = self.with(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT count(*) FROM website WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })?;
+        if !known {
+            return Ok(false);
+        }
+        let removed = self.with(|conn| {
             // The event table is the only fact table: the sessions and visitors are
             // derived from it, so deleting the events deletes them too.
-            conn.execute("DELETE FROM event WHERE website_id = ?1", params![id])?;
-            conn.execute("DELETE FROM revenue WHERE website_id = ?1", params![id])?;
+            let (events, revenue) = erase_site(conn, id, self.layout())?;
+            let _ = (events, revenue);
             let removed = conn.execute("DELETE FROM website WHERE id = ?1", params![id])?;
             Ok(removed > 0)
-        })
+        })?;
+        // The site's file is empty now — take it away.
+        self.drop_site(id)?;
+        Ok(removed)
     }
 
     fn summary(&self, query: &ReportQuery) -> Result<SummaryMetrics> {
-        self.with_reader(|conn| summary(conn, query))
+        self.with_reader_for(&query.website_id, |conn| summary(conn, query, &self.dialect()))
     }
 
     fn summary_with_change(&self, query: &ReportQuery) -> Result<MetricsSummary> {
@@ -580,23 +1156,27 @@ impl Storage for SqliteBackend {
     }
 
     fn breakdown(&self, query: &ReportQuery, dimension: Dimension) -> Result<Vec<BreakdownRow>> {
-        self.with_reader(|conn| breakdown(conn, query, dimension))
+        self.with_reader_for(&query.website_id, |conn| {
+            breakdown(conn, query, dimension, &self.dialect())
+        })
     }
 
     fn timeseries(&self, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-        self.with_reader(|conn| timeseries(conn, query))
+        self.with_reader_for(&query.website_id, |conn| timeseries(conn, query, &self.dialect()))
     }
 
     fn events(&self, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-        self.with_reader(|conn| events(conn, query))
+        self.with_reader_for(&query.website_id, |conn| events(conn, query, &self.dialect()))
     }
 
     fn query_strings(&self, query: &ReportQuery) -> Result<Vec<(String, i64)>> {
-        self.with_reader(|conn| query_strings(conn, query))
+        self.with_reader_for(&query.website_id, |conn| {
+            query_strings(conn, query, &self.dialect())
+        })
     }
 
     fn event_log(&self, query: &ReportQuery) -> Result<Vec<EventRow>> {
-        self.with_reader(|conn| event_log(conn, query))
+        self.with_reader_for(&query.website_id, |conn| event_log(conn, query, &self.dialect()))
     }
 
     fn sessions(&self, query: &ReportQuery) -> Result<Vec<SessionRow>> {
@@ -610,7 +1190,9 @@ impl Storage for SqliteBackend {
     }
 
     fn recent_events(&self, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
-        self.with_reader(|conn| recent_events(conn, query, limit))
+        self.with_reader_for(&query.website_id, |conn| {
+            recent_events(conn, query, limit, &self.dialect())
+        })
     }
 
     fn write_batch(&self, hits: &[Hit]) -> Result<()> {
@@ -627,92 +1209,113 @@ impl Storage for SqliteBackend {
             })
             .collect();
 
+        // Every site in the batch gets its file attached before the rows go
+        // into it.
+        for hit in &kept {
+            self.attach_site(&hit.website_id)?;
+        }
+
         self.with(|conn| {
             let tx = conn.transaction()?;
 
-            // Prepare once: re-preparing per row dominated the write path.
-            let mut insert = tx.prepare_cached(
-                r#"
-INSERT INTO event (
-    id, website_id, visit_id, ip, ip_prefix, user_agent, user_id, created_at,
-    url, url_query, title,
-    referrer, referrer_path, referrer_query, referrer_name, hostname, channel,
+            // The hits, grouped by the site they belong to — in the order the
+            // sites came in.
+            let mut by_site: Vec<(String, Vec<&Hit>)> = Vec::new();
+            for hit in &kept {
+                match by_site.iter_mut().find(|(id, _)| id == &hit.website_id) {
+                    Some((_, hits)) => hits.push(hit),
+                    None => by_site.push((hit.website_id.clone(), vec![hit])),
+                }
+            }
+
+            for (website_id, hits) in &by_site {
+                let table = event_table(self.layout(), website_id);
+                // Prepare once: re-preparing per row dominated the write path.
+                //
+                // **Not `prepare_cached`** — the statement names the site's own
+                // table, so every site has a statement of its own and the cache
+                // would hold one entry per site and evict the others. It is a
+                // cache of sixteen; a busy instance has more sites than that.
+                let mut insert = tx.prepare(&format!(
+                    r#"
+INSERT INTO {table} (
+    event_id, website_id, visit_id, session_id, session_start, ip, ip_prefix, user_agent, user_id, created_at,
+    url_path, url_query, page_title,
+    referrer_domain, referrer_path, referrer_query, referrer_name, hostname, channel,
     browser, browser_version, os, os_version, device, screen, language,
     country, region, city, latitude, longitude,
     utm_source, utm_medium, utm_campaign, utm_content, utm_term,
-    gclid, fbclid, msclkid, ttclid, lifatid, twclid,
+    gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
     lcp, inp, cls, fcp, ttfb,
-    event_type, event_name, tag, data,
-    session_id, session_start
+    event_type, event_name, tag, data
 ) VALUES (
-    NULL, ?1, ?2, ?3, ?4, ?5,
-    ?6, ?7, ?8,
-    ?9, ?10, ?11, ?12, ?13, ?14,
-    ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-    ?22, ?23, ?24, ?25, ?26,
+    NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+    ?11, ?12, ?13,
+    ?14, ?15, ?16, ?17, ?18, ?19,
+    ?20, ?21, ?22, ?23, ?24, ?25, ?26,
     ?27, ?28, ?29, ?30, ?31,
     ?32, ?33, ?34, ?35, ?36, ?37,
     ?38, ?39, ?40, ?41, ?42,
-    ?43, ?44, ?45, ?46,
-    ?47, ?48,
-    ?49, ?50
-)"#,
-            )?;
-            for hit in &kept {
-                insert.execute(params![
-                    hit.website_id,
-                    hit.visit_id.to_string(),
-                    hit.ip,
-                    hit.ip_prefix,
-                    hit.user_agent,
-                    hit.user_id.map(|id| id.to_string()),
-                    ts(hit.created_at),
-                    hit.url,
-                    hit.url_query,
-                    hit.title,
-                    hit.referrer,
-                    hit.referrer_path,
-                    hit.referrer_query,
-                    hit.referrer_name,
-                    hit.hostname,
-                    hit.channel,
-                    hit.browser,
-                    hit.browser_version,
-                    hit.os,
-                    hit.os_version,
-                    hit.device,
-                    hit.screen,
-                    hit.language,
-                    hit.country,
-                    hit.region,
-                    hit.city,
-                    hit.latitude,
-                    hit.longitude,
-                    hit.utm_source,
-                    hit.utm_medium,
-                    hit.utm_campaign,
-                    hit.utm_content,
-                    hit.utm_term,
-                    hit.gclid,
-                    hit.fbclid,
-                    hit.msclkid,
-                    hit.ttclid,
-                    hit.lifatid,
-                    hit.twclid,
-                    hit.lcp,
-                    hit.inp,
-                    hit.cls,
-                    hit.fcp,
-                    hit.ttfb,
-                    hit.kind.as_str(),
-                    hit.name,
-                    hit.tag,
-                    hit.data,
-                    hit.visitor_id.to_string(),
-                    hit.session_start.map(ts),
-                ])?;
+    ?43, ?44, ?45, ?46, ?47,
+    ?48, ?49, ?50
+)"#
+                ))?;
+                for hit in hits {
+                    insert.execute(params![
+                        hit.website_id,
+                        hit.visit_id.to_string(),
+                        hit.visitor_id.to_string(),
+                        hit.session_start.map(ts),
+                        hit.ip,
+                        hit.ip_prefix,
+                        hit.user_agent,
+                        hit.user_id.map(|id| id.to_string()),
+                        ts(hit.created_at),
+                        hit.url,
+                        hit.url_query,
+                        hit.title,
+                        hit.referrer,
+                        hit.referrer_path,
+                        hit.referrer_query,
+                        hit.referrer_name,
+                        hit.hostname,
+                        hit.channel,
+                        hit.browser,
+                        hit.browser_version,
+                        hit.os,
+                        hit.os_version,
+                        hit.device,
+                        hit.screen,
+                        hit.language,
+                        hit.country,
+                        hit.region,
+                        hit.city,
+                        hit.latitude,
+                        hit.longitude,
+                        hit.utm_source,
+                        hit.utm_medium,
+                        hit.utm_campaign,
+                        hit.utm_content,
+                        hit.utm_term,
+                        hit.gclid,
+                        hit.fbclid,
+                        hit.msclkid,
+                        hit.ttclid,
+                        hit.lifatid,
+                        hit.twclid,
+                        hit.lcp,
+                        hit.inp,
+                        hit.cls,
+                        hit.fcp,
+                        hit.ttfb,
+                        hit.kind.as_str(),
+                        hit.name,
+                        hit.tag,
+                        hit.data,
+                    ])?;
+                }
+                drop(insert);
             }
-            drop(insert);
 
             tx.commit()?;
             Ok(())
@@ -723,31 +1326,52 @@ INSERT INTO event (
         if records.is_empty() {
             return Ok(());
         }
+
+        // Every site in the batch gets its file attached before the rows go
+        // into it.
+        for record in records {
+            self.attach_site(&record.website_id)?;
+        }
+
         self.with(|conn| {
             let tx = conn.transaction()?;
-            let mut insert = tx.prepare_cached(
-                "INSERT INTO revenue (id, website_id, visit_id, event_id, event_name, currency, revenue, created_at)
-                 VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )?;
+
+            // The records, grouped by the site they belong to.
+            let mut by_site: Vec<(String, Vec<&Revenue>)> = Vec::new();
             for record in records {
-                insert.execute(params![
-                    record.website_id,
-                    record.visit_id.map(|id| id.to_string()),
-                    record.event_id,
-                    record.event_name,
-                    record.currency,
-                    record.revenue,
-                    ts(record.created_at),
-                ])?;
+                match by_site.iter_mut().find(|(id, _)| id == &record.website_id) {
+                    Some((_, group)) => group.push(record),
+                    None => by_site.push((record.website_id.clone(), vec![record])),
+                }
             }
-            drop(insert);
+
+            for (website_id, records) in &by_site {
+                let table = revenue_table(self.layout(), website_id);
+                let mut insert = tx.prepare(&format!(
+                    "INSERT INTO {table} (id, website_id, visit_id, event_id, event_name, currency, revenue, created_at)
+                     VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ))?;
+                for record in records {
+                    insert.execute(params![
+                        record.website_id,
+                        record.visit_id.map(|id| id.to_string()),
+                        record.event_id,
+                        record.event_name,
+                        record.currency,
+                        record.revenue,
+                        ts(record.created_at),
+                    ])?;
+                }
+                drop(insert);
+            }
+
             tx.commit()?;
             Ok(())
         })
     }
 
     fn revenue(&self, query: &ReportQuery) -> Result<Vec<Revenue>> {
-        self.with_reader(|conn| revenue(conn, query))
+        self.with_reader_for(&query.website_id, |conn| revenue(conn, query, &self.dialect()))
     }
 
     fn prune(&self, website: Option<&str>) -> Result<(u64, u64)> {
@@ -770,14 +1394,14 @@ INSERT INTO event (
                     continue;
                 }
                 let cutoff = now - chrono::Duration::days(retention_days);
-                events += conn.execute(
-                    "DELETE FROM event WHERE website_id = ?1 AND created_at < ?2",
-                    params![id, ts(cutoff)],
-                )? as u64;
-                revenue += conn.execute(
-                    "DELETE FROM revenue WHERE website_id = ?1 AND created_at < ?2",
-                    params![id, ts(cutoff)],
-                )? as u64;
+                let (site_events, site_revenue) = delete_before_site(
+                    conn,
+                    &id,
+                    ts(cutoff),
+                    self.layout(),
+                )?;
+                events += site_events;
+                revenue += site_revenue;
             }
             Ok((events, revenue))
         })
@@ -792,38 +1416,51 @@ INSERT INTO event (
             let mut events = 0u64;
             let mut revenue = 0u64;
             if let Some(website) = website {
-                events += conn.execute(
-                    "DELETE FROM event WHERE website_id = ?1 AND created_at < ?2",
-                    params![website, ts(before)],
-                )? as u64;
-                revenue += conn.execute(
-                    "DELETE FROM revenue WHERE website_id = ?1 AND created_at < ?2",
-                    params![website, ts(before)],
-                )? as u64;
+                let (site_events, site_revenue) =
+                    delete_before_site(conn, website, ts(before), self.layout())?;
+                events += site_events;
+                revenue += site_revenue;
             } else {
-                events += conn.execute(
-                    "DELETE FROM event WHERE created_at < ?1",
-                    params![ts(before)],
-                )? as u64;
-                revenue += conn.execute(
-                    "DELETE FROM revenue WHERE created_at < ?1",
-                    params![ts(before)],
-                )? as u64;
+                // Every site: the facts are in the sites' own files, so each one
+                // has to be asked in turn.
+                for id in site_ids(conn)? {
+                    let (site_events, site_revenue) =
+                        delete_before_site(conn, &id, ts(before), self.layout())?;
+                    events += site_events;
+                    revenue += site_revenue;
+                }
             }
             Ok((events, revenue))
         })
     }
 
-    fn erase(&self, website: &str) -> Result<u64> {
-        self.with(|conn| {
-            let mut removed = 0u64;
-            removed += conn.execute("DELETE FROM revenue WHERE website_id = ?1", params![website])? as u64;
-            removed += conn.execute("DELETE FROM event WHERE website_id = ?1", params![website])? as u64;
-            removed += conn.execute("DELETE FROM website WHERE id = ?1", params![website])? as u64;
-            Ok(removed)
-        })
-    }
 
+    fn erase(&self, id: &str) -> Result<u64> {
+        // A site that is not there has nothing to erase (see `delete_website`).
+        //
+        // ⇒ ⇒ The question is asked *before* the facts are touched: they live
+        // in the site's own file, and that file is gone with the site ⇒ ⇒ ⇒
+        // an erase would be talking about a file that is not there.
+        let known = self.with(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT count(*) FROM website WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })?;
+        if !known {
+            return Ok(0);
+        }
+        let removed = self.with(|conn| {
+            let (events, revenue) = erase_site(conn, id, self.layout())?;
+            let websites = conn.execute("DELETE FROM website WHERE id = ?1", params![id])?;
+            Ok(revenue + events + websites as u64)
+        })?;
+        // The site's file is empty now — take it away.
+        self.drop_site(id)?;
+        Ok(removed)
+    }
 
     fn stats(&self) -> Result<StorageStats> {
         let websites = self.with_reader(|conn| {
@@ -835,9 +1472,12 @@ INSERT INTO event (
             }
         })?;
 
-        let size_bytes = std::fs::metadata(&self.path)
-            .map(|m| m.len() as i64)
-            .unwrap_or(0);
+        // The size of the **instance**: the main file and every site's file.
+        let size_bytes: i64 = crate::db::instance_files(&self.path, "sqlite")
+            .iter()
+            .filter_map(|file| std::fs::metadata(file).ok())
+            .map(|meta| meta.len() as i64)
+            .sum();
 
         Ok(StorageStats {
             backend: "sqlite".to_string(),
@@ -850,14 +1490,74 @@ INSERT INTO event (
     }
 }
 
+/// The tables of a site, as the statements name them.
+fn tables(layout: Layout, website_id: &str) -> (String, String) {
+    (
+        event_table(layout, website_id),
+        revenue_table(layout, website_id),
+    )
+}
+
+/// The fact table of a site, as the statements name it.
+fn event_table(layout: Layout, website_id: &str) -> String {
+    match layout {
+        Layout::PerSite => format!("{}.website_event", crate::db::site_alias(website_id)),
+        Layout::Flat => "website_event".to_string(),
+    }
+}
+
+/// The revenue table of a site, as the statements name it.
+fn revenue_table(layout: Layout, website_id: &str) -> String {
+    match layout {
+        Layout::PerSite => format!("{}.revenue", crate::db::site_alias(website_id)),
+        Layout::Flat => "revenue".to_string(),
+    }
+}
+
+/// Delete everything a site stored.
+///
+/// ⇒ ⇒ The events and the revenue are in the site's own file; the site's row
+/// is in the main file and is not touched here.
+fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u64, u64)> {
+    let (events, revenue) = tables(layout, website_id);
+    let events = conn.execute(
+        &format!("DELETE FROM {events} WHERE website_id = ?1"),
+        params![website_id],
+    )? as u64;
+    let revenue = conn.execute(
+        &format!("DELETE FROM {revenue} WHERE website_id = ?1"),
+        params![website_id],
+    )? as u64;
+    Ok((events, revenue))
+}
+
+/// Delete one site's rows that are older than a moment.
+fn delete_before_site(
+    conn: &Connection,
+    website_id: &str,
+    before: i64,
+    layout: Layout,
+) -> Result<(u64, u64)> {
+    let (events, revenue) = tables(layout, website_id);
+    let events = conn.execute(
+        &format!("DELETE FROM {events} WHERE website_id = ?1 AND created_at < ?2"),
+        params![website_id, before],
+    )? as u64;
+    let revenue = conn.execute(
+        &format!("DELETE FROM {revenue} WHERE website_id = ?1 AND created_at < ?2"),
+        params![website_id, before],
+    )? as u64;
+    Ok((events, revenue))
+}
+
 // --------------------------------------------------------------------------------------
 // The reports
 // --------------------------------------------------------------------------------------
 
 /// Compute the summary metrics for a window.
-fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
+fn summary(conn: &Connection, query: &ReportQuery, dialect: &SqliteDialect) -> Result<SummaryMetrics> {
     // The statement is the shared one (see `crate::query`).
-    let statement = crate::query::summary(query, &SqliteDialect);
+    let statement = crate::query::summary(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
     let mut stmt = conn.prepare(&statement.sql)?;
@@ -872,7 +1572,7 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
     drop(stmt);
 
     // The bounces and the average session length.
-    let statement = crate::query::summary_sessions(query, &SqliteDialect);
+    let statement = crate::query::summary_sessions(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
     let mut stmt = conn.prepare(&statement.sql)?;
@@ -896,8 +1596,9 @@ fn breakdown(
     conn: &Connection,
     query: &ReportQuery,
     dimension: Dimension,
+    dialect: &SqliteDialect,
 ) -> Result<Vec<BreakdownRow>> {
-    let statement = crate::query::breakdown(query, dimension, &SqliteDialect);
+    let statement = crate::query::breakdown(query, dimension, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -921,8 +1622,12 @@ fn breakdown(
 }
 
 /// The query strings of the visited pages, with how often each was seen.
-fn query_strings(conn: &Connection, query: &ReportQuery) -> Result<Vec<(String, i64)>> {
-    let statement = crate::query::query_strings(query, &SqliteDialect);
+fn query_strings(
+    conn: &Connection,
+    query: &ReportQuery,
+    dialect: &SqliteDialect,
+) -> Result<Vec<(String, i64)>> {
+    let statement = crate::query::query_strings(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -936,8 +1641,12 @@ fn query_strings(conn: &Connection, query: &ReportQuery) -> Result<Vec<(String, 
 }
 
 /// The page views over time.
-fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-    let statement = crate::query::timeseries(query, &SqliteDialect);
+fn timeseries(
+    conn: &Connection,
+    query: &ReportQuery,
+    dialect: &SqliteDialect,
+) -> Result<Vec<BreakdownRow>> {
+    let statement = crate::query::timeseries(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -957,8 +1666,12 @@ fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow
 }
 
 /// The custom events, grouped by name.
-fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-    let statement = crate::query::events(query, &SqliteDialect);
+fn events(
+    conn: &Connection,
+    query: &ReportQuery,
+    dialect: &SqliteDialect,
+) -> Result<Vec<BreakdownRow>> {
+    let statement = crate::query::events(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -977,8 +1690,12 @@ fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
 }
 
 /// The raw event log.
-fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
-    let statement = crate::query::event_log(query, &SqliteDialect);
+fn event_log(
+    conn: &Connection,
+    query: &ReportQuery,
+    dialect: &SqliteDialect,
+) -> Result<Vec<EventRow>> {
+    let statement = crate::query::event_log(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -996,8 +1713,13 @@ fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
 /// The session log is built from these: the log reads the last few thousand
 /// rows, not the whole window, so its cost does not grow with the size of the
 /// database.
-fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
-    let statement = crate::query::recent_events(query, limit, &SqliteDialect);
+fn recent_events(
+    conn: &Connection,
+    query: &ReportQuery,
+    limit: i64,
+    dialect: &SqliteDialect,
+) -> Result<Vec<SessionEvent>> {
+    let statement = crate::query::recent_events(query, limit, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -1011,8 +1733,12 @@ fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<V
 }
 
 /// The revenue of a website over a window.
-fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<Revenue>> {
-    let statement = crate::query::revenue(query, &SqliteDialect);
+fn revenue(
+    conn: &Connection,
+    query: &ReportQuery,
+    dialect: &SqliteDialect,
+) -> Result<Vec<Revenue>> {
+    let statement = crate::query::revenue(query, dialect);
     let bound = values(&statement);
     let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
 
@@ -1048,5 +1774,362 @@ fn metric(value: i64, previous: f64) -> MetricValue {
     MetricValue {
         value,
         change: (change * 10.0).round() / 10.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testing::HitBuilder;
+
+    /// A temporary directory of the test's own.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sumimi-sqlite-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The names of the tables a database has, in `main`.
+    fn main_tables(path: &Path) -> Vec<String> {
+        let conn = Connection::open(path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            out.push(row.get(0).unwrap());
+        }
+        out
+    }
+
+    /// **Every site has a file of its own**, and the main file holds only the
+    /// sites and the bookkeeping.
+    #[test]
+    fn every_site_has_a_file_of_its_own() {
+        let dir = temp_dir("per-site");
+        let path = dir.join("sumimi.sqlite");
+        let backend = SqliteBackend::open(&path).unwrap();
+
+        let one = backend
+            .create_website("One", Some("one.example"), 0, None)
+            .unwrap();
+        let two = backend
+            .create_website("Two", Some("two.example"), 0, None)
+            .unwrap();
+
+        // One file per site, beside the main file.
+        let sites = crate::db::sites_dir(&path);
+        let files: Vec<PathBuf> = std::fs::read_dir(&sites)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(files.len(), 2, "every site has a file of its own");
+        assert!(crate::db::site_path(&path, &one.id, "sqlite").exists());
+        assert!(crate::db::site_path(&path, &two.id, "sqlite").exists());
+
+        // The main file holds the sites and the bookkeeping — and nothing else.
+        assert_eq!(main_tables(&path), vec!["meta", "website"]);
+
+        // The site's file holds the facts — under Umami's names.
+        let site_file = crate::db::site_path(&path, &one.id, "sqlite");
+        assert_eq!(main_tables(&site_file), vec!["revenue", "website_event"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The rows go into the site's own file** — the main file does not hold
+    /// them.
+    #[test]
+    fn the_rows_go_into_the_sites_own_file() {
+        let dir = temp_dir("rows");
+        let path = dir.join("sumimi.sqlite");
+        let backend = SqliteBackend::open(&path).unwrap();
+        let site = backend
+            .create_website("One", Some("one.example"), 0, None)
+            .unwrap();
+
+        let hit = HitBuilder::new(&site.id, "s1", "v1")
+            .url("/one")
+            .title("A page")
+            .referrer("news.ycombinator.com")
+            .build();
+        backend.write_batch(&[hit]).unwrap();
+
+        // The site's file holds the row.
+        let site_file = crate::db::site_path(&path, &site.id, "sqlite");
+        let conn = Connection::open(&site_file).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM website_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "the row is in the site's own file");
+
+        // The main file holds none.
+        let conn = Connection::open(&path).unwrap();
+        let has_facts: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'website_event'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_facts, 0, "the main file holds no facts");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A batch that spans two sites is written to two files.**
+    #[test]
+    fn a_batch_that_spans_two_sites_goes_into_two_files() {
+        let dir = temp_dir("two-sites");
+        let path = dir.join("sumimi.sqlite");
+        let backend = SqliteBackend::open(&path).unwrap();
+        let one = backend
+            .create_website("One", Some("one.example"), 0, None)
+            .unwrap();
+        let two = backend
+            .create_website("Two", Some("two.example"), 0, None)
+            .unwrap();
+
+        let hits = vec![
+            HitBuilder::new(&one.id, "s1", "v1").url("/one").build(),
+            HitBuilder::new(&two.id, "s2", "v2").url("/two").build(),
+            HitBuilder::new(&one.id, "s3", "v3").url("/three").build(),
+        ];
+        backend.write_batch(&hits).unwrap();
+
+        let count = |website_id: &str| -> i64 {
+            let file = crate::db::site_path(&path, website_id, "sqlite");
+            let conn = Connection::open(&file).unwrap();
+            conn.query_row("SELECT count(*) FROM website_event", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&one.id), 2);
+        assert_eq!(count(&two.id), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **An old file (v11) is split, and the rows are carried over.**
+    ///
+    /// The facts move into a file per site, the five renamed columns are
+    /// renamed on the way, and the old file is kept beside the new one.
+    #[test]
+    fn an_older_file_is_split_and_the_rows_are_carried_over() {
+        let dir = temp_dir("migrate");
+        let path = dir.join("sumimi.sqlite");
+
+        // A v11 file: the fact table is `event`, and the columns have their
+        // old names — `id`, `url`, `title`, `referrer`, `lifatid`.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE event (
+                    id             INTEGER PRIMARY KEY,
+                    website_id     TEXT NOT NULL,
+                    visit_id       TEXT NOT NULL,
+                    session_id     TEXT NOT NULL,
+                    session_start  INTEGER,
+                    ip             TEXT NOT NULL DEFAULT '',
+                    ip_prefix      TEXT NOT NULL DEFAULT '',
+                    user_agent     TEXT NOT NULL DEFAULT '',
+                    user_id        TEXT,
+                    created_at     INTEGER NOT NULL,
+                    url            TEXT,
+                    url_query      TEXT,
+                    title          TEXT,
+                    referrer       TEXT,
+                    referrer_path  TEXT,
+                    referrer_query TEXT,
+                    referrer_name  TEXT,
+                    hostname       TEXT,
+                    channel        TEXT,
+                    browser        TEXT,
+                    browser_version TEXT,
+                    os             TEXT,
+                    os_version     TEXT,
+                    device         TEXT,
+                    screen         TEXT,
+                    language       TEXT,
+                    country        TEXT,
+                    region         TEXT,
+                    city           TEXT,
+                    latitude       REAL,
+                    longitude      REAL,
+                    utm_source     TEXT,
+                    utm_medium     TEXT,
+                    utm_campaign   TEXT,
+                    utm_content    TEXT,
+                    utm_term       TEXT,
+                    gclid          TEXT,
+                    fbclid         TEXT,
+                    msclkid        TEXT,
+                    ttclid         TEXT,
+                    lifatid        TEXT,
+                    twclid         TEXT,
+                    lcp            REAL,
+                    inp            REAL,
+                    cls            REAL,
+                    fcp            REAL,
+                    ttfb           REAL,
+                    event_type     TEXT,
+                    event_name     TEXT,
+                    tag            TEXT,
+                    data           TEXT
+                );
+                CREATE TABLE website (
+                    id                TEXT PRIMARY KEY,
+                    name              TEXT NOT NULL,
+                    domain            TEXT,
+                    created_at        INTEGER NOT NULL,
+                    updated_at        INTEGER NOT NULL,
+                    retention_days    INTEGER NOT NULL DEFAULT 0,
+                    country_header    TEXT
+                );
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+                INSERT INTO meta VALUES ('schema_version', '11');
+                INSERT INTO website VALUES ('w1', 'One', 'one.example', 1, 1, 0, NULL);
+                INSERT INTO event (id, website_id, visit_id, session_id, created_at, url, title, referrer, referrer_name, event_type)
+                VALUES (7, 'w1', 'v1', 's1', 1700000000000000, '/one', 'A page', 'news.ycombinator.com', 'Hacker News', 'pageview');
+                "#,
+            )
+            .unwrap();
+        }
+
+        let backend = SqliteBackend::open(&path).unwrap();
+
+        // The old file is kept beside the new one.
+        let backup = crate::db::versioned_backup_path(&path, 11);
+        assert!(backup.exists(), "the old file must be kept");
+
+        // The new main file holds the sites and the bookkeeping.
+        assert_eq!(main_tables(&path), vec!["meta", "website"]);
+
+        // The site's file holds the row — with the new names.
+        let site_file = crate::db::site_path(&path, "w1", "sqlite");
+        assert!(site_file.exists(), "the site must have a file of its own");
+        let conn = Connection::open(&site_file).unwrap();
+        let (url, title, referrer, name, count): (String, String, String, String, i64) = conn
+            .query_row(
+                "SELECT url_path, page_title, referrer_domain, referrer_name, count(*)
+                 FROM website_event",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(count, 1, "the row is carried over");
+        assert_eq!(url, "/one");
+        assert_eq!(title, "A page");
+        assert_eq!(referrer, "news.ycombinator.com");
+        assert_eq!(name, "Hacker News", "the display name is not the host");
+
+        // The registration is carried over too.
+        let websites = backend.websites().unwrap();
+        assert_eq!(websites.len(), 1);
+        assert_eq!(websites[0].id, "w1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **An in-memory database is flat** — there is no file to hang a site's
+    /// file on.
+    #[test]
+    fn an_in_memory_database_is_flat() {
+        let backend = SqliteBackend::open_in_memory().unwrap();
+        assert_eq!(backend.layout(), Layout::Flat);
+
+        let site = backend
+            .create_website("One", Some("one.example"), 0, None)
+            .unwrap();
+        let hit = HitBuilder::new(&site.id, "s1", "v1").url("/one").build();
+        backend.write_batch(&[hit]).unwrap();
+
+        // The facts are in the database at hand.
+        backend
+            .with_connection(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM website_event",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(count)
+            })
+            .map(|count| assert_eq!(count, 1))
+            .unwrap();
+    }
+
+    /// **The rows are read back through the reader pool** — and a site that
+    /// was created after a reader was opened is still readable.
+    ///
+    /// ⇒ ⇒ The attachment belongs to the connection, so the reader has to
+    /// attach the site's file for itself.
+    #[test]
+    fn a_reader_sees_a_site_that_was_created_after_it_was_opened() {
+        let dir = temp_dir("reader");
+        let path = dir.join("sumimi.sqlite");
+        let backend = SqliteBackend::open(&path).unwrap();
+
+        // Take a connection out of the pool, so it is open before the site
+        // exists.
+        let site = backend
+            .create_website("One", Some("one.example"), 0, None)
+            .unwrap();
+        let hit = HitBuilder::new(&site.id, "s1", "v1").url("/one").build();
+        backend.write_batch(&[hit]).unwrap();
+
+        // Read it back through the pool — twice, so the second read comes off
+        // the **same** connection as the first.
+        for _ in 0..2 {
+            let count = backend
+                .with_reader_for(&site.id, |conn| {
+                    let count: i64 = conn.query_row(
+                        "SELECT count(*) FROM website_event",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    Ok(count)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "the reader must see the site's file");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Deleting a site takes its file away.**
+    #[test]
+    fn deleting_a_site_takes_its_file_away() {
+        let dir = temp_dir("delete");
+        let path = dir.join("sumimi.sqlite");
+        let backend = SqliteBackend::open(&path).unwrap();
+        let site = backend
+            .create_website("One", Some("one.example"), 0, None)
+            .unwrap();
+        let hit = HitBuilder::new(&site.id, "s1", "v1").url("/one").build();
+        backend.write_batch(&[hit]).unwrap();
+
+        let file = crate::db::site_path(&path, &site.id, "sqlite");
+        assert!(file.exists());
+
+        assert!(backend.delete_website(&site.id).unwrap());
+        assert!(!file.exists(), "the site's file must be taken away");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

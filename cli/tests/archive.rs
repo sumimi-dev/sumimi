@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use sumimi_cli::backup;
+use sumimi_service::db;
 use sumimi_service::pool::Db;
 use sumimi_service::storage::{ReportQuery, Storage, TimeRange};
 
@@ -24,16 +25,21 @@ fn the_archive_answers_the_same_as_the_database() {
     let archive = dir.join("archive");
 
     let db = Db::open(&db_path, "128MB").unwrap();
+    // The site's file is attached — the site was registered after the database was
+    // opened, so its file is not there yet.
+    let alias = db.ensure_site("w1").unwrap();
     db.with_write(|conn| {
         conn.execute(
             "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
              VALUES ('w1', 'Example', 'example.com', now(), now(), 0, NULL)",
             [],
         )?;
+        // **The facts of a site live in a file of that site's own** (since v12),
+        // so they are written into the site's file — under the site's alias.
         // One set-based insert: 50 000 individual prepares would take minutes.
         //
         // Both ids are UUIDs (schema v10): a text id is hashed into 16 bytes.
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             r#"
 CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
     substr(sha256(s), 1, 8) || '-' || substr(sha256(s), 9, 4) || '-' ||
@@ -42,13 +48,13 @@ CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
 
 CREATE OR REPLACE MACRO session_of(n) AS uuid_of('session-' || n);
 
-INSERT INTO event (
-    id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url, url_query, title,
-    referrer, referrer_path, referrer_query, hostname,
+INSERT INTO {alias}.website_event (
+    event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url_path, url_query, page_title,
+    referrer_domain, referrer_path, referrer_query, hostname,
     browser, browser_version, os, os_version, device, screen, language,
     country, region, city,
     utm_source, utm_medium, utm_campaign, utm_content, utm_term,
-    gclid, fbclid, msclkid, ttclid, lifatid, twclid,
+    gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
     lcp, inp, cls, fcp, ttfb,
     event_type, event_name, tag, data)
 SELECT
@@ -70,16 +76,18 @@ SELECT
   1200.0, 80.0, 0.02, 700.0, 90.0,
   'pageview', NULL, NULL, NULL
 FROM generate_series(1, 50000) t(i);
-"#,
-        )?;
+"#
+        ))?;
         conn.execute(
-            "INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
-                    created_at, url, hostname,
+            &format!(
+                "INSERT INTO {alias}.website_event (event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
+                    created_at, url_path, hostname,
                     event_type, event_name, tag, data)
              VALUES (999999, 'w1', session_of(1), uuid_of('visitor-1'), '203.0.113.7', '203.0.113',
                      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
                      now()::TIMESTAMP, '/signup',
-                     'example.com', 'event', 'signup', 'cta', '{}')",
+                     'example.com', 'event', 'signup', 'cta', '{{}}')"
+            ),
             [],
         )?;
         Ok(())
@@ -132,10 +140,13 @@ FROM generate_series(1, 50000) t(i);
         .filter_map(|entry| entry.metadata().ok())
         .map(|meta| meta.len())
         .sum();
-    let db_size = std::fs::metadata(&db_path).unwrap().len();
+    // **The facts are in the site's file**, not in the main one — so that is the
+    // file the archive is compared with.
+    let site_file = db::site_path(&db_path, "w1", "duckdb");
+    let db_size = std::fs::metadata(&site_file).unwrap().len();
     assert!(
         archive_size < db_size,
-        "the archive ({archive_size} bytes) should be smaller than the database ({db_size} bytes)"
+        "the archive ({archive_size} bytes) should be smaller than the site's file ({db_size} bytes)"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

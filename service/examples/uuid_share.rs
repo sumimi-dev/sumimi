@@ -18,12 +18,12 @@ fn main() {
 
     let variants = [
         ("everything", "*"),
-        ("no visitor_id", "* EXCLUDE (visitor_id)"),
-        ("no ids", "* EXCLUDE (visitor_id, session_id)"),
-        ("no ids, no page", "* EXCLUDE (visitor_id, session_id, url, url_query, title)"),
+        ("no session_id", "* EXCLUDE (session_id)"),
+        ("no ids", "* EXCLUDE (session_id, visit_id)"),
+        ("no ids, no page", "* EXCLUDE (session_id, visit_id, url_path, url_query, page_title)"),
         (
             "only the ids",
-            "id, website_id, session_id, visitor_id, created_at",
+            "event_id, website_id, visit_id, session_id, created_at",
         ),
     ];
 
@@ -39,10 +39,10 @@ fn main() {
         )
         .unwrap();
         conn.execute_batch(
-            "CREATE TABLE event (
-                id BIGINT, website_id VARCHAR, session_id UUID, visitor_id UUID,
-                created_at TIMESTAMP, url VARCHAR, url_query VARCHAR, title VARCHAR,
-                referrer VARCHAR, referrer_path VARCHAR, referrer_query VARCHAR,
+            "CREATE TABLE website_event (
+                event_id BIGINT, website_id VARCHAR, visit_id UUID, session_id UUID,
+                created_at TIMESTAMP, url_path VARCHAR, url_query VARCHAR, page_title VARCHAR,
+                referrer_domain VARCHAR, referrer_path VARCHAR, referrer_query VARCHAR,
                 hostname VARCHAR, channel VARCHAR,
                 browser VARCHAR, browser_version VARCHAR, os VARCHAR, os_version VARCHAR,
                 device VARCHAR, screen VARCHAR, language VARCHAR,
@@ -50,7 +50,7 @@ fn main() {
                 utm_source VARCHAR, utm_medium VARCHAR, utm_campaign VARCHAR,
                 utm_content VARCHAR, utm_term VARCHAR,
                 event_type VARCHAR, event_name VARCHAR, tag VARCHAR, data VARCHAR);
-            INSERT INTO event SELECT
+            INSERT INTO website_event SELECT
                 i, 'w1', uuid_of('session-' || (i / 3)::VARCHAR),
                 uuid_of('visitor-' || (i % 50000)::VARCHAR),
                 TIMESTAMP '2024-01-01' + to_seconds((i * 7919) % 31536000),
@@ -64,7 +64,7 @@ fn main() {
             FROM generate_series(1, 200000) t(i);",
         )
         .unwrap();
-        let sql = format!("CREATE TABLE kept AS SELECT {columns} FROM event; CHECKPOINT;");
+        let sql = format!("CREATE TABLE kept AS SELECT {columns} FROM website_event; CHECKPOINT;");
         conn.execute_batch(&sql).unwrap();
         let size = std::fs::metadata(&path).unwrap().len();
         sizes.push((name.to_string(), size));
@@ -83,8 +83,10 @@ fn main() {
             *size as f64 / base * 100.0
         );
     }
-    // Every file holds the same full `event` table plus the variant's `kept`
-    // table, so the **differences** are what the columns cost.
+    // Every file holds the same full `website_event` table plus the variant's
+    // `kept` table, so the **differences** are what the columns cost.
+    // The first excluded column is `session_id` (the visitor's id), the
+    // second is `visit_id` (the session's id).
     let visitor = (base - sizes[1].1 as f64) / rows;
     let session = (sizes[1].1 as f64 - sizes[2].1 as f64) / rows;
     let page = (sizes[2].1 as f64 - sizes[3].1 as f64) / rows;
@@ -92,8 +94,8 @@ fn main() {
     let ids = (base - sizes[2].1 as f64) / rows;
     // The ~30 narrow columns: everything minus everything without them.
     let narrow = (base - sizes[4].1 as f64) / rows;
-    println!("\nvisitor_id: {visitor:.1} B per view");
-    println!("session_id: {session:.1} B per view");
+    println!("\nsession_id (the visitor): {visitor:.1} B per view");
+    println!("visit_id (the session): {session:.1} B per view");
     println!("the two ids together: {ids:.1} B per view");
     println!("the ~35 narrow columns: {narrow:.1} B per view");
     println!("the page (url, query, title): {page:.1} B per view");

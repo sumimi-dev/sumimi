@@ -73,7 +73,8 @@ fn main() -> anyhow::Result<()> {
         (
             "list_extract(['/','/blog/one','/blog/two','/blog/three','/docs','/docs/install','/pricing','/download','/blog/four','/blog/five','/about','/changelog','/tags/rust','/tags/duckdb','/feed.xml'], 1 + (i % 15)::INT)",
             "'Blog post ' || (i % 15)::VARCHAR",
-            "list_extract(['https://www.google.com/','https://duckduckgo.com/','https://news.ycombinator.com/','https://github.com/','https://x.com/','https://www.bing.com/','https://reddit.com/'], 1 + (i % 7)::INT)",
+            // The referrer's **host** — that is what the column holds since v12.
+            "list_extract(['www.google.com','duckduckgo.com','news.ycombinator.com','github.com','x.com','www.bing.com','reddit.com'], 1 + (i % 7)::INT)",
             "'/item?id=' || (i % 100000)::VARCHAR",
         )
     };
@@ -91,9 +92,9 @@ fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     conn.execute_batch(&format!(
         r#"
-INSERT INTO event (
-    id, website_id, visit_id, session_id, created_at,
-    url, title, referrer, referrer_path, hostname,
+INSERT INTO website_event (
+    event_id, website_id, visit_id, session_id, created_at,
+    url_path, page_title, referrer_domain, referrer_path, hostname,
     browser, browser_version, os, os_version, device, screen, language, country,
     utm_source, utm_medium, utm_campaign,
     lcp, inp, cls, fcp, ttfb,
@@ -132,7 +133,11 @@ FROM generate_series(1, {rows}) t(i);
     ))?;
     conn.execute_batch("CHECKPOINT")?;
     // The report layer works on the backend, not on the raw connection.
-    let backend = Db::from_connection(&path, conn);
+    //
+    // **The shape is flat here** — `init_schema` puts every table in the one
+    // database, which is what a measurement wants (one file to look at) — so
+    // the backend reads the facts plain.
+    let backend = Db::from_connection(&path, conn)?;
     println!("  built in {:.1}s", start.elapsed().as_secs_f64());
 
     let file = std::fs::metadata(&path)?.len();
@@ -200,7 +205,7 @@ FROM generate_series(1, {rows}) t(i);
             conn.execute_batch("SET preserve_insertion_order=false")?;
             let m = conn.query_row(
                 "SELECT COUNT(*), COUNT(DISTINCT session_id), COUNT(DISTINCT visit_id)
-                 FROM event WHERE website_id = 'w1'
+                 FROM website_event WHERE website_id = 'w1'
                    AND created_at >= TIMESTAMP '2024-12-01' AND created_at < TIMESTAMP '2024-12-31'",
                 [],
                 |row| {

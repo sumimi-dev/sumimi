@@ -15,14 +15,17 @@ use sumimi_service::pool::Db;
 const ROWS: i64 = 2_000_000;
 const VISITORS: i64 = 120_000;
 
-/// The table: the v10 shape, with the traffic the other examples use.
+/// The table: the v12 shape, with the traffic the other examples use.
+///
+/// The visitor's id is `session_id` and the session's id is `visit_id` — the
+/// names Umami uses, so the two tables can be read as one.
 fn build(path: &PathBuf) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(path);
     let db = Db::open(path, "256MB")?;
     db.with_read(|conn| {
         conn.execute_batch(
             "CREATE TABLE probe (
-                 id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT,
+                 id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT,
                  user_id VARCHAR, created_at TIMESTAMP, url VARCHAR, title VARCHAR,
                  browser VARCHAR, ip_prefix VARCHAR, user_agent VARCHAR,
                  event_type VARCHAR);",
@@ -35,7 +38,7 @@ fn build(path: &PathBuf) -> anyhow::Result<()> {
              SELECT i AS id, 'w1' AS website_id,
                 ((1600000000 + ((i // {VISITORS}) // 4) * 600 + ((i % {VISITORS}) % 3600))::BIGINT << 32)
                     | (hash('v' || (i % {VISITORS})) % 4294967296) AS visit_id,
-                CAST(hash('v' || (i % {VISITORS})) % 9223372036854775807 AS BIGINT) AS visitor_id,
+                CAST(hash('v' || (i % {VISITORS})) % 9223372036854775807 AS BIGINT) AS session_id,
                 CASE WHEN i % 3 = 0 THEN NULL ELSE 'user-' || (i % {VISITORS}) END AS user_id,
                 TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i * 4) SECOND AS created_at,
                 '/blog/post-' || (i % 5000) AS url,
@@ -63,8 +66,8 @@ fn build(path: &PathBuf) -> anyhow::Result<()> {
 fn queries() -> Vec<(&'static str, &'static str)> {
     vec![
         (
-            "COUNT(DISTINCT visitor_id)",
-            "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) FROM probe",
+            "COUNT(DISTINCT session_id)",
+            "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) FROM probe",
         ),
         (
             "COUNT(DISTINCT visit_id)",
@@ -72,17 +75,17 @@ fn queries() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "both, side by side",
-            "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) || ' / ' \
+            "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) || ' / ' \
              || CAST(count(DISTINCT visit_id) AS VARCHAR) FROM probe",
         ),
         (
             "both, through the session grouping",
             "SELECT CAST(count(DISTINCT v) AS VARCHAR) || ' / ' || CAST(count(*) AS VARCHAR) \
-             FROM (SELECT visit_id, any_value(visitor_id) AS v FROM probe GROUP BY visit_id)",
+             FROM (SELECT visit_id, any_value(session_id) AS v FROM probe GROUP BY visit_id)",
         ),
         (
-            "COUNT(DISTINCT (visit_id, visitor_id))",
-            "SELECT CAST(count(DISTINCT (visit_id, visitor_id)) AS VARCHAR) FROM probe",
+            "COUNT(DISTINCT (visit_id, session_id))",
+            "SELECT CAST(count(DISTINCT (visit_id, session_id)) AS VARCHAR) FROM probe",
         ),
         (
             "COUNT(DISTINCT (ip_prefix, user_agent))",
@@ -94,7 +97,7 @@ fn queries() -> Vec<(&'static str, &'static str)> {
 /// The two queries the summary runs today: the numbers, and the bounces.
 fn summary_pair() -> (String, String) {
     (
-        "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) || ' / ' \
+        "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) || ' / ' \
          || CAST(count(DISTINCT visit_id) AS VARCHAR) FROM probe".to_string(),
         "SELECT CAST(count(*) FILTER (WHERE n = 1 AND custom = 0) AS VARCHAR) || ' / ' \
          || CAST(COALESCE(AVG(d), 0) AS VARCHAR) FROM ( \
@@ -111,7 +114,7 @@ fn summary_one() -> String {
      || ' / ' || CAST(count(*) AS VARCHAR) || ' / ' \
      || CAST(count(*) FILTER (WHERE n = 1 AND custom = 0) AS VARCHAR) || ' / ' \
      || CAST(COALESCE(AVG(d), 0) AS VARCHAR) FROM ( \
-         SELECT visit_id, any_value(visitor_id) AS v, COUNT(*) AS n, \
+         SELECT visit_id, any_value(session_id) AS v, COUNT(*) AS n, \
                 MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom, \
                 GREATEST(date_diff('microsecond', MIN(created_at), MAX(created_at)), 0) / 1000000.0 AS d \
          FROM probe GROUP BY visit_id) g"

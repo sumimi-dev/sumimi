@@ -57,15 +57,15 @@
           <p class="tagline">Count kitties popping into my websites.</p>
           <p class="tagline-cn">A self-hosted web analytics service that fits on a cheap VPS.</p>
           <p class="lede">
-            One executable and one DuckDB file. It serves its own tracker and dashboard,
-            stores the last few years of your traffic in a fraction of the disk, and makes
-            no outbound call that carries your data away — no account, no bill, nothing that
-            phones home.
+            One executable and one directory of DuckDB files. It serves its own tracker and
+            dashboard, stores the last few years of your traffic in a fraction of the disk,
+            and makes no outbound call that carries your data away — no account, no bill,
+            nothing that phones home.
           </p>
           <ul class="badges">
             <li><strong>Rust</strong> + Axum + Tokio</li>
             <li><strong>DuckDB 2.0.0</strong> embedded</li>
-            <li>One binary, one file</li>
+            <li>One binary, one directory</li>
             <li>1 vCPU / 512 MB RAM</li>
             <li><strong>Apache-2.0</strong> licence</li>
           </ul>
@@ -159,8 +159,8 @@
           <p class="story-label">The decision</p>
           <p>
             <strong>DuckDB</strong> — a columnar engine compiled into the binary, so the whole
-            server is one file on disk with no database server to install, secure or upgrade.
-            The measurements are in
+            server is a handful of files on disk with no database server to install, secure or
+            upgrade. The measurements are in
             <a href="blog/why-duckdb/">why DuckDB</a>: on the same data it needs
             <strong>50–85× less space</strong> than Umami on PostgreSQL, and the panel queries
             that took seconds take milliseconds.
@@ -186,9 +186,9 @@
       <li>
         <div class="card-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
-          <h3>One file of data</h3>
+          <h3>One directory of data</h3>
         </div>
-        <p>Everything lives in a single <code>.duckdb</code> file you can copy, back up or delete. No database server to install, secure or upgrade.</p>
+        <p>Everything lives in one directory of <code>.duckdb</code> files you can copy, back up or delete — a file per site, so a query reads one site's rows and not everybody's. No database server to install, secure or upgrade.</p>
       </li>
       <li>
         <div class="card-title">

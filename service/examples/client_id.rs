@@ -8,6 +8,9 @@
 //! | `fixed + kept` | BIGINT — every visitor is a hash | kept in its own column |
 //! | `one column` | VARCHAR — the client's id as-is, ours as base64 | mixed in |
 //!
+//! The identity column is the **visitor's** id, which the v12 schema names
+//! `session_id` (Umami's name for the same thing).
+//!
 //! The traffic: 120 000 visitors, a third of them logged in.
 
 use std::path::PathBuf;
@@ -20,15 +23,15 @@ const VISITORS: i64 = 120_000;
 const COMMON: &str = "website_id VARCHAR, visit_id BIGINT, event_type VARCHAR, \
      browser VARCHAR, browser_version VARCHAR, os VARCHAR, os_version VARCHAR, \
      device VARCHAR, screen VARCHAR, language VARCHAR, country VARCHAR, region VARCHAR, \
-     city VARCHAR, latitude DOUBLE, longitude DOUBLE, url VARCHAR, url_query VARCHAR, title VARCHAR";
+     city VARCHAR, latitude DOUBLE, longitude DOUBLE, url_path VARCHAR, url_query VARCHAR, page_title VARCHAR";
 
 const SUMMARY: &str = "SELECT COUNT(*) FILTER (WHERE event_type NOT IN ('event', 'identify')),
-                              COUNT(DISTINCT visitor_id),
+                              COUNT(DISTINCT session_id),
                               COUNT(DISTINCT visit_id)
-                       FROM event WHERE website_id = 'w1'";
+                       FROM website_event WHERE website_id = 'w1'";
 
-const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT visitor_id) AS value
-                          FROM event WHERE website_id = 'w1' AND event_type NOT IN ('event', 'identify')
+const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT session_id) AS value
+                          FROM website_event WHERE website_id = 'w1' AND event_type NOT IN ('event', 'identify')
                           GROUP BY name ORDER BY value DESC LIMIT 50";
 
 /// FNV-1a, with a seed — SQLite has no hash of its own.
@@ -140,9 +143,9 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
         "duckdb" => vec![
             (
                 "fixed (BIGINT only)",
-                format!("visitor_id UBIGINT, {COMMON}"),
+                format!("session_id UBIGINT, {COMMON}"),
                 format!(
-                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS visitor_id, \
+                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS session_id, \
                      'w1', i, 'pageview', 'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', \
                      'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', '', 'A title' \
                      FROM generate_series(1, {ROWS}) t(i)"
@@ -150,9 +153,9 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
             ),
             (
                 "fixed + the client's id kept",
-                format!("visitor_id UBIGINT, user_id VARCHAR, {COMMON}"),
+                format!("session_id UBIGINT, user_id VARCHAR, {COMMON}"),
                 format!(
-                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS visitor_id, \
+                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS session_id, \
                      {user_id} AS user_id, \
                      'w1', i, 'pageview', 'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', \
                      'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', '', 'A title' \
@@ -161,10 +164,10 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
             ),
             (
                 "one column (text)",
-                format!("visitor_id VARCHAR, {COMMON}"),
+                format!("session_id VARCHAR, {COMMON}"),
                 format!(
                     "SELECT CASE WHEN {logged_in} THEN {user_id} ELSE \
-                     rtrim(base64(unhex(lpad(hex({hash_of}), 16, '0'))), '=') END AS visitor_id, \
+                     rtrim(base64(unhex(lpad(hex({hash_of}), 16, '0'))), '=') END AS session_id, \
                      'w1', i, 'pageview', 'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', \
                      'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', '', 'A title' \
                      FROM generate_series(1, {ROWS}) t(i)"
@@ -174,9 +177,9 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
         _ => vec![
             (
                 "fixed (BIGINT only)",
-                format!("visitor_id INTEGER, {COMMON}"),
+                format!("session_id INTEGER, {COMMON}"),
                 format!(
-                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS visitor_id, \
+                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS session_id, \
                      'w1', x, 'pageview', 'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', \
                      'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', '', 'A title' \
                      FROM (WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < {ROWS}) \
@@ -185,9 +188,9 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
             ),
             (
                 "fixed + the client's id kept",
-                format!("visitor_id INTEGER, user_id VARCHAR, {COMMON}"),
+                format!("session_id INTEGER, user_id VARCHAR, {COMMON}"),
                 format!(
-                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS visitor_id, \
+                    "SELECT CASE WHEN {logged_in} THEN {hash_of_user} ELSE {hash_of} END AS session_id, \
                      {user_id} AS user_id, \
                      'w1', x, 'pageview', 'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', \
                      'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', '', 'A title' \
@@ -197,10 +200,10 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
             ),
             (
                 "one column (text)",
-                format!("visitor_id VARCHAR, {COMMON}"),
+                format!("session_id VARCHAR, {COMMON}"),
                 format!(
                     "SELECT CASE WHEN {logged_in} THEN {user_id} ELSE \
-                     sumimi_b64({hash_of}) END AS visitor_id, \
+                     sumimi_b64({hash_of}) END AS session_id, \
                      'w1', x, 'pageview', 'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', \
                      'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', '', 'A title' \
                      FROM (WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < {ROWS}) \
@@ -215,30 +218,30 @@ fn designs(engine: &str) -> Vec<(&'static str, String, String)> {
 fn logged_in_sql(engine: &str, design: &str) -> Option<String> {
     match (engine, design) {
         ("duckdb", "fixed (BIGINT only)") => Some(
-            "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) FROM event \
-             WHERE visitor_id IN (SELECT hash('u' || (i % 120000)) FROM generate_series(0, 119999) t(i))"
+            "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) FROM website_event \
+             WHERE session_id IN (SELECT hash('u' || (i % 120000)) FROM generate_series(0, 119999) t(i))"
                 .to_string(),
         ),
         ("duckdb", "fixed + the client's id kept") => Some(
-            "SELECT CAST(count(DISTINCT user_id) AS VARCHAR) FROM event WHERE user_id IS NOT NULL"
+            "SELECT CAST(count(DISTINCT user_id) AS VARCHAR) FROM website_event WHERE user_id IS NOT NULL"
                 .to_string(),
         ),
         ("duckdb", _) => Some(
-            "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) FROM event WHERE length(visitor_id) > 20"
+            "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) FROM website_event WHERE length(session_id) > 20"
                 .to_string(),
         ),
         (_, "fixed (BIGINT only)") => Some(
-            "SELECT CAST(count(DISTINCT visitor_id) AS TEXT) FROM event \
-             WHERE visitor_id IN (SELECT sumimi_hash8('u' || (x % 120000)) FROM \
+            "SELECT CAST(count(DISTINCT session_id) AS TEXT) FROM website_event \
+             WHERE session_id IN (SELECT sumimi_hash8('u' || (x % 120000)) FROM \
              (WITH RECURSIVE seq(x) AS (SELECT 0 UNION ALL SELECT x+1 FROM seq WHERE x < 119999) SELECT x FROM seq) t)"
                 .to_string(),
         ),
         (_, "fixed + the client's id kept") => Some(
-            "SELECT CAST(count(DISTINCT user_id) AS TEXT) FROM event WHERE user_id IS NOT NULL"
+            "SELECT CAST(count(DISTINCT user_id) AS TEXT) FROM website_event WHERE user_id IS NOT NULL"
                 .to_string(),
         ),
         (_, _) => Some(
-            "SELECT CAST(count(DISTINCT visitor_id) AS TEXT) FROM event WHERE length(visitor_id) > 20"
+            "SELECT CAST(count(DISTINCT session_id) AS TEXT) FROM website_event WHERE length(session_id) > 20"
                 .to_string(),
         ),
     }
@@ -260,16 +263,16 @@ fn main() -> anyhow::Result<()> {
 
             if engine == "duckdb" {
                 let conn = duckdb::Connection::open(&path)?;
-                conn.execute_batch(&format!("CREATE TABLE event ({columns});"))?;
-                conn.execute_batch(&format!("INSERT INTO event {insert};"))?;
+                conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
+                conn.execute_batch(&format!("INSERT INTO website_event {insert};"))?;
                 conn.execute_batch("CHECKPOINT")?;
                 drop(conn);
             } else {
                 let conn = rusqlite::Connection::open(&path)?;
                 register_hash8(&conn)?;
                 register_b64(&conn)?;
-                conn.execute_batch(&format!("CREATE TABLE event ({columns});"))?;
-                conn.execute_batch(&format!("INSERT INTO event {insert};"))?;
+                conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
+                conn.execute_batch(&format!("INSERT INTO website_event {insert};"))?;
                 conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
                 drop(conn);
             }

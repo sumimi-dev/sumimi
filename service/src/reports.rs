@@ -17,15 +17,38 @@ use crate::models::{BreakdownRow, EventRow, Hit, MetricsSummary, MetricValue, Se
 use crate::pool::Db;
 use crate::query::{Dialect, Granularity, Param};
 use crate::storage::{
-    group_sessions, session_scan_limit, Dimension, ReportQuery, SessionEvent, Storage, StorageStats,
-    SummaryMetrics, WebsitePatch,
+    group_sessions, session_scan_limit, Dimension, Layout, ReportQuery, SessionEvent, Storage,
+    StorageStats, SummaryMetrics, WebsitePatch,
 };
 
 /// How DuckDB spells the things that differ.
 ///
 /// Everything else — the columns, the conditions, the counts — is in the
 /// shared queries (see [`crate::query`]).
-pub struct Duck;
+///
+/// **The table's name is here too**, because where the rows live is the
+/// engine's business: in the shape of an instance every site has a file of
+/// its own, so the table is written `s_….website_event`; in the flat shape
+/// (the archive, the tools that measure things) it is written plain.
+pub struct Duck {
+    /// How the fact tables are reached.
+    layout: Layout,
+}
+
+impl Duck {
+    /// The dialect of the given shape.
+    pub fn new(layout: Layout) -> Self {
+        Self { layout }
+    }
+
+    /// The catalog a site's tables live in.
+    fn catalog(&self, website_id: &str) -> Option<String> {
+        match self.layout {
+            Layout::PerSite => Some(crate::db::site_alias(website_id)),
+            Layout::Flat => None,
+        }
+    }
+}
 
 impl Dialect for Duck {
     /// DuckDB's parameters are positional: the number does not matter.
@@ -55,6 +78,20 @@ impl Dialect for Duck {
             "strftime(date_trunc('{}', {expr}), '{format}')",
             granularity.name()
         )
+    }
+
+    fn event_table(&self, website_id: &str) -> String {
+        match self.catalog(website_id) {
+            Some(catalog) => format!("{catalog}.website_event"),
+            None => "website_event".to_string(),
+        }
+    }
+
+    fn revenue_table(&self, website_id: &str) -> String {
+        match self.catalog(website_id) {
+            Some(catalog) => format!("{catalog}.revenue"),
+            None => "revenue".to_string(),
+        }
     }
 }
 
@@ -117,7 +154,13 @@ impl Storage for Db {
         retention_days: i32,
         country_header: Option<&str>,
     ) -> Result<Website> {
-        self.with_write(|conn| create_website(conn, name, domain, retention_days, country_header))
+        let site = self.with_write(|conn| {
+            create_website(conn, name, domain, retention_days, country_header)
+        })?;
+        // The site gets a file of its own — attached, and created if it is not
+        // there yet, so the operator sees one file per site.
+        self.ensure_site(&site.id)?;
+        Ok(site)
     }
 
     fn update_website(&self, id: &str, patch: &WebsitePatch) -> Result<Website> {
@@ -125,18 +168,29 @@ impl Storage for Db {
     }
 
     fn delete_website(&self, id: &str) -> Result<bool> {
-        self.with_write(|conn| {
-            // The event table is the only fact table: sessions and visitors are
+        // **A site that is not there is not an error** — it is nothing to do.
+        // ⇒ ⇒ The question is asked *before* the facts are touched: they live
+        // in the site's own file, and that file is gone with the site ⇒ ⇒ ⇒
+        // a second delete would be talking about a file that is not there.
+        if self.with_read(|conn| website(conn, id))?.is_none() {
+            return Ok(false);
+        }
+        let removed = self.with_write(|conn| {
+            // The fact table is the only fact table: sessions and visitors are
             // derived from it, so deleting the events deletes them too.
-            conn.execute("DELETE FROM event WHERE website_id = ?", [id])?;
-            conn.execute("DELETE FROM revenue WHERE website_id = ?", [id])?;
+            let (events, revenue) = erase_site(conn, id, self.layout())?;
+            let _ = (events, revenue);
             let removed = conn.execute("DELETE FROM website WHERE id = ?", [id])?;
             Ok(removed > 0)
-        })
+        })?;
+        // The site's file is empty now — take it away.
+        self.drop_site(id)?;
+        Ok(removed)
     }
 
     fn summary(&self, query: &ReportQuery) -> Result<SummaryMetrics> {
-        self.with_read(|conn| summary(conn, query))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| summary(conn, query, self.layout()))
     }
 
     fn summary_with_change(&self, query: &ReportQuery) -> Result<MetricsSummary> {
@@ -155,23 +209,28 @@ impl Storage for Db {
     }
 
     fn breakdown(&self, query: &ReportQuery, dimension: Dimension) -> Result<Vec<BreakdownRow>> {
-        self.with_read(|conn| breakdown(conn, query, dimension))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| breakdown(conn, query, dimension, self.layout()))
     }
 
     fn timeseries(&self, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-        self.with_read(|conn| timeseries(conn, query))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| timeseries(conn, query, self.layout()))
     }
 
     fn events(&self, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-        self.with_read(|conn| events(conn, query))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| events(conn, query, self.layout()))
     }
 
     fn query_strings(&self, query: &ReportQuery) -> Result<Vec<(String, i64)>> {
-        self.with_read(|conn| query_strings(conn, query))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| query_strings(conn, query, self.layout()))
     }
 
     fn event_log(&self, query: &ReportQuery) -> Result<Vec<EventRow>> {
-        self.with_read(|conn| event_log(conn, query))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| event_log(conn, query, self.layout()))
     }
 
     fn sessions(&self, query: &ReportQuery) -> Result<Vec<SessionRow>> {
@@ -185,23 +244,33 @@ impl Storage for Db {
     }
 
     fn recent_events(&self, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
-        self.with_read(|conn| recent_events(conn, query, limit))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| recent_events(conn, query, limit, self.layout()))
     }
 
     fn write_batch(&self, hits: &[Hit]) -> Result<()> {
-        self.with_write(|conn| write_batch(conn, hits, &self.next_id))
+        // Every site in the batch gets its file attached before the rows go
+        // into it.
+        for hit in hits {
+            self.ensure_site(&hit.website_id)?;
+        }
+        self.with_write(|conn| write_batch(conn, hits, &self.next_id, self.layout()))
     }
 
     fn write_revenue(&self, records: &[crate::models::Revenue]) -> Result<()> {
-        self.with_write(|conn| write_revenue(conn, records))
+        for record in records {
+            self.ensure_site(&record.website_id)?;
+        }
+        self.with_write(|conn| write_revenue(conn, records, self.layout()))
     }
 
     fn revenue(&self, query: &ReportQuery) -> Result<Vec<crate::models::Revenue>> {
-        self.with_read(|conn| revenue(conn, query))
+        self.ensure_site(&query.website_id)?;
+        self.with_read(|conn| revenue(conn, query, self.layout()))
     }
 
     fn prune(&self, website: Option<&str>) -> Result<(u64, u64)> {
-        self.with_write(|conn| prune(conn, website))
+        self.with_write(|conn| prune(conn, website, self.layout()))
     }
 
     fn delete_before(
@@ -209,16 +278,25 @@ impl Storage for Db {
         before: chrono::NaiveDateTime,
         website: Option<&str>,
     ) -> Result<(u64, u64)> {
-        self.with_write(|conn| delete_before(conn, before, website))
+        self.with_write(|conn| delete_before(conn, before, website, self.layout()))
     }
 
-    fn erase(&self, website: &str) -> Result<u64> {
-        self.with_write(|conn| {
-            let revenue = conn.execute("DELETE FROM revenue WHERE website_id = ?", [website])?;
-            let events = conn.execute("DELETE FROM event WHERE website_id = ?", [website])?;
-            let websites = conn.execute("DELETE FROM website WHERE id = ?", [website])?;
-            Ok((revenue + events + websites) as u64)
-        })
+    fn erase(&self, id: &str) -> Result<u64> {
+        // A site that is not there has nothing to erase (see `delete_website`).
+        //
+        // ⇒ ⇒ The parameter is named `id`, not `website`: the free function
+        // `website` is the one that looks a site up, and a parameter of that
+        // name would shadow it.
+        if self.with_read(|conn| website(conn, id))?.is_none() {
+            return Ok(0);
+        }
+        let removed = self.with_write(|conn| {
+            let (events, revenue) = erase_site(conn, id, self.layout())?;
+            let websites = conn.execute("DELETE FROM website WHERE id = ?", [id])?;
+            Ok(revenue + events + websites as u64)
+        })?;
+        self.drop_site(id)?;
+        Ok(removed)
     }
 
 
@@ -258,7 +336,12 @@ impl Storage for Db {
             Ok((usage, limit, threads))
         })?;
 
-        let size_bytes = std::fs::metadata(self.path()).map(|m| m.len() as i64).unwrap_or(0);
+        // The size of the **instance**: the main file and every site's file.
+        let size_bytes: i64 = crate::db::instance_files(self.path(), "duckdb")
+            .iter()
+            .filter_map(|file| std::fs::metadata(file).ok())
+            .map(|meta| meta.len() as i64)
+            .sum();
 
         Ok(StorageStats {
             backend: "duckdb".to_string(),
@@ -269,6 +352,34 @@ impl Storage for Db {
             websites,
         })
     }
+}
+
+/// The tables of a site, as the statements name them.
+fn tables(layout: Layout, website_id: &str) -> (String, String) {
+    match layout {
+        Layout::PerSite => {
+            let alias = crate::db::site_alias(website_id);
+            (format!("{alias}.website_event"), format!("{alias}.revenue"))
+        }
+        Layout::Flat => ("website_event".to_string(), "revenue".to_string()),
+    }
+}
+
+/// Delete everything a site stored.
+///
+/// ⇒ ⇒ The events and the revenue are in the site's own file; the site's row
+/// is in the main file and is not touched here.
+fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u64, u64)> {
+    let (events, revenue) = tables(layout, website_id);
+    let events = conn.execute(
+        &format!("DELETE FROM {events} WHERE website_id = ?"),
+        [website_id],
+    )? as u64;
+    let revenue = conn.execute(
+        &format!("DELETE FROM {revenue} WHERE website_id = ?"),
+        [website_id],
+    )? as u64;
+    Ok((events, revenue))
 }
 
 // --------------------------------------------------------------------------------------
@@ -419,10 +530,14 @@ fn metric(value: i64, previous: f64) -> MetricValue {
 }
 
 /// Compute the summary metrics for a window.
-fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
+fn summary(
+    conn: &Connection,
+    query: &ReportQuery,
+    layout: Layout,
+) -> Result<SummaryMetrics> {
     // The statement is the shared one (see `crate::query`): the page views,
     // the visitors and the visits.
-    let statement = crate::query::summary(query, &Duck);
+    let statement = crate::query::summary(query, &Duck::new(layout));
     let mut stmt = conn.prepare(&statement.sql)?;
     let (pageviews, visitors, views) = match stmt.query(duckdb::params_from_iter(values(&statement)))?.next()? {
         Some(row) => (
@@ -435,7 +550,7 @@ fn summary(conn: &Connection, query: &ReportQuery) -> Result<SummaryMetrics> {
     drop(stmt);
 
     // The bounces and the average session length.
-    let statement = crate::query::summary_sessions(query, &Duck);
+    let statement = crate::query::summary_sessions(query, &Duck::new(layout));
     let mut stmt = conn.prepare(&statement.sql)?;
     let (bounces, duration) = match stmt.query(duckdb::params_from_iter(values(&statement)))?.next()? {
         Some(row) => (row.get::<_, i64>(0)?, row.get::<_, f64>(1)?),
@@ -457,8 +572,9 @@ fn breakdown(
     conn: &Connection,
     query: &ReportQuery,
     dimension: Dimension,
+    layout: Layout,
 ) -> Result<Vec<BreakdownRow>> {
-    let statement = crate::query::breakdown(query, dimension, &Duck);
+    let statement = crate::query::breakdown(query, dimension, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -480,8 +596,12 @@ fn breakdown(
 }
 
 /// The query strings of the visited pages, with how often each was seen.
-fn query_strings(conn: &Connection, query: &ReportQuery) -> Result<Vec<(String, i64)>> {
-    let statement = crate::query::query_strings(query, &Duck);
+fn query_strings(
+    conn: &Connection,
+    query: &ReportQuery,
+    layout: Layout,
+) -> Result<Vec<(String, i64)>> {
+    let statement = crate::query::query_strings(query, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -493,8 +613,12 @@ fn query_strings(conn: &Connection, query: &ReportQuery) -> Result<Vec<(String, 
 }
 
 /// Page views over time.
-fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-    let statement = crate::query::timeseries(query, &Duck);
+fn timeseries(
+    conn: &Connection,
+    query: &ReportQuery,
+    layout: Layout,
+) -> Result<Vec<BreakdownRow>> {
+    let statement = crate::query::timeseries(query, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -512,8 +636,12 @@ fn timeseries(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow
 }
 
 /// Custom events, grouped by name.
-fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
-    let statement = crate::query::events(query, &Duck);
+fn events(
+    conn: &Connection,
+    query: &ReportQuery,
+    layout: Layout,
+) -> Result<Vec<BreakdownRow>> {
+    let statement = crate::query::events(query, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -530,8 +658,12 @@ fn events(conn: &Connection, query: &ReportQuery) -> Result<Vec<BreakdownRow>> {
 }
 
 /// The raw event log.
-fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
-    let statement = crate::query::event_log(query, &Duck);
+fn event_log(
+    conn: &Connection,
+    query: &ReportQuery,
+    layout: Layout,
+) -> Result<Vec<EventRow>> {
+    let statement = crate::query::event_log(query, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -547,8 +679,13 @@ fn event_log(conn: &Connection, query: &ReportQuery) -> Result<Vec<EventRow>> {
 /// This is what the session log is built from: the log reads the last few
 /// thousand rows, not the whole window, so its cost does not grow with the size
 /// of the database.
-fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
-    let statement = crate::query::recent_events(query, limit, &Duck);
+fn recent_events(
+    conn: &Connection,
+    query: &ReportQuery,
+    limit: i64,
+    layout: Layout,
+) -> Result<Vec<SessionEvent>> {
+    let statement = crate::query::recent_events(query, limit, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -560,8 +697,12 @@ fn recent_events(conn: &Connection, query: &ReportQuery, limit: i64) -> Result<V
 }
 
 /// The revenue of a website over a window.
-fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<crate::models::Revenue>> {
-    let statement = crate::query::revenue(query, &Duck);
+fn revenue(
+    conn: &Connection,
+    query: &ReportQuery,
+    layout: Layout,
+) -> Result<Vec<crate::models::Revenue>> {
+    let statement = crate::query::revenue(query, &Duck::new(layout));
 
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
@@ -587,9 +728,17 @@ fn revenue(conn: &Connection, query: &ReportQuery) -> Result<Vec<crate::models::
 
 /// Persist a batch of hits.
 ///
-/// The event table is append only: every hit becomes one row and nothing is ever
+/// The fact table is append only: every hit becomes one row and nothing is ever
 /// updated. Sessions, visitors and page views are derived from it.
-fn write_batch(conn: &Connection, batch: &[Hit], next_id: &AtomicI64) -> Result<()> {
+///
+/// **The rows go into the site they belong to** — one file per site — so a
+/// batch that spans two sites is written to two files.
+fn write_batch(
+    conn: &Connection,
+    batch: &[Hit],
+    next_id: &AtomicI64,
+    layout: Layout,
+) -> Result<()> {
     let now = crate::db::now();
 
     // Retention: drop hits that are older than the website's window.
@@ -609,47 +758,93 @@ fn write_batch(conn: &Connection, batch: &[Hit], next_id: &AtomicI64) -> Result<
         return Ok(());
     }
 
-    // The appender does not apply column defaults, so the id is assigned here.
-    // The ids come from the counter in memory: asking the database for the next
-    // one (`MAX(id) + 1`) costs 0.24 ms per batch, and there is no primary key
-    // on `event` to enforce uniqueness (see `db.rs`) — the single writer and the
-    // counter are what keep the ids unique.
-    let mut appender = conn.appender("event")?;
+    // The hits, grouped by the site they belong to — in the order the sites
+    // came in.
+    let mut by_site: Vec<(String, Vec<&Hit>)> = Vec::new();
     for hit in kept {
-        let id = next_id.fetch_add(1, Ordering::Relaxed);
-        let kind = hit.kind.as_str();
-        let row = crate::db::event_row(&id, hit, &kind);
-        appender.append_row(&row[..])?;
+        match by_site.iter_mut().find(|(id, _)| id == &hit.website_id) {
+            Some((_, hits)) => hits.push(hit),
+            None => by_site.push((hit.website_id.clone(), vec![hit])),
+        }
     }
-    appender.flush()?;
+
+    for (website_id, hits) in &by_site {
+        // The appender does not apply column defaults, so the id is assigned here.
+        // The ids come from the counter in memory: asking the database for the next
+        // one (`MAX(event_id) + 1`) costs 0.24 ms per batch, and there is no primary
+        // key on the fact table to enforce uniqueness (see `db.rs`) — the single
+        // writer and the counter are what keep the ids unique.
+        let mut appender = match layout {
+            Layout::PerSite => conn.appender_to_catalog_and_db(
+                "website_event",
+                &crate::db::site_alias(website_id),
+                "main",
+            )?,
+            Layout::Flat => conn.appender("website_event")?,
+        };
+        for hit in hits {
+            let id = next_id.fetch_add(1, Ordering::Relaxed);
+            let kind = hit.kind.as_str();
+            let row = crate::db::event_row(&id, hit, &kind);
+            appender.append_row(&row[..])?;
+        }
+        appender.flush()?;
+    }
     Ok(())
 }
 
 /// Append revenue records.
-fn write_revenue(conn: &Connection, records: &[crate::models::Revenue]) -> Result<()> {
+///
+/// **The records go into the site they belong to** — one file per site.
+fn write_revenue(
+    conn: &Connection,
+    records: &[crate::models::Revenue],
+    layout: Layout,
+) -> Result<()> {
     if records.is_empty() {
         return Ok(());
     }
-    let next_id: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(id), 0) + 1 FROM revenue",
-        [],
-        |row| row.get(0),
-    )?;
 
-    let mut appender = conn.appender("revenue")?;
-    for (index, record) in records.iter().enumerate() {
-        appender.append_row(duckdb::params![
-            next_id + index as i64,
-            record.website_id,
-            record.visit_id,
-            record.event_id,
-            record.event_name,
-            record.currency,
-            record.revenue,
-            record.created_at,
-        ])?;
+    // The records, grouped by the site they belong to.
+    let mut by_site: Vec<(String, Vec<&crate::models::Revenue>)> = Vec::new();
+    for record in records {
+        match by_site.iter_mut().find(|(id, _)| id == &record.website_id) {
+            Some((_, group)) => group.push(record),
+            None => by_site.push((record.website_id.clone(), vec![record])),
+        }
     }
-    appender.flush()?;
+
+    for (website_id, records) in &by_site {
+        let (events_table, revenue_table) = tables(layout, website_id);
+        let _ = events_table;
+        let next_id: i64 = conn.query_row(
+            &format!("SELECT COALESCE(MAX(id), 0) + 1 FROM {revenue_table}"),
+            [],
+            |row| row.get(0),
+        )?;
+
+        let mut appender = match layout {
+            Layout::PerSite => conn.appender_to_catalog_and_db(
+                "revenue",
+                &crate::db::site_alias(website_id),
+                "main",
+            )?,
+            Layout::Flat => conn.appender("revenue")?,
+        };
+        for (index, record) in records.iter().enumerate() {
+            appender.append_row(duckdb::params![
+                next_id + index as i64,
+                record.website_id,
+                record.visit_id,
+                record.event_id,
+                record.event_name,
+                record.currency,
+                record.revenue,
+                record.created_at,
+            ])?;
+        }
+        appender.flush()?;
+    }
     Ok(())
 }
 
@@ -658,36 +853,33 @@ fn delete_before(
     conn: &Connection,
     before: chrono::NaiveDateTime,
     website: Option<&str>,
+    layout: Layout,
 ) -> Result<(u64, u64)> {
     let mut events = 0u64;
     let mut revenue = 0u64;
-    match website {
-        Some(id) => {
-            revenue += conn.execute(
-                "DELETE FROM revenue WHERE website_id = ? AND created_at < ?",
-                duckdb::params![id, before],
-            )? as u64;
-            events += conn.execute(
-                "DELETE FROM event WHERE website_id = ? AND created_at < ?",
-                duckdb::params![id, before],
-            )? as u64;
-        }
-        None => {
-            revenue += conn.execute(
-                "DELETE FROM revenue WHERE created_at < ?",
-                duckdb::params![before],
-            )? as u64;
-            events += conn.execute(
-                "DELETE FROM event WHERE created_at < ?",
-                duckdb::params![before],
-            )? as u64;
-        }
+
+    // The sites to touch: one, or all of them.
+    let sites: Vec<String> = match website {
+        Some(id) => vec![id.to_string()],
+        None => crate::db::site_ids(conn)?,
+    };
+
+    for id in &sites {
+        let (events_table, revenue_table) = tables(layout, id);
+        revenue += conn.execute(
+            &format!("DELETE FROM {revenue_table} WHERE website_id = ? AND created_at < ?"),
+            duckdb::params![id, before],
+        )? as u64;
+        events += conn.execute(
+            &format!("DELETE FROM {events_table} WHERE website_id = ? AND created_at < ?"),
+            duckdb::params![id, before],
+        )? as u64;
     }
     Ok((events, revenue))
 }
 
 /// Delete data that is older than the retention window of its website.
-fn prune(conn: &Connection, website: Option<&str>) -> Result<(u64, u64)> {
+fn prune(conn: &Connection, website: Option<&str>, layout: Layout) -> Result<(u64, u64)> {
     let mut events = 0u64;
     let mut revenue = 0u64;
     let now = crate::db::now();
@@ -710,12 +902,13 @@ fn prune(conn: &Connection, website: Option<&str>) -> Result<(u64, u64)> {
     }
 
     for (id, cutoff) in &cutoffs {
+        let (events_table, revenue_table) = tables(layout, id);
         revenue += conn.execute(
-            "DELETE FROM revenue WHERE website_id = ? AND created_at < ?",
+            &format!("DELETE FROM {revenue_table} WHERE website_id = ? AND created_at < ?"),
             duckdb::params![id, *cutoff],
         )? as u64;
         events += conn.execute(
-            "DELETE FROM event WHERE website_id = ? AND created_at < ?",
+            &format!("DELETE FROM {events_table} WHERE website_id = ? AND created_at < ?"),
             duckdb::params![id, *cutoff],
         )? as u64;
     }

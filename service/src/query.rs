@@ -65,6 +65,22 @@ pub trait Dialect {
 
     /// The bucket a moment falls into.
     fn bucket(&self, granularity: Granularity, expr: &str) -> String;
+
+    /// The **fact table**, as this engine names it.
+    ///
+    /// **The name is the engine's business; the columns are not.** The
+    /// engines that keep one file per site put the site's file in front of
+    /// the table (`s_1a2b….website_event`), the ones that keep everything in
+    /// one database do not (`event`).
+    ///
+    /// ⇒ ⇒ The statement above says `FROM {table}` and the dialect fills it
+    /// in ⇒ ⇒ ⇒ the **口径** does not know where the rows live ⇒ ⇒ ⇒ the
+    /// shape of the storage is free to change without touching a single
+    /// number.
+    fn event_table(&self, website_id: &str) -> String;
+
+    /// The **revenue table**, as this engine names it.
+    fn revenue_table(&self, website_id: &str) -> String;
 }
 
 /// How fine the buckets of a time series are.
@@ -230,9 +246,16 @@ impl Statement {
 
 /// The summary of a window: the page views, the visitors and the visits.
 ///
-/// The page views are counted without the custom events; the visitors and the
-/// visits are counted over everything — a visitor who only fired a custom
-/// event is still a visitor.
+/// **The rule is Umami's** (since v12): the visitors and the visits are
+/// counted over the groups that have **at least one page view** — so a
+/// visitor whose only event was a custom event is not a visitor, and the
+/// visit it was in is not a visit.
+///
+/// ⇒ ⇒ That is what the reference implementation's statement does (its
+/// `having c > 0`), and it is the same rule spelled differently: **a group
+/// with a page view is a group with a page-view row** ⇒ ⇒ ⇒ so counting the
+/// distinct ids over the page-view rows counts exactly the same ids ⇒ ⇒ ⇒
+/// and the two datasets agree on every number.
 ///
 /// **The two ids are the ones Umami counts.** The visitors are the distinct
 /// `session_id` (our visitor — Umami's name for the same thing) and the
@@ -242,10 +265,11 @@ pub fn summary(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::new(query, dialect);
     let sql = format!(
         "SELECT COUNT(*) FILTER (WHERE {pageviews}),
-                COUNT(DISTINCT session_id),
-                COUNT(DISTINCT visit_id)
-         FROM event WHERE {filters}",
+                COUNT(DISTINCT CASE WHEN {pageviews} THEN session_id END),
+                COUNT(DISTINCT CASE WHEN {pageviews} THEN visit_id END)
+         FROM {table} WHERE {filters}",
         pageviews = PAGEVIEWS,
+        table = dialect.event_table(&query.website_id),
         filters = filters.clause(),
     );
     Statement::of(sql, filters.values().to_vec())
@@ -285,12 +309,13 @@ pub fn summary_sessions(query: &ReportQuery, dialect: &dyn Dialect) -> Statement
                         WHEN MAX(created_at) FILTER (WHERE {pageviews}) IS NULL THEN NULL
                         ELSE {greatest} / 1000000.0
                     END AS d
-             FROM event WHERE {filters}
+             FROM {table} WHERE {filters}
              GROUP BY visit_id
          )",
         average = dialect.cast_double("COALESCE(AVG(d), 0)"),
         greatest = dialect.greatest(&span, "0"),
         pageviews = PAGEVIEWS,
+        table = dialect.event_table(&query.website_id),
         filters = filters.clause(),
     );
     Statement::of(sql, filters.values().to_vec())
@@ -323,12 +348,13 @@ pub fn breakdown(
 
     let sql = format!(
         "SELECT COALESCE({column}, 'unknown') AS name, {aggregate} AS value
-         FROM event WHERE {where_clause} AND {pageviews}
+         FROM {table} WHERE {where_clause} AND {pageviews}
          GROUP BY name
          ORDER BY value DESC, name ASC
          LIMIT {limit}",
         column = dimension.column(),
         aggregate = aggregate,
+        table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
         pageviews = PAGEVIEWS,
         limit = query.limit.clamp(1, 1000),
@@ -349,10 +375,11 @@ pub fn timeseries(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 
     let sql = format!(
         "SELECT {bucket} AS bucket, COUNT(*) AS value
-         FROM event WHERE {where_clause} AND {pageviews}
+         FROM {table} WHERE {where_clause} AND {pageviews}
          GROUP BY bucket
          ORDER BY bucket ASC",
         bucket = dialect.bucket(granularity, "created_at"),
+        table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
         pageviews = PAGEVIEWS,
     );
@@ -364,11 +391,12 @@ pub fn events(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::new(query, dialect);
     let sql = format!(
         "SELECT COALESCE(event_name, 'unknown') AS name, COUNT(*) AS value
-         FROM event
+         FROM {table}
          WHERE {where_clause} AND event_type = 'event'
          GROUP BY name
          ORDER BY value DESC, name ASC
          LIMIT {limit}",
+        table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
         limit = query.limit.clamp(1, 1000),
     );
@@ -379,9 +407,10 @@ pub fn events(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn query_strings(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::new(query, dialect);
     let sql = format!(
-        "SELECT url_query, COUNT(*) AS value FROM event
+        "SELECT url_query, COUNT(*) AS value FROM {table}
          WHERE {where_clause} AND {pageviews} AND url_query IS NOT NULL AND url_query <> ''
          GROUP BY url_query ORDER BY value DESC LIMIT 1000",
+        table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
         pageviews = PAGEVIEWS,
     );
@@ -392,12 +421,13 @@ pub fn query_strings(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT id, website_id, visit_id, session_id, created_at, event_name, url, hostname, channel, data,
-                referrer, referrer_path, referrer_query, country, city, browser, os,
+        "SELECT event_id, website_id, visit_id, session_id, created_at, event_name, url_path, hostname, channel, data,
+                referrer_domain, referrer_path, referrer_query, country, city, browser, os,
                 utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
-         FROM event WHERE {where_clause}
-         ORDER BY created_at DESC, id DESC
+         FROM {table} WHERE {where_clause}
+         ORDER BY created_at DESC, event_id DESC
          LIMIT {limit} OFFSET {offset}",
+        table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
         limit = query.limit.clamp(1, 1000),
         offset = query.offset.max(0),
@@ -413,12 +443,13 @@ pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn recent_events(query: &ReportQuery, limit: i64, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT id, visit_id, session_start, created_at, url, title, referrer, referrer_path,
+        "SELECT event_id, visit_id, session_start, created_at, url_path, page_title, referrer_domain, referrer_path,
                 hostname, channel, browser, os, device, country, region, city, language, screen,
                 ip_prefix, user_agent
-         FROM event WHERE {where_clause}
-         ORDER BY created_at DESC, id DESC
+         FROM {table} WHERE {where_clause}
+         ORDER BY created_at DESC, event_id DESC
          LIMIT {limit}",
+        table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
         limit = limit.clamp(1, 1_000_000),
     );
@@ -434,9 +465,10 @@ pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
         "SELECT id, website_id, visit_id, event_id, event_name, currency, revenue, created_at
-         FROM revenue WHERE {where_clause}
+         FROM {table} WHERE {where_clause}
          ORDER BY created_at DESC, id DESC
          LIMIT {limit} OFFSET {offset}",
+        table = dialect.revenue_table(&query.website_id),
         where_clause = filters.clause(),
         limit = query.limit.clamp(1, 1000),
         offset = query.offset.max(0),
@@ -451,8 +483,9 @@ pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 /// asks for are the shared list (see [`crate::row::EVENT_COLUMNS`]).
 pub fn event_rows(website_id: &str, dialect: &dyn Dialect) -> Statement {
     let sql = format!(
-        "SELECT {columns} FROM event WHERE website_id = {website} ORDER BY id ASC",
+        "SELECT {columns} FROM {table} WHERE website_id = {website} ORDER BY event_id ASC",
         columns = crate::row::EVENT_COLUMNS,
+        table = dialect.event_table(website_id),
         website = dialect.placeholder(1),
     );
     Statement::of(sql, vec![Param::Text(website_id.to_string())])
@@ -482,6 +515,12 @@ mod tests {
         fn bucket(&self, granularity: Granularity, expr: &str) -> String {
             format!("bucket({granularity:?}, {expr})")
         }
+        fn event_table(&self, _website_id: &str) -> String {
+            "event".to_string()
+        }
+        fn revenue_table(&self, _website_id: &str) -> String {
+            "revenue".to_string()
+        }
     }
 
     #[test]
@@ -493,7 +532,7 @@ mod tests {
         let filters = Filters::logs(&query, &Numbered);
         assert_eq!(
             filters.clause(),
-            "website_id = $1 AND created_at >= $2 AND created_at < $3 AND url = $4 AND browser = $5"
+            "website_id = $1 AND created_at >= $2 AND created_at < $3 AND url_path = $4 AND browser = $5"
         );
         assert_eq!(filters.values().len(), 5);
     }
@@ -507,7 +546,7 @@ mod tests {
         let filters = Filters::logs(&query, &Numbered);
         assert_eq!(
             filters.clause(),
-            "website_id = $1 AND created_at >= $2 AND created_at < $3 AND referrer = $4"
+            "website_id = $1 AND created_at >= $2 AND created_at < $3 AND referrer_domain = $4"
         );
         assert_eq!(filters.values().len(), 4);
     }

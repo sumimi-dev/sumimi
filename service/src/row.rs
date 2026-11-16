@@ -44,7 +44,7 @@ pub trait Row {
 /// The row of the **event log**.
 pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
     Ok(EventRow {
-        id: row.int("id")?.unwrap_or_default().to_string(),
+        id: row.int("event_id")?.unwrap_or_default().to_string(),
         website_id: row.text("website_id")?.unwrap_or_default(),
         // The two ids, named the way Umami names them: the `session_id` is
         // the visitor, the `visit_id` is the stretch of activity it is in.
@@ -52,11 +52,11 @@ pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
         visit_id: row.uuid("visit_id")?.map(format_visit_id),
         created_at: row.time("created_at")?.unwrap_or_default(),
         name: row.text("event_name")?,
-        url: row.text("url")?,
+        url: row.text("url_path")?,
         hostname: row.text("hostname")?,
         channel: row.text("channel")?,
         data: row.text("data")?,
-        referrer: row.text("referrer")?,
+        referrer: row.text("referrer_domain")?,
         referrer_path: row.text("referrer_path")?,
         referrer_query: row.text("referrer_query")?,
         country: row.text("country")?,
@@ -76,15 +76,15 @@ pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
 /// The row of the **session log** — the event the session is built from.
 pub fn session_event_row(row: &dyn Row) -> Result<SessionEvent> {
     Ok(SessionEvent {
-        id: row.int("id")?.unwrap_or_default(),
+        id: row.int("event_id")?.unwrap_or_default(),
         visit_id: row.uuid("visit_id")?.unwrap_or_else(Uuid::nil),
         session_start: row.time("session_start")?,
         ip_prefix: row.text("ip_prefix")?.unwrap_or_default(),
         user_agent: row.text("user_agent")?.unwrap_or_default(),
         created_at: row.time("created_at")?.unwrap_or_default(),
-        url: row.text("url")?,
-        title: row.text("title")?,
-        referrer: row.text("referrer")?,
+        url: row.text("url_path")?,
+        title: row.text("page_title")?,
+        referrer: row.text("referrer_domain")?,
         referrer_path: row.text("referrer_path")?,
         hostname: row.text("hostname")?,
         channel: row.text("channel")?,
@@ -109,14 +109,14 @@ pub fn visit_id_text(id: VisitId) -> String {
 /// The statement that reads them is the shared one (see [`crate::query`]); the
 /// list is here so that the three engines ask for the same columns in the
 /// same order.
-pub const EVENT_COLUMNS: &str = "id, website_id, visit_id, session_id, session_start, \
+pub const EVENT_COLUMNS: &str = "event_id, website_id, visit_id, session_id, session_start, \
      ip, ip_prefix, user_agent, user_id, created_at, \
-     url, url_query, title, \
-     referrer, referrer_path, referrer_query, referrer_name, hostname, channel, \
+     url_path, url_query, page_title, \
+     referrer_domain, referrer_path, referrer_query, referrer_name, hostname, channel, \
      browser, browser_version, os, os_version, device, screen, language, \
      country, region, city, latitude, longitude, \
      utm_source, utm_medium, utm_campaign, utm_content, utm_term, \
-     gclid, fbclid, msclkid, ttclid, lifatid, twclid, \
+     gclid, fbclid, msclkid, ttclid, li_fat_id, twclid, \
      lcp, inp, cls, fcp, ttfb, \
      event_type, event_name, tag, data";
 
@@ -147,10 +147,10 @@ pub fn hit_row(row: &dyn Row) -> Result<Hit> {
             _ => HitKind::Pageview,
         },
         created_at: row.time("created_at")?.unwrap_or_default(),
-        url: row.text("url")?,
+        url: row.text("url_path")?,
         url_query: row.text("url_query")?,
-        title: row.text("title")?,
-        referrer: row.text("referrer")?,
+        title: row.text("page_title")?,
+        referrer: row.text("referrer_domain")?,
         referrer_path: row.text("referrer_path")?,
         referrer_query: row.text("referrer_query")?,
         referrer_name: row.text("referrer_name")?,
@@ -177,7 +177,7 @@ pub fn hit_row(row: &dyn Row) -> Result<Hit> {
         fbclid: row.text("fbclid")?,
         msclkid: row.text("msclkid")?,
         ttclid: row.text("ttclid")?,
-        lifatid: row.text("lifatid")?,
+        lifatid: row.text("li_fat_id")?,
         twclid: row.text("twclid")?,
         lcp: row.float("lcp")?,
         inp: row.float("inp")?,

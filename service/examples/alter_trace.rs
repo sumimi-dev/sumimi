@@ -21,7 +21,7 @@ fn build(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "CREATE TABLE probe (
-             id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT, user_id VARCHAR,
+             id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT, user_id VARCHAR,
              created_at TIMESTAMP, url VARCHAR, title VARCHAR, browser VARCHAR, country VARCHAR);",
     )?;
     conn.execute_batch(&format!(
@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
     std::thread::sleep(Duration::from_millis(50));
     let conn = Connection::open(&path)?;
     let started = Instant::now();
-    conn.execute_batch("ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT")?;
+    conn.execute_batch("ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT")?;
     let alter = started.elapsed().as_secs_f64() * 1000.0;
     println!("the alter: {alter:.1}ms");
     std::thread::sleep(Duration::from_millis(50));

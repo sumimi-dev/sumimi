@@ -9,6 +9,13 @@
 //! sumimi backup --out ./archive                 # write the archive
 //! sumimi summary --parquet './archive/*'        # analyse the archive
 //! ```
+//!
+//! **The archive is flat.** The hot instance is not: since v12 every site has a
+//! file of its own for its facts. The archive is the other way round — one set
+//! of files for the whole instance — so the export **joins the sites back
+//! together** (see [`flat_view`]) and writes what a reader of the archive
+//! expects. The layout of the archive does not change with the layout of the
+//! hot tier: the readers of an archive are many, and they all know one layout.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +33,14 @@ pub struct BackupStats {
     /// The directory the archive was written to.
     pub directory: PathBuf,
 }
+
+/// The name of the view the export reads.
+///
+/// The archive is flat and the hot tier is not, so the sites are joined back
+/// together under one name before they are written.
+const FLAT_EVENTS: &str = "sumimi_flat_events";
+/// The name of the view of the revenue.
+const FLAT_REVENUE: &str = "sumimi_flat_revenue";
 
 /// Write the hot database to a Parquet archive, partitioned by day.
 ///
@@ -48,7 +63,16 @@ pub fn export(
         ..Default::default()
     };
 
-    for (table, sub) in [("event", "events"), ("revenue", "revenue")] {
+    // **The sites are joined back together.** The hot instance holds a file per
+    // site; the archive is one flat set of files. So a view is made of all the
+    // sites' tables, and the export writes that view — one scan, one pass, and
+    // the archive keeps the layout its readers know.
+    let catalogs = site_catalogs(conn)?;
+
+    for (table, view, sub) in [
+        ("website_event", FLAT_EVENTS, "events"),
+        ("revenue", FLAT_REVENUE, "revenue"),
+    ] {
         let directory = out.join(sub);
         std::fs::create_dir_all(&directory)?;
 
@@ -58,7 +82,11 @@ pub fn export(
 
         // A table with no rows is not an error: a site without custom events simply
         // has no event archive.
-        let (min, max) = match range_of(conn, table, website) {
+        let Some(flat) = flat_view(conn, &catalogs, table, view)? else {
+            continue;
+        };
+
+        let (min, max) = match range_of(conn, &flat, website) {
             Ok(range) => range,
             Err(_) => continue,
         };
@@ -70,7 +98,7 @@ pub fn export(
             None => "created_at >= ? AND created_at < ?",
         };
 
-        let count_sql = format!("SELECT count(*) FROM {table} WHERE {filter}");
+        let count_sql = format!("SELECT count(*) FROM {flat} WHERE {filter}");
         let count: i64 = match website {
             Some(id) => conn.query_row(
                 &count_sql,
@@ -92,7 +120,7 @@ pub fn export(
         let copy_sql = format!(
             "COPY (
                  SELECT *, strftime(created_at, '%Y-%m-%d') AS day
-                 FROM {table}
+                 FROM {flat}
                  WHERE {filter}
              ) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (day))"
         );
@@ -132,6 +160,81 @@ pub fn export(
     }
 
     Ok(stats)
+}
+
+/// The catalogs that hold a site's facts.
+///
+/// **Every site's file is attached under the site's own name**, so the
+/// catalogs of the connection are the sites of the instance — and the facts
+/// are read out of them by their alias. The main database is one of them: it
+/// is the flat shape (the archive, the tools that measure things), and its
+/// facts are read plain.
+fn site_catalogs(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT database_name FROM duckdb_databases() \
+         WHERE database_name NOT IN ('system', 'temp') ORDER BY database_name",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut catalogs = Vec::new();
+    while let Some(row) = rows.next()? {
+        catalogs.push(row.get(0)?);
+    }
+    Ok(catalogs)
+}
+
+/// Make a view of every site's table, and say what it is called.
+///
+/// **The sites are joined back together** — the hot instance holds a file per
+/// site, the archive is one flat set of files, so the export reads a view
+/// that is all of them at once. That keeps the export to **one scan**: a
+/// copy per site and a merge afterwards would write every row twice and
+/// would have to be merged by hand.
+///
+/// ⇒ ⇒ `None` when there is no site with that table at all — an instance
+/// without a single site has nothing to archive, and that is not an error.
+fn flat_view(
+    conn: &Connection,
+    catalogs: &[String],
+    table: &str,
+    view: &str,
+) -> Result<Option<String>> {
+    // The catalogs that hold the table.
+    let mut sources = Vec::new();
+    for catalog in catalogs {
+        let found: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.tables \
+             WHERE table_name = ? AND table_catalog = ?",
+            duckdb::params![table, catalog],
+            |row| row.get(0),
+        )?;
+        if found == 0 {
+            continue;
+        }
+        // The main database's tables are written plain; the others carry the
+        // catalog in front of them.
+        let name = if catalog == "main_db" {
+            table.to_string()
+        } else {
+            format!("{catalog}.{table}")
+        };
+        sources.push(name);
+    }
+
+    if sources.is_empty() {
+        return Ok(None);
+    }
+
+    let sql = format!(
+        "CREATE OR REPLACE VIEW {view} AS {}",
+        sources
+            .iter()
+            .map(|source| format!("SELECT * FROM {source}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ")
+    );
+    conn.execute_batch(&sql)
+        .with_context(|| format!("joining the sites' {table} tables"))?;
+    Ok(Some(view.to_string()))
 }
 
 /// Midnight of a day.
@@ -213,39 +316,10 @@ fn range_of(
 ///
 /// The archive is read through `read_parquet()` — it is never imported into the hot
 /// database, so analysing ten years of history costs nothing but the query itself.
+///
+/// **The layout of an archive is the service's business** — the archive is flat
+/// (one set of files for the whole instance) and the service says so when it
+/// opens it, so the archive and the hot tier cannot disagree about it.
 pub fn open_archive(pattern: &str) -> Result<sumimi_service::pool::Db> {
-    let conn = Connection::open_in_memory()?;
-
-    let escape = |value: &str| value.replace('\'', "''");
-
-    // The archive layout: <root>/events/*.parquet, <root>/revenue/*.parquet.
-    let root = pattern.trim_end_matches("/*").trim_end_matches('/');
-    for (table, sub) in [("event", "events"), ("revenue", "revenue")] {
-        let directory = format!("{root}/{sub}");
-        // A table with no rows has no file at all — read_parquet would fail on an
-        // empty glob, so the view is only created when there is something to read.
-        if !has_files(Path::new(&directory)) {
-            continue;
-        }
-        let glob = format!("{directory}/**/*.parquet");
-        let sql = format!(
-            "CREATE VIEW {table} AS SELECT * FROM read_parquet('{}')",
-            escape(&glob)
-        );
-        conn.execute_batch(&sql)
-            .with_context(|| format!("reading the archive at {glob}"))?;
-    }
-
-    let websites = format!("{root}/websites.parquet");
-    let sql = format!(
-        "CREATE VIEW website AS SELECT * FROM read_parquet('{}')",
-        escape(&websites)
-    );
-    // A website table is optional in an archive.
-    let _ = conn.execute_batch(&sql);
-
-    Ok(sumimi_service::pool::Db::from_connection(
-        std::path::Path::new(pattern),
-        conn,
-    ))
+    sumimi_service::pool::Db::open_archive(pattern)
 }

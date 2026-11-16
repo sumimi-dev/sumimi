@@ -8,8 +8,8 @@
 //! ⇒ ⇒ **How much is that worth?** Measured, not argued:
 //!
 //! 1. the same rows, the same schema, the same settings;
-//! 2. **mixed**: one file, one `event` table, the sites interleaved;
-//! 3. **split**: one file per site, one `event` table each;
+//! 2. **mixed**: one file, one `website_event` table, the sites interleaved;
+//! 3. **split**: one file per site, one `website_event` table each;
 //! 4. the three queries the dashboard asks first, timed on both.
 //!
 //! # What it found (2026-11-15, 10 sites × 1 000 000 rows, 861 MB)
@@ -37,7 +37,8 @@ use duckdb::Connection;
 
 /// How many sites.
 const SITES: usize = 10;
-/// How many rows each site has.
+/// How many rows each site has — the full measurement; the argument can make
+/// it smaller, for a quick look.
 const ROWS_PER_SITE: usize = 1_000_000;
 
 /// The queries the dashboard asks first.
@@ -45,26 +46,35 @@ const QUERIES: &[(&str, &str)] = &[
     (
         "summary",
         "SELECT count(*), count(DISTINCT session_id), count(DISTINCT visit_id)
-         FROM event WHERE website_id = ?1",
+         FROM website_event WHERE website_id = ?1",
     ),
     (
         "breakdown",
-        "SELECT browser, count(*) FROM event WHERE website_id = ?1 GROUP BY 1 ORDER BY 2 DESC",
+        "SELECT browser, count(*) FROM website_event WHERE website_id = ?1 GROUP BY 1 ORDER BY 2 DESC",
     ),
     (
         "event log",
-        "SELECT id, website_id, visit_id, session_id, created_at, url, title, referrer,
-                referrer_path, hostname, browser, os, device, country, city, lcp, inp, cls
-         FROM event WHERE website_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 50",
+        "SELECT event_id, website_id, visit_id, session_id, created_at, url_path, page_title,
+                referrer_domain, referrer_path, hostname, browser, os, device, country, city,
+                lcp, inp, cls
+         FROM website_event WHERE website_id = ?1 ORDER BY created_at DESC, event_id DESC LIMIT 50",
     ),
     (
         "timeseries",
-        "SELECT date_trunc('day', created_at) AS d, count(*) FROM event
+        "SELECT date_trunc('day', created_at) AS d, count(*) FROM website_event
          WHERE website_id = ?1 GROUP BY 1 ORDER BY 1",
     ),
 ];
 
 fn main() -> Result<()> {
+    // The rows each site gets; the argument makes the measurement smaller, for
+    // a quick look. The recorded numbers are the full one.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let rows_per_site: usize = args
+        .first()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ROWS_PER_SITE);
+
     let dir = std::env::temp_dir().join("sumimi-site-split");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
@@ -75,10 +85,10 @@ fn main() -> Result<()> {
 
     println!("== building ==");
     let start = Instant::now();
-    build_mixed(&mixed_path)?;
-    println!("  mixed: one file, {SITES} sites, {ROWS_PER_SITE} rows each");
-    build_split(&split_dir)?;
-    println!("  split: {SITES} files, {ROWS_PER_SITE} rows each");
+    build_mixed(&mixed_path, rows_per_site)?;
+    println!("  mixed: one file, {SITES} sites, {rows_per_site} rows each");
+    build_split(&split_dir, rows_per_site)?;
+    println!("  split: {SITES} files, {rows_per_site} rows each");
     println!("  built in {:.1}s\n", start.elapsed().as_secs_f64());
 
     let mixed_size = std::fs::metadata(&mixed_path)?.len();
@@ -237,15 +247,21 @@ fn site_path(dir: &std::path::Path, site: usize) -> std::path::PathBuf {
 }
 
 /// One file, one table, every site in it — the traffic interleaved.
-fn build_mixed(path: &std::path::Path) -> Result<()> {
+///
+/// ⇒ ⇒ This is the **pre-D-046 shape**: the server no longer keeps the sites
+/// in one file, but the shape is still what the *other* engines (and the
+/// PostgreSQL one) look like, so the comparison needs it. The measured
+/// question — "is a table per site faster than one table for all?" — is
+/// unchanged by where the file lives.
+fn build_mixed(path: &std::path::Path, rows_per_site: usize) -> Result<()> {
     let conn = Connection::open(path)?;
     sumimi_service::db::init_schema(&conn)?;
     // The rows are interleaved by the order they arrive: site 0's first row,
     // site 1's first row, … — the way the traffic really lands. Every row
     // group therefore holds rows of every site.
     conn.execute_batch(&format!(
-        "INSERT INTO event (id, website_id, visit_id, session_id, session_start, created_at,
-                            url, url_query, title, referrer, referrer_path, referrer_name,
+        "INSERT INTO website_event (event_id, website_id, visit_id, session_id, session_start, created_at,
+                            url_path, url_query, page_title, referrer_domain, referrer_path, referrer_name,
                             hostname, browser, browser_version, os, os_version, device, screen,
                             language, country, region, city, ip_prefix, user_agent, channel,
                             utm_source, utm_medium, utm_campaign, gclid, lcp, inp, cls, fcp, ttfb,
@@ -278,20 +294,20 @@ fn build_mixed(path: &std::path::Path) -> Result<()> {
                 400.0 + (i % 900), 60.0 + (i % 220),
                 'pageview', NULL
          FROM range({}) t(i)",
-        ROWS_PER_SITE * SITES
+        rows_per_site * SITES
     ))?;
     conn.execute_batch("CHECKPOINT")?;
     Ok(())
 }
 
 /// One file per site, one table each.
-fn build_split(dir: &std::path::Path) -> Result<()> {
+fn build_split(dir: &std::path::Path, rows_per_site: usize) -> Result<()> {
     for site in 0..SITES {
         let conn = Connection::open(site_path(dir, site))?;
         sumimi_service::db::init_schema(&conn)?;
         conn.execute_batch(&format!(
-            "INSERT INTO event (id, website_id, visit_id, session_id, session_start, created_at,
-                                url, url_query, title, referrer, referrer_path, referrer_name,
+            "INSERT INTO website_event (event_id, website_id, visit_id, session_id, session_start, created_at,
+                                url_path, url_query, page_title, referrer_domain, referrer_path, referrer_name,
                                 hostname, browser, browser_version, os, os_version, device, screen,
                                 language, country, region, city, ip_prefix, user_agent, channel,
                                 utm_source, utm_medium, utm_campaign, gclid, lcp, inp, cls, fcp, ttfb,
@@ -323,7 +339,7 @@ fn build_split(dir: &std::path::Path) -> Result<()> {
                     1200.0 + (i % 1800), 30.0 + (i % 260), (i % 100) / 1000.0,
                     400.0 + (i % 900), 60.0 + (i % 220),
                     'pageview', NULL
-             FROM range({ROWS_PER_SITE}) t(i)"
+             FROM range({rows_per_site}) t(i)"
         ))?;
         conn.execute_batch("CHECKPOINT")?;
     }

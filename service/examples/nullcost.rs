@@ -30,8 +30,9 @@ fn rows(with_values: bool) -> String {
     } else {
         ("NULL", "NULL", "NULL")
     };
+    // The order has to be the table's — the insert is positional.
     format!(
-        "SELECT i, 'w1', i, {ip}, {prefix}, {agent}, 'Chrome', '120', 'macOS', '10', 'desktop', \
+        "SELECT i, 'w1', 'visitor-' || i, {ip}, {prefix}, {agent}, 'Chrome', '120', 'macOS', '10', 'desktop', \
          '1920x1080', 'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', \
          'utm_source=twitter', 'A reasonably long article title' \
          FROM generate_series(1, {ROWS}) t(i)"
@@ -41,7 +42,7 @@ fn rows(with_values: bool) -> String {
 /// The rows without the three columns.
 fn rows_without() -> String {
     format!(
-        "SELECT i, 'w1', i, 'Chrome', '120', 'macOS', '10', 'desktop', \
+        "SELECT i, 'w1', 'visitor-' || i, 'Chrome', '120', 'macOS', '10', 'desktop', \
          '1920x1080', 'en-US', 'DE', 'Berlin', 'Berlin', 52.52, 13.405, '/blog/post', \
          'utm_source=twitter', 'A reasonably long article title' \
          FROM generate_series(1, {ROWS}) t(i)"
@@ -49,16 +50,19 @@ fn rows_without() -> String {
 }
 
 /// The table: the same in every variant.
-const COLUMNS: &str = "id INTEGER, website_id TEXT, visit_id INTEGER, ip TEXT, ip_prefix TEXT, \
+///
+/// The names are the schema's — the table here is the real fact table, so it
+/// has to look like it.
+const COLUMNS: &str = "event_id INTEGER, website_id TEXT, session_id TEXT, ip TEXT, ip_prefix TEXT, \
      user_agent TEXT, browser TEXT, browser_version TEXT, os TEXT, os_version TEXT, \
      device TEXT, screen TEXT, language TEXT, country TEXT, region TEXT, city TEXT, \
-     latitude DOUBLE, longitude DOUBLE, url TEXT, url_query TEXT, title TEXT";
+     latitude DOUBLE, longitude DOUBLE, url_path TEXT, url_query TEXT, page_title TEXT";
 
 /// The same table without the three columns at all.
-const COLUMNS_WITHOUT: &str = "id INTEGER, website_id TEXT, visit_id INTEGER, \
+const COLUMNS_WITHOUT: &str = "event_id INTEGER, website_id TEXT, session_id TEXT, \
      browser TEXT, browser_version TEXT, os TEXT, os_version TEXT, \
      device TEXT, screen TEXT, language TEXT, country TEXT, region TEXT, city TEXT, \
-     latitude DOUBLE, longitude DOUBLE, url TEXT, url_query TEXT, title TEXT";
+     latitude DOUBLE, longitude DOUBLE, url_path TEXT, url_query TEXT, page_title TEXT";
 
 fn main() -> anyhow::Result<()> {
     // --- DuckDB ---
@@ -80,7 +84,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             COLUMNS
         };
-        conn.execute_batch(&format!("CREATE TABLE event ({columns});"))?;
+        conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
         // The empty-string variant: the values are there and they are "".
         let sql = if label == "no columns" {
             rows_without()
@@ -98,7 +102,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             rows(with_values)
         };
-        conn.execute_batch(&format!("INSERT INTO event {sql};"))?;
+        conn.execute_batch(&format!("INSERT INTO website_event {sql};"))?;
         conn.execute_batch("CHECKPOINT")?;
         drop(conn);
         duck.push((label, size(&path), path));
@@ -123,7 +127,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             COLUMNS
         };
-        conn.execute_batch(&format!("CREATE TABLE event ({columns});"))?;
+        conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
         let sql = if label == "no columns" {
             rows_without()
         } else if label == "empty string" {
@@ -148,7 +152,7 @@ fn main() -> anyhow::Result<()> {
                  SELECT x AS i FROM seq) t"
             ),
         );
-        conn.execute_batch(&format!("INSERT INTO event {sql};"))?;
+        conn.execute_batch(&format!("INSERT INTO website_event {sql};"))?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
         drop(conn);
         lite.push((label, size(&path), path));

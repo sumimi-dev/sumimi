@@ -47,15 +47,25 @@ async fn app_with(
     let path = dir.join("sumimi.duckdb");
     let db = Arc::new(Db::open(&path, "256MB").unwrap());
 
+    // The site's file is attached — the facts live there (since v12).
+    let alias = sumimi_service::db::site_alias("w1");
     db.with_write(|conn| {
         conn.execute(
             "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
              VALUES ('w1', 'Example', 'example.com', now(), now(), 0, NULL)",
             [],
         )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .unwrap();
+    db.ensure_site("w1").unwrap();
+
+    db.with_write(|conn| {
         conn.execute(
-            "INSERT INTO event (id, website_id, visit_id, session_id, ip_prefix, user_agent, created_at, url, event_type)
-             VALUES (1, 'w1', ?1, ?4, ?2, ?3, now(), '/one', 'pageview')",
+            &format!(
+                "INSERT INTO {alias}.website_event (event_id, website_id, visit_id, session_id, ip_prefix, user_agent, created_at, url_path, event_type)
+             VALUES (1, 'w1', ?1, ?4, ?2, ?3, now(), '/one', 'pageview')"
+            ),
             duckdb::params![
                 sumimi_service::session::client_session_id("s1"),
                 "203.0.113",

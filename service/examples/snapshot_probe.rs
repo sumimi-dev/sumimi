@@ -21,13 +21,13 @@ use duckdb::Connection;
 
 /// How many rows the event table holds.
 fn count(conn: &Connection) -> i64 {
-    conn.query_row("SELECT count(*) FROM event", [], |row| row.get(0))
+    conn.query_row("SELECT count(*) FROM website_event", [], |row| row.get(0))
         .unwrap()
 }
 
 /// Write one row through the appender — the way the writer writes.
 fn append(conn: &Connection) {
-    let mut appender = conn.appender("event").unwrap();
+    let mut appender = conn.appender("website_event").unwrap();
     appender
         .append_row(duckdb::params![1i64, "w1", "/one"])
         .unwrap();
@@ -39,7 +39,9 @@ fn main() -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&path);
 
     let writer = Connection::open(&path)?;
-    writer.execute_batch("CREATE TABLE event (id BIGINT, website_id VARCHAR, url VARCHAR)")?;
+    writer.execute_batch(
+        "CREATE TABLE website_event (event_id BIGINT, website_id VARCHAR, url_path VARCHAR)",
+    )?;
 
     // A connection that queries before the write.
     let reader = Connection::open(&path)?;

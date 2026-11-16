@@ -20,7 +20,7 @@ fn build(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
     db.with_read(|conn| {
         conn.execute_batch(
             "CREATE TABLE probe (
-                 id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT,
+                 id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT,
                  user_id VARCHAR, created_at TIMESTAMP, url VARCHAR, title VARCHAR,
                  browser VARCHAR, country VARCHAR);",
         )?;
@@ -63,7 +63,7 @@ fn main() -> anyhow::Result<()> {
     let db = Db::open(&path, "256MB")?;
     let started = Instant::now();
     db.with_write(|conn| {
-        conn.execute_batch("ALTER TABLE probe ADD COLUMN visitor_id16 HUGEINT")?;
+        conn.execute_batch("ALTER TABLE probe ADD COLUMN session_id16 HUGEINT")?;
         Ok::<_, anyhow::Error>(())
     })?;
     let alter = started.elapsed().as_secs_f64() * 1000.0;
@@ -80,9 +80,9 @@ fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     db.with_write(|conn| {
         conn.execute_batch(
-            "UPDATE probe SET visitor_id16 = \
-             CAST(hash('v16-' || visitor_id::VARCHAR) % 170141183460469231731687303715884105727 AS HUGEINT) \
-             WHERE visitor_id16 IS NULL",
+            "UPDATE probe SET session_id16 = \
+             CAST(hash('v16-' || session_id::VARCHAR) % 170141183460469231731687303715884105727 AS HUGEINT) \
+             WHERE session_id16 IS NULL",
         )?;
         Ok::<_, anyhow::Error>(())
     })?;
@@ -101,14 +101,14 @@ fn main() -> anyhow::Result<()> {
     let db = Db::open(&path, "256MB")?;
     let (rows_now, visitors, wide): (i64, i64, i64) = db.with_read(|conn| {
         let rows: i64 = conn.query_row("SELECT count(*) FROM probe", [], |r| r.get(0))?;
-        let visitors: i64 = conn.query_row("SELECT count(DISTINCT visitor_id) FROM probe", [], |r| r.get(0))?;
-        let wide: i64 = conn.query_row("SELECT count(DISTINCT visitor_id16) FROM probe", [], |r| r.get(0))?;
+        let visitors: i64 = conn.query_row("SELECT count(DISTINCT session_id) FROM probe", [], |r| r.get(0))?;
+        let wide: i64 = conn.query_row("SELECT count(DISTINCT session_id16) FROM probe", [], |r| r.get(0))?;
         Ok::<_, anyhow::Error>((rows, visitors, wide))
     })?;
     println!("after the upgrade: {rows_now} rows, {visitors} visitors, {wide} wide ids");
 
     // 4. Two counting queries, one after the other, then at the same time.
-    let anon = "SELECT count(DISTINCT visitor_id) FROM probe WHERE user_id IS NULL";
+    let anon = "SELECT count(DISTINCT session_id) FROM probe WHERE user_id IS NULL";
     let logged = "SELECT count(DISTINCT user_id) FROM probe WHERE user_id IS NOT NULL";
     let db = Db::open(&path, "256MB")?;
     let started = Instant::now();

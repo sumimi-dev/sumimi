@@ -12,7 +12,7 @@ pub mod mcp;
 mod output;
 pub mod seed;
 pub mod service;
-mod source;
+pub mod source;
 
 use std::path::PathBuf;
 
@@ -27,6 +27,10 @@ use source::{parse_time, Range, Report, Source};
 #[command(name = "sumimi", version, about = "Sumimi CLI — read and analyse Sumimi data")]
 struct Cli {
     /// Path of the DuckDB database file (local mode).
+    ///
+    /// **The facts live beside it.** Since v12 every site has a file of its own,
+    /// in a directory named after this file (`data.duckdb` ⇒ `data.duckdb.sites/`)
+    /// — so the path of the main file is what finds them.
     #[arg(long, global = true, env = "SUMIMI_DB")]
     db: Option<PathBuf>,
     /// Base URL of a running Sumimi server (remote mode).

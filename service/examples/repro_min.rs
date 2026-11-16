@@ -29,7 +29,7 @@ const WRITER_BASE: i64 = 1_000_000_000;
 fn create(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(path);
     let conn = Connection::open(path)?;
-    conn.execute_batch("CREATE TABLE probe (id BIGINT, visitor_id BIGINT, payload VARCHAR);")?;
+    conn.execute_batch("CREATE TABLE probe (id BIGINT, session_id BIGINT, payload VARCHAR);")?;
     conn.execute_batch(&format!(
         "INSERT INTO probe SELECT i, i, 'x' FROM range({rows}) t(i);"
     ))?;
@@ -44,17 +44,17 @@ fn sequential(rows: i64) -> anyhow::Result<()> {
         (
             "insert → CHECKPOINT → ALTER COLUMN TYPE",
             true,
-            "ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT;",
+            "ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT;",
         ),
         (
             "insert (no checkpoint) → ALTER COLUMN TYPE",
             false,
-            "ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT;",
+            "ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT;",
         ),
         (
             "insert (no checkpoint) → ADD COLUMN",
             false,
-            "ALTER TABLE probe ADD COLUMN visitor_id16 HUGEINT;",
+            "ALTER TABLE probe ADD COLUMN session_id16 HUGEINT;",
         ),
     ] {
         let path = PathBuf::from("/tmp/repro-min-seq.duckdb");
@@ -145,12 +145,12 @@ fn main() -> anyhow::Result<()> {
     println!("\n  two connections, the writer keeps inserting while the ddl runs:");
     concurrent(
         rows,
-        "ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT;",
+        "ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT;",
         "ALTER COLUMN TYPE",
     )?;
     concurrent(
         rows,
-        "ALTER TABLE probe ADD COLUMN visitor_id16 HUGEINT;",
+        "ALTER TABLE probe ADD COLUMN session_id16 HUGEINT;",
         "ADD COLUMN",
     )?;
     Ok(())

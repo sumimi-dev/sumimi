@@ -7,8 +7,8 @@
 //!
 //! | piece | what it is |
 //! | --- | --- |
-//! | the id query | `SELECT MAX(id) + 1 FROM event` — how the next row id is found |
-//! | the appender | `conn.appender("event")` — starting an append transaction |
+//! | the id query | `SELECT MAX(event_id) + 1 FROM website_event` — how the next row id is found |
+//! | the appender | the appender on `website_event` — starting an append transaction |
 //! | the appends | binding 42 values per row |
 //! | the flush | committing the append transaction |
 //!
@@ -64,26 +64,34 @@ impl Parts {
     }
 }
 
+/// The facts live in the site's own file (one file per site), so the id query
+/// and the appender both name the alias that file is attached under.
+fn site_table(db: &Db) -> anyhow::Result<(String, String)> {
+    let alias = db.ensure_site("w1")?;
+    Ok((alias.clone(), format!("{alias}.website_event")))
+}
+
 /// Write `hits` to DuckDB the way the server does it: one appender per batch,
 /// the next id asked for every time.
 fn duckdb_current(hits: &[Hit]) -> anyhow::Result<Parts> {
     let path = temp("duckdb-current");
     let _ = std::fs::remove_file(&path);
     let db = Db::open(&path, "256MB")?;
+    let (alias, table) = site_table(&db)?;
 
     let mut parts = Parts::default();
     db.with_write(|conn| {
         for chunk in hits.chunks(batch()) {
             let started = Instant::now();
             let next_id: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM event",
+                &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
                 [],
                 |row| row.get(0),
             )?;
             parts.id_query += started.elapsed();
 
             let started = Instant::now();
-            let mut appender = conn.appender("event")?;
+            let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
             parts.appender += started.elapsed();
 
             let started = Instant::now();
@@ -107,17 +115,18 @@ fn duckdb_counter(hits: &[Hit]) -> anyhow::Result<Parts> {
     let path = temp("duckdb-counter");
     let _ = std::fs::remove_file(&path);
     let db = Db::open(&path, "256MB")?;
+    let (alias, table) = site_table(&db)?;
 
     let mut parts = Parts::default();
     db.with_write(|conn| {
         let next_id: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM event",
+            &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
             [],
             |row| row.get(0),
         )?;
         for chunk in hits.chunks(batch()) {
             let started = Instant::now();
-            let mut appender = conn.appender("event")?;
+            let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
             parts.appender += started.elapsed();
 
             let started = Instant::now();
@@ -141,15 +150,16 @@ fn duckdb_one_appender(hits: &[Hit]) -> anyhow::Result<Parts> {
     let path = temp("duckdb-one-appender");
     let _ = std::fs::remove_file(&path);
     let db = Db::open(&path, "256MB")?;
+    let (alias, table) = site_table(&db)?;
 
     let mut parts = Parts::default();
     db.with_write(|conn| {
         let next_id: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM event",
+            &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
             [],
             |row| row.get(0),
         )?;
-        let mut appender = conn.appender("event")?;
+        let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
         for chunk in hits.chunks(batch()) {
             let started = Instant::now();
             for (index, hit) in chunk.iter().enumerate() {
@@ -197,18 +207,19 @@ fn append_row(
     Ok(())
 }
 
-/// How expensive is `MAX(id)` on a table of `rows` rows?
+/// How expensive is `MAX(event_id)` on a table of `rows` rows?
 ///
-/// The schema comment says the id is handed out by `MAX(id) + 1`, "answered from
+/// The schema comment says the id is handed out by `MAX(event_id) + 1`, "answered from
 /// the column statistics in constant time". This checks that claim.
 fn id_query_cost(rows: usize) -> anyhow::Result<(f64, f64)> {
     let path = temp(&format!("id-cost-{rows}"));
     let _ = std::fs::remove_file(&path);
     let db = Db::open(&path, "256MB")?;
+    let (alias, table) = site_table(&db)?;
 
     let hits = generate(rows as i64);
     db.with_write(|conn| {
-        let mut appender = conn.appender("event")?;
+        let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
         for (index, hit) in hits.iter().enumerate() {
             append_row(&mut appender, 1 + index as i64, hit)?;
         }
@@ -219,13 +230,14 @@ fn id_query_cost(rows: usize) -> anyhow::Result<(f64, f64)> {
     let (plain, coalesced) = db.with_read(|conn| {
         // The plain aggregate.
         let started = Instant::now();
-        let _: Option<i64> = conn.query_row("SELECT MAX(id) FROM event", [], |row| row.get(0))?;
+        let _: Option<i64> =
+            conn.query_row(&format!("SELECT MAX(event_id) FROM {table}"), [], |row| row.get(0))?;
         let plain = started.elapsed().as_secs_f64() * 1000.0;
 
         // The one the server actually runs.
         let started = Instant::now();
         let _: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM event",
+            &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
             [],
             |row| row.get(0),
         )?;
@@ -284,7 +296,7 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "-".repeat(78));
     println!(
         "{:<24} {:>14} {:>20}",
-        "rows", "MAX(id)", "COALESCE(MAX(id),0)+1"
+        "rows", "MAX(event_id)", "COALESCE(MAX(event_id),0)+1"
     );
     for rows in [100usize, 10_000, 100_000, 1_000_000] {
         let (plain, coalesced) = id_query_cost(rows)?;

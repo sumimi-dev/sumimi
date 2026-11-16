@@ -58,6 +58,9 @@ fn app_with(
         Ok(())
     })
     .unwrap();
+    // The site gets a file of its own — the facts live there (since v12), and
+    // the file is attached when the site is registered.
+    db.ensure_site("website-1").unwrap();
 
     let mut config = Config::from_env_and_flags(
         sumimi_service::config::Paths::new(
@@ -123,6 +126,16 @@ async fn count(db: &Db, sql: &str) -> i64 {
         }
     })
     .unwrap()
+}
+
+/// The site's facts, in the site's own file.
+///
+/// ⇒ ⇒ Since v12 the facts of a site live in a file of that site's own, so a
+/// question about the rows is a question about **that** file — the table is
+/// named with the site's alias in front.
+fn facts(sql: &str) -> String {
+    let alias = sumimi_service::db::site_alias("website-1");
+    sql.replace("website_event", &format!("{alias}.website_event"))
 }
 
 /// The body of a request, as a string.
@@ -376,8 +389,16 @@ async fn the_vitals_are_not_a_page_view() {
     let answer: Answer = serde_json::from_str(&body_of(response).await).unwrap();
     assert!(!answer.cache.is_empty(), "the client keeps its token");
 
-    let vitals = written(&db, "SELECT count(*) FROM event WHERE event_type = 'performance'").await;
-    let pageviews = written(&db, "SELECT count(*) FROM event WHERE event_type = 'pageview'").await;
+    let vitals = written(
+        &db,
+        &facts("SELECT count(*) FROM website_event WHERE event_type = 'performance'"),
+    )
+    .await;
+    let pageviews = written(
+        &db,
+        &facts("SELECT count(*) FROM website_event WHERE event_type = 'pageview'"),
+    )
+    .await;
     assert_eq!(vitals, 1, "the vitals are stored");
     assert_eq!(pageviews, 0, "the vitals are not a page view");
 
@@ -405,7 +426,7 @@ async fn an_error_report_is_not_an_event() {
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     let rows = db
         .with_read(|conn| {
-            let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+            let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
             let mut rows = stmt.query([])?;
             match rows.next()? {
                 Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -437,7 +458,7 @@ async fn the_url_is_resolved_the_way_umami_resolves_it() {
 
     let stored = written(
         &db,
-        "SELECT count(*) FROM event WHERE url = '/blog/post#top' AND url_query = 'a=1'",
+        &facts("SELECT count(*) FROM website_event WHERE url_path = '/blog/post#top' AND url_query = 'a=1'"),
     )
     .await;
     assert_eq!(stored, 1, "the path is kept, the origin is not");
@@ -462,7 +483,7 @@ async fn a_self_referral_is_not_stored() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let stored = written(&db, "SELECT count(*) FROM event WHERE referrer IS NULL").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event WHERE referrer_domain IS NULL")).await;
     assert_eq!(stored, 1, "the self-referral is not a referrer");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -487,14 +508,14 @@ async fn the_client_may_say_who_the_visitor_is() {
     // The client's own words about the visitor's **environment** are used.
     let stored = written(
         &db,
-        "SELECT count(*) FROM event WHERE browser = 'Firefox' \
-         AND os = 'iOS' AND device = 'mobile'",
+        &facts("SELECT count(*) FROM website_event WHERE browser = 'Firefox' \
+         AND os = 'iOS' AND device = 'mobile'"),
     )
     .await;
     assert_eq!(stored, 1, "the client's own words about the visitor are used");
 
     // The raw address is **not** stored — not by default.
-    let raw = written(&db, "SELECT count(*) FROM event WHERE ip = '198.51.100.7'").await;
+    let raw = written(&db, &facts("SELECT count(*) FROM website_event WHERE ip = '198.51.100.7'")).await;
     assert_eq!(raw, 0, "the raw address is not stored by default");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -516,7 +537,7 @@ async fn a_bot_is_stored_not_dropped() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // The hit is stored — the rows are there, they are just marked.
-    let stored = written(&db, "SELECT count(*) FROM event").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event")).await;
     assert_eq!(stored, 1, "the bot's hit is stored");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -548,7 +569,7 @@ async fn a_bot_can_be_dropped_at_the_door() {
 
     // And nothing was written — the row never exists.
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    let stored = count(&db, "SELECT count(*) FROM event").await;
+    let stored = count(&db, &facts("SELECT count(*) FROM website_event")).await;
     assert_eq!(stored, 0, "the crawler's hit was dropped");
 
     // A human's hit is still stored — the switch is about the crawlers.
@@ -561,7 +582,7 @@ async fn a_bot_can_be_dropped_at_the_door() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let stored = written(&db, "SELECT count(*) FROM event").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event")).await;
     assert_eq!(stored, 1, "the human's hit is still stored");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -585,7 +606,7 @@ async fn a_bot_is_tagged() {
 
     // The marker says **which** crawler it was — Googlebot is not the same
     // crawler as the one we do not know by name.
-    let stored = written(&db, "SELECT count(*) FROM event WHERE tag = 'bot-se-google'").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event WHERE tag = 'bot-se-google'")).await;
     assert_eq!(stored, 1, "the bot's hit is stored, with the marker");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -606,7 +627,7 @@ async fn an_unknown_crawler_is_marked_bot() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let stored = written(&db, "SELECT count(*) FROM event WHERE tag = 'bot-other-unknown'").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event WHERE tag = 'bot-other-unknown'")).await;
     assert_eq!(stored, 1, "the crawler is marked as a bot");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -627,7 +648,7 @@ async fn an_ai_crawler_is_marked_apart() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let stored = written(&db, "SELECT count(*) FROM event WHERE tag = 'bot-ai-openai'").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event WHERE tag = 'bot-ai-openai'")).await;
     assert_eq!(stored, 1, "the AI crawler is marked apart");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -648,7 +669,7 @@ async fn the_developers_own_traffic_is_tagged() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let stored = written(&db, "SELECT count(*) FROM event WHERE tag = 'dev'").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event WHERE tag = 'dev'")).await;
     assert_eq!(stored, 1, "the developer's own traffic carries the marker");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -670,7 +691,7 @@ async fn the_sites_own_tag_is_only_a_label() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let stored = written(&db, "SELECT count(*) FROM event WHERE tag = 'campaign'").await;
+    let stored = written(&db, &facts("SELECT count(*) FROM website_event WHERE tag = 'campaign'")).await;
     assert_eq!(stored, 1, "the label is stored as it is");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());

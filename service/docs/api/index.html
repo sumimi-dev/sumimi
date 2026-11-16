@@ -372,9 +372,9 @@
       <dt>pageviews</dt>
       <dd>Total page views.</dd>
       <dt>visitors</dt>
-      <dd>Unique visitors, counted with a non-reversible id that is <strong>stable across days</strong> (Umami's <code>distinct_id</code>). "Unique" means unique within the requested window; the same visitor on two different days is counted once per window they appear in.</dd>
+      <dd>Unique visitors, counted with a non-reversible id that is <strong>stable across days</strong> (Umami's <code>distinct_id</code>). "Unique" means unique within the requested window; the same visitor on two different days is counted once per window they appear in. A visitor whose only event was a custom event is <strong>not</strong> counted — the rule is Umami's, and it is the same on both sides.</dd>
       <dt>views</dt>
-      <dd>The number of sessions (visits).</dd>
+      <dd>The number of sessions (visits). A visit that saw no page view is <strong>not</strong> counted, for the same reason.</dd>
       <dt>bounces</dt>
       <dd>Sessions with exactly one page view.</dd>
       <dt>visitDuration</dt>

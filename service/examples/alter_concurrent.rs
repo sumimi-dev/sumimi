@@ -23,7 +23,7 @@ fn build(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "CREATE TABLE probe (
-             id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT, user_id VARCHAR,
+             id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT, user_id VARCHAR,
              created_at TIMESTAMP, url VARCHAR, title VARCHAR, browser VARCHAR, country VARCHAR);",
     )?;
     conn.execute_batch(&format!(
@@ -43,8 +43,8 @@ fn build(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
 }
 
 /// The two routes to the wider column.
-const ALTER: &str = "ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT";
-const ADD_COLUMN: &str = "ALTER TABLE probe ADD COLUMN visitor_id16 HUGEINT";
+const ALTER: &str = "ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT";
+const ADD_COLUMN: &str = "ALTER TABLE probe ADD COLUMN session_id16 HUGEINT";
 
 /// One round: write in the middle of the upgrade, and watch that row.
 fn round(path: &PathBuf, rows: i64, offset_ms: u64, route: &'static str, label: &str, form: &'static str) -> anyhow::Result<()> {
@@ -73,10 +73,10 @@ fn round(path: &PathBuf, rows: i64, offset_ms: u64, route: &'static str, label: 
             let conn = Connection::open(&path)?;
             let started = Instant::now();
             let outcome = conn.execute_batch(if form == "values" {
-                "INSERT INTO probe (id, website_id, visit_id, visitor_id, user_id, created_at, url, title, browser, country) \
+                "INSERT INTO probe (id, website_id, visit_id, session_id, user_id, created_at, url, title, browser, country) \
                  VALUES (999999999, 'w1', 1, 1, NULL, now(), '/x', 'x', 'Chrome', 'DE')"
             } else {
-                "INSERT INTO probe (id, website_id, visit_id, visitor_id, user_id, created_at, url, title, browser, country) \
+                "INSERT INTO probe (id, website_id, visit_id, session_id, user_id, created_at, url, title, browser, country) \
                  SELECT 999999999, 'w1', 1, 1, NULL, now(), '/x', 'x', 'Chrome', 'DE'"
             });
             let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -91,7 +91,7 @@ fn round(path: &PathBuf, rows: i64, offset_ms: u64, route: &'static str, label: 
                 |r| r.get(0),
             )?;
             let kind: String = conn
-                .query_row("SELECT typeof(visitor_id) FROM probe LIMIT 1", [], |r| r.get(0))
+                .query_row("SELECT typeof(session_id) FROM probe LIMIT 1", [], |r| r.get(0))
                 .unwrap_or_else(|_| "?".to_string());
             Ok((ms, format!("{err} [{kind}]"), here))
         })

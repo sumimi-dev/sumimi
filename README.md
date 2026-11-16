@@ -13,8 +13,10 @@ binary, one directory, no external database, no cloud account, no telemetry.
 - **Two memory budgets** — it runs on a 512 MB box (the whole process stays under
   256 MB) and it is comfortable on a 1 GB one (under 512 MB). Both budgets are
   asserted on every CI run.
-- **DuckDB 2.0.0** embedded — columnar analytics in a single file you can copy around.
-  SQLite is there too, for the teams that want an ordinary database file.
+- **DuckDB 2.0.0** embedded — columnar analytics in a file you can copy around, and
+  since v0.5.4 **one file per site**, so a query for one site reads that site's rows
+  and not everybody's. SQLite is there too, for the teams that want an ordinary
+  database file.
 - **Umami v2 compatible API** — the existing trackers and dashboards work unchanged.
 - **Privacy first** — no cookies, no fingerprinting, **raw IP addresses are never stored**,
   DNT and Global Privacy Control are honoured, and the query string of collected URLs is
@@ -147,11 +149,18 @@ so backing it up, moving it and deleting it are one operation on one path.
 
 ```
 sumimi/
-├── data.duckdb      the events
-├── instance.sqlite  the accounts, the log, the imports, the cache
-├── logs/            the server's log files
-└── jwt-secret       the signing secret
+├── data.duckdb          the sites and the bookkeeping
+├── data.sites/          the events — one file per site
+│   └── s_<site>.duckdb
+├── instance.sqlite      the accounts, the log, the imports, the cache
+├── logs/                the server's log files
+└── jwt-secret           the signing secret
 ```
+
+Each site gets a file of its own, so a query for one site reads that site's rows and
+not everybody's. Measured on ten sites of a million rows each: the summary went from
+27.7 ms to 14.4 ms, the breakdown from 4.8 ms to 0.6 ms, and the buffer manager from
+211 MB to 39 MB.
 
 The first run creates the admin account and prints its password **once**. Then:
 

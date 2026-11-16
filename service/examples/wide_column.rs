@@ -33,12 +33,12 @@ const VISITORS: i64 = 120_000;
 
 /// The summary: the three numbers at the top of the dashboard.
 const SUMMARY: &str = "SELECT COUNT(*) FILTER (WHERE event_type NOT IN ('event', 'identify')),
-                              COUNT(DISTINCT visitor_id),
+                              COUNT(DISTINCT session_id),
                               COUNT(DISTINCT visit_id)
                        FROM probe WHERE website_id = 'w1'";
 
 /// The audience breakdown: the visitors per browser — the real report query.
-const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT visitor_id) AS value
+const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT session_id) AS value
                           FROM probe WHERE website_id = 'w1' AND event_type NOT IN ('event', 'identify')
                           GROUP BY name ORDER BY value DESC LIMIT 50";
 
@@ -77,28 +77,28 @@ fn shapes() -> Vec<Shape> {
     vec![
         Shape {
             name: "BIGINT / 8 bytes",
-            ddl: "visitor_id BIGINT",
+            ddl: "session_id BIGINT",
             narrow: narrow.clone(),
             wide: None,
             widen: false,
         },
         Shape {
             name: "HUGEINT / 8 bytes",
-            ddl: "visitor_id HUGEINT",
+            ddl: "session_id HUGEINT",
             narrow: narrow.clone(),
             wide: None,
             widen: false,
         },
         Shape {
             name: "HUGEINT / 16 bytes",
-            ddl: "visitor_id HUGEINT",
+            ddl: "session_id HUGEINT",
             narrow: wide.clone(),
             wide: None,
             widen: false,
         },
         Shape {
             name: "UUID / 16 bytes",
-            ddl: "visitor_id UUID",
+            ddl: "session_id UUID",
             narrow: format!(
                 "CAST(substr(sha256('v' || (i % {VISITORS})), 1, 8) || '-' || \
                  substr(sha256('v' || (i % {VISITORS})), 9, 4) || '-' || \
@@ -111,35 +111,35 @@ fn shapes() -> Vec<Shape> {
         },
         Shape {
             name: "HUGEINT / 4 bytes",
-            ddl: "visitor_id HUGEINT",
+            ddl: "session_id HUGEINT",
             narrow: format!("CAST(hash('v' || (i % {VISITORS})) % 4294967296 AS HUGEINT)"),
             wide: None,
             widen: false,
         },
         Shape {
             name: "BIGINT / 4 bytes",
-            ddl: "visitor_id BIGINT",
+            ddl: "session_id BIGINT",
             narrow: format!("CAST(hash('v' || (i % {VISITORS})) % 4294967296 AS BIGINT)"),
             wide: None,
             widen: false,
         },
         Shape {
             name: "HUGEINT / mixed (1 in 10 wide)",
-            ddl: "visitor_id HUGEINT",
+            ddl: "session_id HUGEINT",
             narrow: format!("CASE WHEN i % 10 = 0 THEN {w} ELSE {n} END", n = narrow, w = wide),
             wide: None,
             widen: false,
         },
         Shape {
             name: "two columns (8 + 16, 1 in 10 wide)",
-            ddl: "visitor_id BIGINT, visitor_id16 HUGEINT",
+            ddl: "session_id BIGINT, session_id16 HUGEINT",
             narrow: format!("CASE WHEN i % 10 = 0 THEN NULL ELSE {n} END", n = narrow),
             wide: Some(format!("CASE WHEN i % 10 = 0 THEN {w} ELSE NULL END", w = wide)),
             widen: false,
         },
         Shape {
             name: "BIGINT, then widened (the hot upgrade)",
-            ddl: "visitor_id BIGINT",
+            ddl: "session_id BIGINT",
             narrow: narrow.clone(),
             wide: None,
             widen: true,
@@ -177,7 +177,7 @@ fn build(path: &PathBuf, rows: i64, shape: &Shape, full: bool) -> anyhow::Result
         })?;
     }
     let wide = match &shape.wide {
-        Some(expr) => format!(", {expr} AS visitor_id16"),
+        Some(expr) => format!(", {expr} AS session_id16"),
         None => String::new(),
     };
     let (narrow, wide) = if full {
@@ -186,7 +186,7 @@ fn build(path: &PathBuf, rows: i64, shape: &Shape, full: bool) -> anyhow::Result
         // In the one-column table the wide column has no home; the wide
         // values go into the single column instead.
         let mut expr = shape.narrow.clone();
-        if shape.ddl.contains("visitor_id16") {
+        if shape.ddl.contains("session_id16") {
             expr = shape.narrow.clone();
         }
         (expr, String::new())
@@ -233,7 +233,7 @@ fn widen(path: &Path) -> anyhow::Result<f64> {
     let db = Db::open(path, "256MB")?;
     let started = Instant::now();
     db.with_write(|conn| {
-        conn.execute_batch("ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT")?;
+        conn.execute_batch("ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT")?;
         Ok::<_, anyhow::Error>(())
     })?;
     let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -252,7 +252,7 @@ fn segments(path: &Path) -> String {
     };
     let sql = "SELECT segment_type, compression, COUNT(*), SUM(\"count\") \
                FROM pragma_storage_info('probe') \
-               WHERE column_name LIKE 'visitor_id%' \
+               WHERE column_name LIKE 'session_id%' \
                GROUP BY segment_type, compression ORDER BY 1, 2";
     let text: Result<String, anyhow::Error> = db.with_read(|conn| {
         let mut stmt = conn.prepare(sql)?;
@@ -288,13 +288,13 @@ fn segments(path: &Path) -> String {
 /// For a BIGINT column the casts are free, so the four lines collapse to two.
 const PROBES: [&str; 4] = [
     // The scan: read the column, compare, no arithmetic that can overflow.
-    "SELECT MIN(visitor_id) FROM probe",
+    "SELECT MIN(session_id) FROM probe",
     // The arithmetic: read the column, add 64-bit numbers.
-    "SELECT SUM(visitor_id::BIGINT) FROM probe",
+    "SELECT SUM(session_id::BIGINT) FROM probe",
     // The hash: read the column, hash 8-byte keys.
-    "SELECT COUNT(DISTINCT visitor_id::BIGINT) FROM probe",
+    "SELECT COUNT(DISTINCT session_id::BIGINT) FROM probe",
     // The hash: read the column, hash 16-byte keys.
-    "SELECT COUNT(DISTINCT visitor_id) FROM probe",
+    "SELECT COUNT(DISTINCT session_id) FROM probe",
 ];
 
 /// How long a query takes — the best of five.
@@ -414,14 +414,14 @@ fn measure(shape: &Shape, rows: i64) -> anyhow::Result<Numbers> {
     let bytes = std::fs::metadata(&path)?.len() as f64 / rows as f64;
     let segs_full = segments(&path);
     let conn = duckdb::Connection::open(&path)?;
-    let scan = time(&conn, "SELECT MIN(visitor_id) FROM probe");
-    let distinct = time(&conn, "SELECT COUNT(DISTINCT visitor_id) FROM probe");
+    let scan = time(&conn, "SELECT MIN(session_id) FROM probe");
+    let distinct = time(&conn, "SELECT COUNT(DISTINCT session_id) FROM probe");
     // The two-column design: the two halves are disjoint by row, so the
     // visitor count is the sum of two aggregates.
     let two = if shape.wide.is_some() {
         time(
             &conn,
-            "SELECT COUNT(DISTINCT visitor_id) + COUNT(DISTINCT visitor_id16) FROM probe",
+            "SELECT COUNT(DISTINCT session_id) + COUNT(DISTINCT session_id16) FROM probe",
         )
     } else {
         f64::NAN

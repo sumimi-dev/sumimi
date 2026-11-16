@@ -134,6 +134,11 @@
         visitor from the event table and stores neither. The table data itself is 179 MB on
         PostgreSQL against 7.8 MB on DuckDB: <strong>23×</strong> for the rows alone.
       </p>
+      <p>
+        Umami's fact table is called <code>website_event</code>, and so is ours — the same
+        name for the same thing, so a row that came from Umami sits in ours and the two
+        tables can be read as one.
+      </p>
 
       <h2>And what about the compression?</h2>
       <p>
@@ -193,7 +198,7 @@
         identical too (0.005 s over 2 million rows).
       </p>
       <p>
-        But our schema had <code>event.id BIGINT PRIMARY KEY</code>, and DuckDB 2.0 turns
+        But our schema had <code>website_event.event_id BIGINT PRIMARY KEY</code>, and DuckDB 2.0 turns
         that into an ART index — <strong>on disk</strong>. Measured on the real 42-column
         schema, 100 000 page views:
       </p>
@@ -235,7 +240,7 @@
       <h2>What it adds up to</h2>
       <p>
         Three decisions, each measured rather than assumed: a columnar engine instead of a row
-        store, no indexes on the fact table, and one file instead of a server. Together they
+        store, no indexes on the fact table, and files instead of a server. Together they
         are why <strong>1 000 000 page views a year take 20 GB instead of 1.73 TB</strong> —
         and why the panels answer in milliseconds instead of seconds.
       </p>

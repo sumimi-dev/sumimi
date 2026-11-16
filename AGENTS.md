@@ -21,7 +21,8 @@ and **every test runs against both of them**:
 | **recommended** | 1 vCPU / 1 GB (a normal VPS) | 256 MB (a quarter of the machine) | **512 MB** |
 
 No Cloudflare, no Kubernetes, no external database, no object storage required.
-One binary + one DuckDB file = the whole system.
+One binary + one DuckDB file = the whole system. (Since v12 the DuckDB side is
+**one file per site**, under one main file — see §4.3.)
 
 The number that matters is the **process's** resident set, not the engine's: what a
 small box runs out of is everything — the code pages, the writer's queue, the pages
@@ -163,7 +164,10 @@ engine's), which fits the minimum tier with room to spare.
                     │  ├─ /            app shell ─────────┼──▶ CDN (frontend JS)
                     │  ├─ /docs/*      docs site           │
                     │  └─ ./sumimi/    (the instance)      │
-                    │      ├── data.duckdb     the events  │
+                    │      ├── data.duckdb     the sites   │
+                    │      │   └── data.sites/  the events  │
+                    │      │       └── <site>.duckdb       │
+                    │      │           one per site        │
                     │      └── instance.sqlite the control │
                     │                         plane        │
                     └────────────────────────────────────┘
@@ -171,8 +175,14 @@ engine's), which fits the minimum tier with room to spare.
 
 **An instance is a directory.** The events (DuckDB or SQLite) and the control plane
 (the accounts, the log, the imports, the cache, the saved reports, the chat — SQLite)
-are two files side by side, so the accounts survive an analytics rebuild and the whole
-instance is one path to back up, move or delete.
+live side by side, so the accounts survive an analytics rebuild and the whole instance
+is one path to back up, move or delete.
+
+**The events are one file per site** (schema v12). The main file holds the sites and
+the bookkeeping; each site's facts live in a file of its own, under
+`<main file>.sites/`. ⇒ ⇒ The instance is still **one directory** — copying it is
+still one operation — but it is **not one file** any more, and the backup section of
+the docs says so.
 
 **One release artifact:**
 
@@ -241,17 +251,21 @@ and event rows carry.
 
 | Group | Fields |
 | --- | --- |
-| Page | `url`, `url_query`, `title` |
-| Referrer | `referrer` (host), `referrer_path`, `referrer_query`, `referrer_name` (the display name) |
+| Page | `url_path`, `url_query`, `page_title` |
+| Referrer | `referrer_domain` (host), `referrer_path`, `referrer_query`, `referrer_name` (the display name) |
 | Site | `hostname` |
 | Environment | `browser`, `browser_version`, `os`, `os_version`, `device`, `screen`, `language`, `country`, `region`, `city`, `latitude`, `longitude` |
 | Identity | `session_id` (the visitor — Umami's name for it), `visit_id` (the session), `user_id` (the visitor as the site owner knows them), `session_start` (when the session began) |
 | Marketing | `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term` |
-| Ad click ids | `gclid`, `fbclid`, `msclkid`, `ttclid`, `lifatid`, `twclid` |
+| Ad click ids | `gclid`, `fbclid`, `msclkid`, `ttclid`, `li_fat_id`, `twclid` |
 | Performance | `lcp`, `inp`, `cls`, `fcp`, `ttfb` (Core Web Vitals) |
 | Events | `event_name`, `event_type`, `tag`, `data` |
 | Revenue | `revenue` per session/event, with `currency` |
 | Visitors | a sixteen-byte hash of the address, the user agent and the website — a visitor survives across days |
+
+**The names are the stored column names** — the ones Umami uses, since v12. The
+**API's JSON fields are unchanged**: the wire still says `url`, `title` and
+`referrer`.
 
 **What we never collect** — the same short list Umami keeps:
 
@@ -351,9 +365,12 @@ Privacy is not the selling point. *"You can see where the money came from"* is.
 ### 4.1 service/ — the server
 
 * **Runtime:** Rust 2021, Axum 0.8, Tokio (multi-thread runtime).
-* **Storage:** DuckDB 2.0.0, embedded, one file. `duckdb` crate `1.20000.x`
+* **Storage:** DuckDB 2.0.0, embedded. `duckdb` crate `1.20000.x`
   (the crate encodes the DuckDB version as `1.MAJOR_MINOR_PATCH.x`, so `20000` = **2.0.0**).
   DuckDB runs with an explicit `memory_limit` (default 256 MB) so a 512 MB VPS survives.
+  The **shape** of the storage is the engine's business: since v12 the server keeps
+  **one file per site** (the facts) beside a main file (the sites and the bookkeeping) —
+  see §4.3.
 * **Static, single-file build:** DuckDB is compiled into the executable (`bundled`
   feature, the default). The release is **one self-contained binary** — copy it, run it,
   done: no shared library to ship, no `LD_LIBRARY_PATH`, no rpath, no runtime surprises.
@@ -526,15 +543,22 @@ annotations, comments, share links, user management UI, plugin marketplace, real
 service*; the official Umami dashboard is expected to work against it, but we do not fork it —
 see §6).
 
-### 4.3 Data model: one fact table (DuckDB)
+### 4.3 Data model: one fact table, one file per site (DuckDB)
 
-**Every page view is one row in `event`**, carrying the same fields Umami carries.
-Sessions, visitors and page views are all *derived* from it — nothing is stored twice,
-so nothing can drift apart, and the page attribution is exact.
+**Every page view is one row in `website_event`**, carrying the same fields Umami
+carries. Sessions, visitors and page views are all *derived* from it — nothing is
+stored twice, so nothing can drift apart, and the page attribution is exact.
+
+**The names are Umami's** (schema v12). The table is `website_event`, the row id is
+`event_id`, the page is `url_path`, its title is `page_title`, the referrer's host is
+`referrer_domain`, and the click id is `li_fat_id`. ⇒ ⇒ **The API's JSON fields did
+not change** — the wire still says `url`, `title` and `referrer`; only the **stored
+columns** carry Umami's names. ⇒ ⇒ A row that came from Umami sits in this table
+under the same names, and the two tables can be read as one.
 
 ```sql
-event(
-    id BIGINT,               -- monotonic, assigned by the writer, NOT a primary key
+website_event(
+    event_id BIGINT,        -- monotonic, assigned by the writer, NOT a primary key
     website_id,
     created_at,
 
@@ -547,8 +571,8 @@ event(
     ip_prefix       VARCHAR,         -- its coarse prefix (empty unless SUMIMI_STORE_RAW=1)
     user_agent      VARCHAR,         -- the raw user agent (empty unless SUMIMI_STORE_RAW=1)
 
-    url, url_query, title,                       -- the page
-    referrer, referrer_path, referrer_query,     -- where it came from
+    url_path, url_query, page_title,             -- the page
+    referrer_domain, referrer_path, referrer_query,  -- where it came from
     referrer_name,                               -- "Hacker News" (schema v6)
     hostname,
     channel,                                     -- direct, Search, Social, email, paidAds, …
@@ -559,7 +583,7 @@ event(
 
     utm_source, utm_medium, utm_campaign, utm_content, utm_term,
 
-    gclid, fbclid, msclkid, ttclid, lifatid, twclid,   -- ad click ids
+    gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,   -- ad click ids
 
     lcp, inp, cls, fcp, ttfb,                     -- Core Web Vitals
 
@@ -571,6 +595,34 @@ revenue(                    -- what the owner earned, imported (not tracked)
     event_name, currency, revenue, created_at
 )
 ```
+
+**The file per site** (schema v12, D-046). The main file holds the sites
+(`website`) and the bookkeeping (`meta`); the facts of each site live in a file of
+that site's own, under `<main file>.sites/`. The site's file is attached to the
+connection under an alias derived from the site's id, and the statements name it
+(`s_….website_event`) ⇒ ⇒ **the shape of the storage is the engine's business**,
+and the **口径** (the numbers) is not — the statements are written once and the
+engine says how it spells the table's name (see `service/src/query.rs`).
+
+**Why, in one line: the table is per site, not the instance.** A query for one site
+over a table that holds every site's rows reads that whole table's aggregates, and
+the buffer manager holds every site's rows, not just the one being asked about.
+Measured (`cargo run --release --example site_split -p sumimi-service`, 10 sites ×
+1 000 000 rows):
+
+| | one file, all the sites | one file per site, all attached |
+| --- | ---: | ---: |
+| summary | 27.7 ms | **14.4 ms** |
+| breakdown | 4.8 ms | **0.6 ms** |
+| the buffer manager holds | **211 MB** | **39 MB** |
+
+⇒ ⇒ **The speed comes from the table being per site, not from the instance being
+per site** ⇒ ⇒ ⇒ one instance with every site attached is as fast as one instance
+per site — **and it keeps one buffer manager**.
+
+**PostgreSQL (the private edition) does not split.** It has an index on
+`(website_id, created_at)`, so a database per site would buy almost nothing — and
+one database holding every site is exactly Umami's shape.
 
 **The visitor id is stored** (schema v10). It is `SHA-256(address ‖ user_agent ‖
 website_id)`, first sixteen bytes — a pure function of the visitor's address, their
@@ -602,12 +654,18 @@ the state that decides it lives in the **client's signed token** (`x-sumimi-cach
 `x-umami-cache`) ⇒ ⇒ **the server keeps no state** ⇒ ⇒ a request without a token falls
 back to the server's own in-memory cache of the recently-seen visitors.
 
-⇒ ⇒ **There is no migration.** The shape of the ids changed, and the rows of an
-older file cannot be carried over — so an older database is **replaced**: the old file
-is set aside under its own version number (`sumimi.duckdb.v7.bak`) and an empty one of
-the current version takes its place. The analysis data and the site registrations are
-not carried over; the accounts are not in this file at all (they live in the instance
-store), so they survive.
+⇒ ⇒ **There is no migration — except from v11.** The shape of the ids changed, and the
+rows of an older file cannot be carried over — so an older database is **replaced**:
+the old file is set aside under its own version number (`sumimi.duckdb.v7.bak`) and an
+empty one of the current version takes its place. The analysis data and the site
+registrations are not carried over; the accounts are not in this file at all (they live
+in the instance store), so they survive.
+
+**v11 → v12 is the exception.** The change is a change of *shape* — the facts move
+into a file per site, and five columns are renamed — and **neither of those changes
+what a row means**. ⇒ ⇒ So the rows are **carried over**: each site's rows move into
+its own file (with the columns renamed on the way), and the old file is kept beside
+the new one as `data.duckdb.v11.bak`. Nothing is destroyed.
 
 **The baseline is Umami.** We store everything Umami stores — plus the browser and OS
 *versions*, which Umami does not keep. Two consequences worth stating plainly:
@@ -637,7 +695,7 @@ What the index does **not** buy, so nobody repeats the claim: **not** query spee
 noise) and **not** steady-state memory (the peak RSS while serving is the same
 with and without it, and it does not grow with the row count).
 
-`event` and `revenue` are append only, and every query over them is a filtered
+`website_event` and `revenue` are append only, and every query over them is a filtered
 scan (`WHERE website_id = ? AND created_at BETWEEN ?`). DuckDB prunes those with
 **zone maps** — one min/max per column per row group, maintained automatically and
 stored with the data — so an index buys nothing at query time either. Measured
@@ -709,7 +767,7 @@ Every way the traffic can be broken down is a **dimension** (`storage::Dimension
 
 | dimension | column | counts |
 | --- | --- | --- |
-| pages, referrers, hosts, tags | `url`, `referrer`, `hostname`, `tag` | views |
+| pages, referrers, hosts, tags | `url_path`, `referrer_domain`, `hostname`, `tag` | views |
 | browsers, os, devices, countries, regions, cities, languages, screens, channels | the column of the same name | unique visitors |
 
 **The channel** is worked out **once**, when the event is collected (`channels::channel`),
@@ -737,8 +795,12 @@ a site with a lot of custom events would otherwise show them as pages.
 
 Two details follow from it, and both are the reference implementation's rules:
 
-* the **visitors** and the **sessions** are counted over *everything* — a visitor
-  who only fired a custom event is still a visitor;
+* the **visitors** and the **sessions** are counted over the groups that have **at
+  least one page view** (schema v12) — a visitor who only fired a custom event is
+  **not** a visitor, and a visit that only fired a custom event is **not** a visit.
+  ⇒ ⇒ This is the rule that used to differ, and it used to be ours: we counted
+  over *everything*. Now it is the reference's rule too ⇒ ⇒ ⇒ **the two sets of
+  numbers are equal, item for item**;
 * a **bounce** is a session with a single *page view* that did not fire a custom
   event — a session that only fired a custom event has no page view at all, and
   it is not a bounce.
@@ -781,11 +843,18 @@ Two things follow from it ✓:
 **writing the same data into both and comparing row by row** ✓ ✓ (the parity
 suite in the private edition ✓ ✓): every field, every value ✓ ✓.
 
-Our names differ from the reference implementation's ✓ — `url` for `url_path` ✓,
-`title` for `page_title` ✓, `referrer` for `referrer_domain` ✓, and `channel`
-for `referrer_type` ✓ ✓ — but **the value sets have to match** ✓ ✓ (the channel
-buckets: direct ✓, paidAds ✓, referral ✓, affiliate ✓, sms ✓, llm ✓, Search ✓,
-Social ✓, email ✓, Shopping ✓, Video ✓ ✓).
+**The names do not differ any more** ✓ (schema v12) — the table is `website_event` ✓ ✓,
+the row id is `event_id` ✓ ✓, the page is `url_path` ✓ ✓, its title is `page_title` ✓ ✓,
+the referrer's host is `referrer_domain` ✓ ✓, and the click id is `li_fat_id` ✓ ✓ ⇒ ⇒
+the two tables can be read as one ✓ ✓ ⇒ ⇒ a row that came from the reference
+implementation sits in ours under the same names ✓ ✓.
+
+⇒ ⇒ **The API's JSON fields did not change** — the wire still says `url`, `title`
+and `referrer`; only the **stored columns** carry the reference's names ✓ ✓.
+
+One name still differs ✓ — `channel` for `referrer_type` ✓ ✓ — but **the value sets
+have to match** ✓ ✓ (the channel buckets: direct ✓, paidAds ✓, referral ✓,
+affiliate ✓, sms ✓, llm ✓, Search ✓, Social ✓, email ✓, Shopping ✓, Video ✓ ✓).
 
 **The two ids do not differ any more** ✓ (schema v11) — `session_id` is the
 visitor on both sides ✓ ✓, `visit_id` is the session on both sides ✓ ✓ ⇒ ⇒ the
@@ -949,7 +1018,8 @@ Two independent, **dependency-free** files (no build step, no npm, no bundler):
   the hostname, the language, the screen, the event name, tag and data, and the five web
   vitals (`lcp`, `inp`, `cls`, `fcp`, `ttfb` — sent as strings, the server parses them);
 * sends the query string: the server parses the UTM parameters and the ad click ids
-  (`gclid`, `fbclid`, `msclkid`, `ttclid`, `lifatid`, `twclid`) out of it;
+  (`gclid`, `fbclid`, `msclkid`, `ttclid`, `li_fat_id` — `lifatid` is accepted too —
+  `twclid`) out of it;
 * measures the web vitals with `PerformanceObserver` and sends the page view on
   `visibilitychange`/`pagehide` (the metrics are only known after the page is painted);
 * patches `history.pushState`/`replaceState` and listens for `popstate`, so a single page

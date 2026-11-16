@@ -102,7 +102,7 @@ fn main() -> anyhow::Result<()> {
         let db = Db::open(&path, "512MB")?;
         db.with_read(|conn| {
             conn.execute_batch(&format!(
-                "CREATE TABLE probe (id BIGINT, website_id VARCHAR, {ddl}, visitor_id BIGINT, \
+                "CREATE TABLE probe (id BIGINT, website_id VARCHAR, {ddl}, session_id BIGINT, \
                  created_at TIMESTAMP, url VARCHAR, browser VARCHAR);"
             ))?;
             Ok::<_, anyhow::Error>(())

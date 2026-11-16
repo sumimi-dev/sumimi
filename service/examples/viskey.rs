@@ -14,10 +14,24 @@ fn main() -> anyhow::Result<()> {
     db.create_website("Example", Some("example.com"), 0, None)?;
     db.write_batch(&sumimi_service::testing::traffic(2_000_000))?;
 
-    let variants: Vec<(&str, &str)> = vec![
-        ("the pair (prefix, agent)", "SELECT COUNT(DISTINCT (ip_prefix, user_agent)) FROM event WHERE website_id='w1'"),
-        ("the pair (prefix, an int)", "SELECT COUNT(DISTINCT (ip_prefix, event_type)) FROM event WHERE website_id='w1'"),
-        ("a group by the pair", "SELECT COUNT(*) FROM (SELECT 1 FROM event WHERE website_id='w1' GROUP BY ip_prefix, user_agent)"),
+    // The facts live in the site's own file (one file per site), so the
+    // queries name the alias that file is attached under.
+    let alias = db.ensure_site("w1")?;
+    let table = format!("{alias}.website_event");
+
+    let variants: Vec<(&str, String)> = vec![
+        (
+            "the pair (prefix, agent)",
+            format!("SELECT COUNT(DISTINCT (ip_prefix, user_agent)) FROM {table} WHERE website_id='w1'"),
+        ),
+        (
+            "the pair (prefix, an int)",
+            format!("SELECT COUNT(DISTINCT (ip_prefix, event_type)) FROM {table} WHERE website_id='w1'"),
+        ),
+        (
+            "a group by the pair",
+            format!("SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE website_id='w1' GROUP BY ip_prefix, user_agent)"),
+        ),
     ];
     for (label, sql) in variants {
         let mut best = f64::MAX;
@@ -25,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         for _ in 0..3 {
             let t = Instant::now();
             value = db.with_read(|conn| {
-                let v: i64 = conn.query_row(sql, [], |r| r.get(0))?;
+                let v: i64 = conn.query_row(&sql, [], |r| r.get(0))?;
                 Ok(v)
             })?;
             let ms = t.elapsed().as_secs_f64() * 1000.0;

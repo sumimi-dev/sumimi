@@ -300,15 +300,16 @@ Retention is a
 https://blog.example.com/posts/hello?utm_source=newsletter&amp;email=ada@example.com
 
 <span class="cmt"># what is stored</span>
-url      = /posts/hello
-query    = utm_source=newsletter&amp;email=ada@example.com
+url_path = /posts/hello
+url_query = utm_source=newsletter&amp;email=ada@example.com
 utm_source = newsletter</code></pre>
     <p>
       The server parses the marketing parameters (<code>utm_source</code>,
       <code>utm_medium</code>, <code>utm_campaign</code>, <code>utm_content</code>,
       <code>utm_term</code>) and the ad click ids (<code>gclid</code>,
       <code>fbclid</code>, <code>msclkid</code>, <code>ttclid</code>,
-      <code>lifatid</code>, <code>twclid</code>) out of it and stores them as their own
+      <code>li_fat_id</code> — <code>lifatid</code> is accepted too —
+      <code>twclid</code>) out of it and stores them as their own
       columns.
     </p>
     <p>
@@ -449,17 +450,18 @@ curl -X DELETE https://analytics.example.com/api/websites/3f2a... \
 
     <h2>Who can see the data</h2>
     <p>
-      Only you. The data lives in a DuckDB file on the machine you deployed it on. There is no
+      Only you. The data lives in DuckDB files on the machine you deployed it on — a main
+      file with the sites, and a file per site with its events. There is no
       account with the Sumimi project, no hosted dashboard, no central database and no
       third-party processor. The people who can read your analytics data are the people who
-      can read that file — which means the file's permissions are the whole access-control
-      story.
+      can read those files — which means the instance directory's permissions are the whole
+      access-control story.
     </p>
     <p>
       Two practical consequences:
     </p>
     <ul>
-      <li>The database file and the JWT secret should be mode <code>0600</code>, owned by the
+      <li>The database files and the JWT secret should be mode <code>0600</code>, owned by the
         service user. The <a href="../self-host/">self-hosting guide</a> sets that up.</li>
       <li>If you put your site behind a CDN, the CDN sees visitor addresses regardless of
         what Sumimi does. That is outside Sumimi's control, and it is worth remembering when

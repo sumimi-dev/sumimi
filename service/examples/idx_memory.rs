@@ -15,10 +15,31 @@
 //! The third argument picks the write path: `appender` (the server) or `bulk`
 //! (one big `INSERT ... SELECT`, which is what the migration and the seed do).
 //! The fourth is the DuckDB memory limit.
+//!
+//! **The shape it measures is the flat one** — one file, one table — because
+//! that is the shape of the *write path*: what costs memory is the row that
+//! goes in, not where the file sits. (The server's shape is one file per site
+//! since v12 — see `D-046` and `examples/site_split.rs`.)
 
 use std::time::Instant;
 
 use duckdb::Connection;
+
+/// The uuid of a text id — the way the server makes one.
+///
+/// ⇒ ⇒ The two ids are sixteen bytes since v10, so a measurement that writes
+/// text into them measures the wrong thing.
+fn uuid_of(value: &str) -> uuid::Uuid {
+    sumimi_service::ua::uuid_from_text(value)
+}
+
+/// The macro the bulk statements use — DuckDB has no `uuid_of` of its own.
+const UUID_MACRO: &str = r#"
+CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
+    substr(sha256(s), 1, 8) || '-' || substr(sha256(s), 9, 4) || '-' ||
+    substr(sha256(s), 13, 4) || '-' || substr(sha256(s), 17, 4) || '-' ||
+    substr(sha256(s), 21, 12) AS UUID);
+"#;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -41,16 +62,17 @@ fn main() -> anyhow::Result<()> {
 
     let conn = Connection::open(&path)?;
     conn.execute_batch(&format!("SET memory_limit='{limit}'; SET threads=2;"))?;
+    conn.execute_batch(UUID_MACRO)?;
 
     // The same columns — the row id spelled with a primary key, or without.
     let plain_ddl = sumimi_service::db::event_columns_ddl();
     let pk_ddl = sumimi_service::schema::columns_ddl_with(
         sumimi_service::schema::EVENT,
         &sumimi_service::db::Duck,
-        &[("id", "id BIGINT PRIMARY KEY")],
+        &[("event_id", "event_id BIGINT PRIMARY KEY")],
     );
     let ddl = if with_pk { pk_ddl.clone() } else { plain_ddl.clone() };
-    conn.execute_batch(&format!("CREATE TABLE event ({ddl});"))?;
+    conn.execute_batch(&format!("CREATE TABLE website_event ({ddl});"))?;
 
     println!(
         "{} rows, {} the primary key, {} path, {limit} limit",
@@ -64,12 +86,18 @@ fn main() -> anyhow::Result<()> {
     if bulk {
         // One statement: this is what the migration and the seed do.
         let result = conn.execute_batch(&format!(
-            "INSERT INTO event
-             SELECT
+            "INSERT INTO website_event\n             (event_id, website_id, visit_id, session_id, session_start, created_at,
+             url_path, url_query, page_title, referrer_domain, referrer_path, referrer_query,
+             referrer_name, hostname, channel, browser, browser_version, os, os_version,
+             device, screen, language, country, region, city, latitude, longitude,
+             utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+             gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
+             lcp, inp, cls, fcp, ttfb, event_type, event_name, tag, data)\n             SELECT
                i,
                'w1',
-               'session-' || (i / 3)::VARCHAR,
-               'visitor-' || (i % 300000)::VARCHAR,
+               CAST(uuid_of('session-' || (i / 3)::VARCHAR) AS UUID),
+               CAST(uuid_of('visitor-' || (i % 300000)::VARCHAR) AS UUID),
+               NULL,
                TIMESTAMP '2024-01-01' + to_seconds((i * 7919) % 31536000),
                '/blog/post-1',
                'utm_source=twitter&utm_medium=cpc&utm_campaign=spring&utm_content=cta&utm_term=term',
@@ -77,7 +105,9 @@ fn main() -> anyhow::Result<()> {
                'news.ycombinator.com',
                '/item',
                '?q=search',
+               NULL,
                'example.com',
+               NULL,
                'Chrome',
                '120',
                'macOS',
@@ -88,17 +118,14 @@ fn main() -> anyhow::Result<()> {
                'US',
                NULL,
                NULL,
+               NULL,
+               NULL,
                'twitter',
                'social',
                'spring',
-               'cta',
-               'term',
                NULL,
                NULL,
-               NULL,
-               NULL,
-               NULL,
-               NULL,
+               NULL, NULL, NULL, NULL, NULL, NULL,
                1200.0,
                80.0,
                0.02,
@@ -136,17 +163,13 @@ fn main() -> anyhow::Result<()> {
         while from <= rows {
             let to = (from + batch - 1).min(rows);
             let result = conn.execute_batch(&format!(
-                "INSERT INTO event
-                 SELECT
-                   i, 'w1', 'session-' || (i / 3)::VARCHAR, 'visitor-' || (i % 300000)::VARCHAR,
-                   TIMESTAMP '2024-01-01' + to_seconds((i * 7919) % 31536000),
-                   '/blog/post-1', 'utm_source=twitter&utm_medium=cpc&utm_campaign=spring&utm_content=cta&utm_term=term',
-                   'A title', 'news.ycombinator.com', '/item', '?q=search', 'example.com',
-                   'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', 'en-US', 'US',
-                   NULL, NULL, 'twitter', 'social', 'spring', 'cta', 'term',
-                   NULL, NULL, NULL, NULL, NULL, NULL,
-                   1200.0, 80.0, 0.02, 700.0, 90.0, 'pageview', NULL, NULL, NULL
-                 FROM generate_series({from}, {to}) t(i);"
+                "INSERT INTO website_event\n                 (event_id, website_id, visit_id, session_id, session_start, created_at,
+                 url_path, url_query, page_title, referrer_domain, referrer_path, referrer_query,
+                 referrer_name, hostname, channel, browser, browser_version, os, os_version,
+                 device, screen, language, country, region, city, latitude, longitude,
+                 utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+                 gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
+                 lcp, inp, cls, fcp, ttfb, event_type, event_name, tag, data)\n                 SELECT\n                   i,\n                   'w1',\n                   CAST(uuid_of('session-' || (i / 3)::VARCHAR) AS UUID),\n                   CAST(uuid_of('visitor-' || (i % 300000)::VARCHAR) AS UUID),\n                   NULL,\n                   TIMESTAMP '2024-01-01' + to_seconds((i * 7919) % 31536000),\n                   '/blog/post-1', 'utm_source=twitter&utm_medium=cpc&utm_campaign=spring&utm_content=cta&utm_term=term',\n                   'A title', 'news.ycombinator.com', '/item', '?q=search', NULL, 'example.com', NULL,\n                   'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', 'en-US', 'US',\n                   NULL, NULL, NULL, NULL, 'twitter', 'social', 'spring', NULL, NULL,\n                   NULL, NULL, NULL, NULL, NULL, NULL,\n                   1200.0, 80.0, 0.02, 700.0, 90.0, 'pageview', NULL, NULL, NULL\n                 FROM generate_series({from}, {to}) t(i);"
             ));
             if let Err(err) = result {
                 println!("  chunked insert FAILED at row {from}: {err}");
@@ -172,17 +195,58 @@ fn main() -> anyhow::Result<()> {
         let _ = std::fs::remove_file(&source);
         let src = Connection::open(&source)?;
         src.execute_batch("SET memory_limit='2GB';")?;
-        src.execute_batch(&format!("CREATE TABLE event ({pk_ddl});"))?;
+        src.execute_batch(UUID_MACRO)?;
+        src.execute_batch(&format!("CREATE TABLE website_event ({pk_ddl});"))?;
         src.execute_batch(&format!(
-            "INSERT INTO event SELECT
-               i, 'w1', 'session-' || (i / 3)::VARCHAR, 'visitor-' || (i % 300000)::VARCHAR,
+            "INSERT INTO website_event\n             (event_id, website_id, visit_id, session_id, session_start, created_at,
+             url_path, url_query, page_title, referrer_domain, referrer_path, referrer_query,
+             referrer_name, hostname, channel, browser, browser_version, os, os_version,
+             device, screen, language, country, region, city, latitude, longitude,
+             utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+             gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
+             lcp, inp, cls, fcp, ttfb, event_type, event_name, tag, data)\n             SELECT
+               i,
+               'w1',
+               CAST(uuid_of('session-' || (i / 3)::VARCHAR) AS UUID),
+               CAST(uuid_of('visitor-' || (i % 300000)::VARCHAR) AS UUID),
+               NULL,
                TIMESTAMP '2024-01-01' + to_seconds((i * 7919) % 31536000),
-               '/blog/post-1', 'utm_source=twitter&utm_medium=cpc&utm_campaign=spring&utm_content=cta&utm_term=term',
-               'A title', 'news.ycombinator.com', '/item', '?q=search', 'example.com',
-               'Chrome', '120', 'macOS', '10', 'desktop', '1920x1080', 'en-US', 'US',
-               NULL, NULL, 'twitter', 'social', 'spring', 'cta', 'term',
+               '/blog/post-1',
+               'utm_source=twitter&utm_medium=cpc&utm_campaign=spring&utm_content=cta&utm_term=term',
+               'A title',
+               'news.ycombinator.com',
+               '/item',
+               '?q=search',
+               NULL,
+               'example.com',
+               NULL,
+               'Chrome',
+               '120',
+               'macOS',
+               '10',
+               'desktop',
+               '1920x1080',
+               'en-US',
+               'US',
+               NULL,
+               NULL,
+               NULL,
+               NULL,
+               'twitter',
+               'social',
+               'spring',
+               NULL,
+               NULL,
                NULL, NULL, NULL, NULL, NULL, NULL,
-               1200.0, 80.0, 0.02, 700.0, 90.0, 'pageview', NULL, NULL, NULL
+               1200.0,
+               80.0,
+               0.02,
+               700.0,
+               90.0,
+               'pageview',
+               NULL,
+               NULL,
+               NULL
              FROM generate_series(1, {rows}) t(i);"
         ))?;
         src.execute_batch("CHECKPOINT")?;
@@ -202,9 +266,10 @@ fn main() -> anyhow::Result<()> {
         conn2.execute_batch(&format!("SET memory_limit='{limit}'; SET threads=2;"))?;
         let escaped = dest.to_string_lossy().replace('\'', "''");
         conn2.execute_batch(&format!("ATTACH '{escaped}' AS fresh"))?;
-        conn2.execute_batch(&format!("CREATE TABLE fresh.event ({plain_ddl});"))?;
+        conn2.execute_batch(&format!("CREATE TABLE fresh.website_event ({plain_ddl});"))?;
         let started = std::time::Instant::now();
-        let result = conn2.execute_batch("INSERT INTO fresh.event SELECT * FROM main.event;");
+        let result =
+            conn2.execute_batch("INSERT INTO fresh.website_event SELECT * FROM main.website_event;");
         match result {
             Ok(_) => {
                 let seconds = started.elapsed().as_secs_f64();
@@ -222,14 +287,20 @@ fn main() -> anyhow::Result<()> {
     // The server's own write path: the Appender, in batches.
     let mut id = 0i64;
     while id < rows {
-        let mut appender = conn.appender("event")?;
+        let mut appender = conn.appender("website_event")?;
         let batch = 50_000.min(rows - id);
         for _ in 0..batch {
+            // The values are **positional**, so they are in the schema's order.
             appender.append_row(duckdb::params![
                 id,
                 "w1",
-                format!("session-{}", id / 3),
-                format!("visitor-{:08x}", id % 300_000),
+                uuid_of(&format!("session-{}", id / 3)),
+                uuid_of(&format!("visitor-{:08x}", id % 300_000)),
+                Option::<chrono::NaiveDateTime>::None,
+                "",
+                "",
+                "",
+                Option::<uuid::Uuid>::None,
                 chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap()
                     + chrono::Duration::seconds((id * 7919) % 31_536_000),
                 "/blog/post-1",
@@ -238,7 +309,9 @@ fn main() -> anyhow::Result<()> {
                 "news.ycombinator.com",
                 "/item",
                 "?q=search",
+                Option::<String>::None,
                 "example.com",
+                Option::<String>::None,
                 "Chrome",
                 "120",
                 "macOS",
@@ -249,11 +322,13 @@ fn main() -> anyhow::Result<()> {
                 "US",
                 Option::<String>::None,
                 Option::<String>::None,
+                Option::<String>::None,
+                Option::<f64>::None,
+                Option::<f64>::None,
                 "twitter",
                 "social",
                 "spring",
-                "cta",
-                "term",
+                Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,

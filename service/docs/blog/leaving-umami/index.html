@@ -147,8 +147,8 @@
       </p>
       <ul>
         <li>
-          <strong>One binary, one file.</strong> The release archive holds an executable and
-          a directory. There is no queue to operate, no cache to tune, no object storage, no
+          <strong>One binary, one directory.</strong> The release archive holds an executable
+          and a directory. There is no queue to operate, no cache to tune, no object storage, no
           container orchestration. Copy one file to the box, run one systemd unit, and it is
           done.
         </li>
@@ -161,12 +161,12 @@
         <li>
           <strong>The history became worth keeping.</strong> With a retention window and a
           rolling deletion policy (<code>sumimi prune</code>), old data leaves on its own and
-          the file never grows without bound.
+          the data never grows without bound.
         </li>
         <li>
-          <strong>Backups became trivial.</strong> It is one file. <code>sumimi backup</code>
-          copies it; a nightly cron job and an off-box copy is the whole disaster-recovery
-          story.
+          <strong>Backups became trivial.</strong> An instance is one directory.
+          <code>sumimi backup</code> copies it; a nightly cron job and an off-box copy is
+          the whole disaster-recovery story.
         </li>
       </ul>
 

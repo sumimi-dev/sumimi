@@ -15,13 +15,17 @@ use super::deep::{DeepRead, StoredRow};
 
 impl DeepRead for Db {
     fn rows(&self, website_id: &str) -> anyhow::Result<Vec<StoredRow>> {
-        self.with_connection(|conn| read_rows(conn, website_id))
+        self.with_connection(|conn| read_rows(conn, website_id, self.layout()))
     }
 }
 
 /// Read every row of a website, in insertion order.
-pub fn read_rows(conn: &Connection, website_id: &str) -> anyhow::Result<Vec<StoredRow>> {
-    let statement = crate::query::event_rows(website_id, &Duck);
+pub fn read_rows(
+    conn: &Connection,
+    website_id: &str,
+    layout: crate::storage::Layout,
+) -> anyhow::Result<Vec<StoredRow>> {
+    let statement = crate::query::event_rows(website_id, &Duck::new(layout));
     let mut stmt = conn.prepare(&statement.sql)?;
     let mut rows = stmt.query([website_id])?;
     let mut out = Vec::new();

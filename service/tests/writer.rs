@@ -38,9 +38,16 @@ fn hit(url: &str) -> Hit {
 }
 
 /// How many rows the database holds.
+///
+/// ⇒ ⇒ The facts live in the site's own file (since v12), so the count is a
+/// count over that file.
 fn rows(db: &Db) -> i64 {
+    // The site's file is attached first — the facts live there (since v12), and
+    // this test does not register the site, so nothing else attaches it.
+    let alias = db.ensure_site("w1").unwrap();
     db.with_read(|conn| {
-        let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+        let mut stmt =
+            conn.prepare(&format!("SELECT count(*) FROM {alias}.website_event"))?;
         let mut rows = stmt.query([])?;
         match rows.next()? {
             Some(row) => Ok(row.get(0)?),

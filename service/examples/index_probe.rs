@@ -1,4 +1,4 @@
-//! What does the `PRIMARY KEY` on `event` actually cost?
+//! What does the `PRIMARY KEY` on `website_event` actually cost?
 //!
 //! DuckDB builds an ART (adaptive radix tree) index for every PRIMARY KEY / UNIQUE
 //! constraint. That index is maintained on every append — and, for an append-only
@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "-".repeat(70));
     println!(
         "{:<22} {:>10} {:>14} {:>10} {:>10}",
-        "PRIMARY KEY id",
+        "PRIMARY KEY event_id",
         fmt_bytes(with_pk.file_size),
         fmt_bytes(with_pk.memory.max(0) as u64),
         format!("{:.2}s", with_pk.write_secs),
@@ -115,25 +115,27 @@ fn build(path: &std::path::PathBuf, pk: bool) -> anyhow::Result<Probe> {
     )?;
 
     let id_def = if pk { "BIGINT PRIMARY KEY" } else { "BIGINT" };
+    // The two ids are the visitor's and the session's; the v12 schema names
+    // them `session_id` (the visitor) and `visit_id` (the session).
     conn.execute_batch(&format!(
-        "CREATE TABLE event (
-            id            {id_def},
-            website_id    VARCHAR NOT NULL,
-            session_id    VARCHAR NOT NULL,
-            visitor_id    VARCHAR NOT NULL,
-            created_at    TIMESTAMP NOT NULL,
-            url           VARCHAR,
-            title         VARCHAR,
-            referrer      VARCHAR,
-            browser       VARCHAR,
-            os            VARCHAR,
-            device        VARCHAR,
-            country       VARCHAR,
-            utm_source    VARCHAR,
-            utm_medium    VARCHAR,
-            lcp           DOUBLE,
-            inp           DOUBLE,
-            cls           DOUBLE
+        "CREATE TABLE website_event (
+            event_id       {id_def},
+            website_id     VARCHAR NOT NULL,
+            visit_id       VARCHAR NOT NULL,
+            session_id     VARCHAR NOT NULL,
+            created_at     TIMESTAMP NOT NULL,
+            url_path       VARCHAR,
+            page_title     VARCHAR,
+            referrer_domain VARCHAR,
+            browser        VARCHAR,
+            os             VARCHAR,
+            device         VARCHAR,
+            country        VARCHAR,
+            utm_source     VARCHAR,
+            utm_medium     VARCHAR,
+            lcp            DOUBLE,
+            inp            DOUBLE,
+            cls            DOUBLE
         )"
     ))?;
 
@@ -146,11 +148,13 @@ fn build(path: &std::path::PathBuf, pk: bool) -> anyhow::Result<Probe> {
     // The real write path: the Appender, in batches, exactly like `write_batch`.
     let started = Instant::now();
     {
-        let mut appender = conn.appender("event")?;
+        let mut appender = conn.appender("website_event")?;
         for i in 0..ROWS as i64 {
             let at = base + chrono::Duration::seconds((i * 7919) % year);
             let site = format!("site-{}", i % 3);
-            let session = format!("session-{}-{}", i / 4, i % 100_000);
+            // The session's id and the visitor's id — the columns are
+            // `visit_id` and `session_id` in that order.
+            let visit = format!("session-{}-{}", i / 4, i % 100_000);
             let visitor = format!("visitor-{:08x}", (i * 2654435761) % 1_000_000);
             let url = format!("/blog/post-{}", i % 500);
             let title = format!("Post number {}", i % 200);
@@ -163,7 +167,7 @@ fn build(path: &std::path::PathBuf, pk: bool) -> anyhow::Result<Probe> {
             appender.append_row(duckdb::params![
                 i,
                 site,
-                session,
+                visit,
                 visitor,
                 at,
                 url,
@@ -194,7 +198,7 @@ fn build(path: &std::path::PathBuf, pk: bool) -> anyhow::Result<Probe> {
     // February, where the data actually is.
     let started = Instant::now();
     let n: i64 = conn.query_row(
-        "SELECT count(DISTINCT session_id) FROM event
+        "SELECT count(DISTINCT visit_id) FROM website_event
          WHERE website_id = 'site-0'
            AND created_at >= TIMESTAMP '2026-02-01' AND created_at < TIMESTAMP '2026-03-01'",
         [],
@@ -302,7 +306,7 @@ fn probe_persistence(with_pk: &std::path::Path, without: &std::path::Path) -> an
         let size_before = std::fs::metadata(path)?.len();
         let conn = Connection::open(path)?;
         // Touch the table so the index has to be there (or be rebuilt).
-        let n: i64 = conn.query_row("SELECT count(*) FROM event", [], |row| row.get(0))?;
+        let n: i64 = conn.query_row("SELECT count(*) FROM website_event", [], |row| row.get(0))?;
         let art = art_index_bytes(&conn)?;
         let size_after = std::fs::metadata(path)?.len();
         println!(
@@ -324,7 +328,7 @@ fn probe_user_index(path: &std::path::Path) -> anyhow::Result<()> {
     println!("=== a user-created CREATE INDEX ===");
     let conn = Connection::open(path)?;
     let before = std::fs::metadata(path)?.len();
-    conn.execute_batch("CREATE INDEX idx_website ON event (website_id)")?;
+    conn.execute_batch("CREATE INDEX idx_website ON website_event (website_id)")?;
     conn.execute_batch("CHECKPOINT")?;
     let after = std::fs::metadata(path)?.len();
     let art = art_index_bytes(&conn)?;
@@ -333,7 +337,7 @@ fn probe_user_index(path: &std::path::Path) -> anyhow::Result<()> {
 
     // The decisive test: the same column, the same kind of index, created by hand.
     let before_id = std::fs::metadata(path)?.len();
-    conn.execute_batch("CREATE INDEX idx_id ON event (id)")?;
+    conn.execute_batch("CREATE INDEX idx_id ON website_event (event_id)")?;
     conn.execute_batch("CHECKPOINT")?;
     let after_id = std::fs::metadata(path)?.len();
     println!(
@@ -345,7 +349,7 @@ fn probe_user_index(path: &std::path::Path) -> anyhow::Result<()> {
     // Is it used by the dashboard query?
     let started = Instant::now();
     let n: i64 = conn.query_row(
-        "SELECT count(DISTINCT session_id) FROM event
+        "SELECT count(DISTINCT visit_id) FROM website_event
          WHERE website_id = 'site-0'
            AND created_at >= TIMESTAMP '2026-02-01' AND created_at < TIMESTAMP '2026-03-01'",
         [],
@@ -364,7 +368,7 @@ fn probe_user_index(path: &std::path::Path) -> anyhow::Result<()> {
 fn show_plan(path: &std::path::Path, label: &str) -> anyhow::Result<()> {
     let conn = Connection::open(path)?;
     let mut stmt = conn.prepare(
-        "EXPLAIN SELECT count(DISTINCT session_id) FROM event
+        "EXPLAIN SELECT count(DISTINCT visit_id) FROM website_event
          WHERE website_id = 'site-0'
            AND created_at >= TIMESTAMP '2026-02-01' AND created_at < TIMESTAMP '2026-03-01'",
     )?;
@@ -388,14 +392,14 @@ fn show_plan(path: &std::path::Path, label: &str) -> anyhow::Result<()> {
 /// sequences behave?
 fn probe_sql_features(path: &std::path::Path) -> anyhow::Result<()> {
     let conn = Connection::open(path)?;
-    println!("=== MAX(id) on a big table ===");
+    println!("=== MAX(event_id) on a big table ===");
     for _ in 0..3 {
         let started = Instant::now();
-        let max: i64 = conn.query_row("SELECT max(id) FROM event", [], |row| row.get(0))?;
-        println!("  max(id) = {max} in {:.3}s", started.elapsed().as_secs_f64());
+        let max: i64 = conn.query_row("SELECT max(event_id) FROM website_event", [], |row| row.get(0))?;
+        println!("  max(event_id) = {max} in {:.3}s", started.elapsed().as_secs_f64());
     }
     let started = Instant::now();
-    let max: i64 = conn.query_row("SELECT max(id) FROM event", [], |row| row.get(0))?;
+    let max: i64 = conn.query_row("SELECT max(event_id) FROM website_event", [], |row| row.get(0))?;
     println!("  (warm: {max} in {:.3}s)", started.elapsed().as_secs_f64());
 
     println!();
@@ -485,11 +489,11 @@ fn same_numbers(with_pk: &std::path::Path, without: &std::path::Path) -> anyhow:
     let a = Connection::open(with_pk)?;
     let b = Connection::open(without)?;
     let queries = [
-        "SELECT count(*) FROM event",
-        "SELECT count(DISTINCT visitor_id) FROM event",
-        "SELECT count(DISTINCT session_id) FROM event",
-        "SELECT sum(lcp) FROM event WHERE website_id='site-1'",
-        "SELECT url, count(*) FROM event GROUP BY url ORDER BY url LIMIT 5",
+        "SELECT count(*) FROM website_event",
+        "SELECT count(DISTINCT session_id) FROM website_event",
+        "SELECT count(DISTINCT visit_id) FROM website_event",
+        "SELECT sum(lcp) FROM website_event WHERE website_id='site-1'",
+        "SELECT url_path, count(*) FROM website_event GROUP BY url_path ORDER BY url_path LIMIT 5",
     ];
     let mut same = true;
     for q in queries {

@@ -70,10 +70,13 @@ impl Dimensions {
     /// The list lives here so that the three backends filter on **the same
     /// dimensions** — a filter one engine knows and another does not is a
     /// number that differs between them.
+    ///
+    /// **The names are the columns'** — `url_path` and `referrer_domain` since
+    /// v12, the names Umami gives them.
     pub fn filters(&self) -> [(&'static str, &Option<String>); 6] {
         [
-            ("url", &self.url),
-            ("referrer", &self.referrer),
+            ("url_path", &self.url),
+            ("referrer_domain", &self.referrer),
             ("browser", &self.browser),
             ("os", &self.os),
             ("device", &self.device),
@@ -116,6 +119,27 @@ impl ReportQuery {
             offset: 0,
         }
     }
+}
+
+/// How the fact tables are reached.
+///
+/// **The shape of the storage is the engine's business; the numbers are not.**
+/// The statements are written once (see [`crate::query`]) and the dialect says
+/// how it spells the table's name — so the two shapes below answer the same
+/// numbers, and the engine can change its shape without touching a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// **One file per site.** The site's file is attached under the site's own
+    /// name, and the statements name it (`s_….website_event`) ⇒ ⇒ a query for
+    /// one site reads that site's file and nothing else.
+    ///
+    /// This is the shape of the server (since v12): the main file holds the
+    /// sites and the bookkeeping, and every site has a file of its own for its
+    /// facts.
+    PerSite,
+    /// **One table**, in the database at hand — the archive (parquet), and the
+    /// tools that measure things.
+    Flat,
 }
 
 /// The condition that selects the **page views**.
@@ -308,8 +332,8 @@ impl Dimension {
     /// The column in the `session` table.
     pub fn column(self) -> &'static str {
         match self {
-            Dimension::Url => "url",
-            Dimension::Referrer => "referrer",
+            Dimension::Url => "url_path",
+            Dimension::Referrer => "referrer_domain",
             Dimension::Browser => "browser",
             Dimension::Os => "os",
             Dimension::Device => "device",

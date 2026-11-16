@@ -27,7 +27,7 @@ use duckdb::Connection;
 struct Variant {
     /// What the variant is called.
     name: &'static str,
-    /// The `SELECT` that builds the table out of `src.event`.
+    /// The `SELECT` that builds the table out of `src.website_event`.
     select: String,
     /// The expression that identifies a session — `None` when the variant has
     /// no session key (it dropped the column).
@@ -49,6 +49,8 @@ const UNITS: [(&str, &str); 4] = [
 
 /// The id the report works out for itself when the pair is stored instead of
 /// an id: a 128-bit hash of the visitor and the window start, as a UUID.
+///
+/// The visitor's id is `session_id` — the session's own id is `visit_id`.
 const MD5_KEY: &str = "CAST(substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 1, 8) \
  || '-' || substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 9, 4) \
  || '-' || substr(md5(session_id::VARCHAR || '-' || window_start::VARCHAR), 13, 4) \
@@ -147,26 +149,27 @@ fn real(path: &Path) -> Result<()> {
 
     let mut stmt = src.prepare(
         "SELECT column_name, data_type FROM information_schema.columns
-         WHERE table_name = 'event' ORDER BY ordinal_position",
+         WHERE table_name = 'website_event' ORDER BY ordinal_position",
     )?;
     let columns: Vec<(String, String)> = stmt
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let names: Vec<String> = columns.iter().map(|(n, _)| n.clone()).collect();
 
-    let rows: i64 = src.query_row("SELECT count(*) FROM event", [], |r| r.get(0))?;
-    println!("event: {rows} rows, {} columns\n", names.len());
+    let rows: i64 = src.query_row("SELECT count(*) FROM website_event", [], |r| r.get(0))?;
+    println!("website_event: {rows} rows, {} columns\n", names.len());
 
     // The families worth pricing.
     let doubles: Vec<&str> = ["latitude", "longitude", "lcp", "inp", "cls", "fcp", "ttfb"]
         .into_iter()
         .filter(|c| names.iter().any(|n| n == c))
         .collect();
+    // The visitor's id is `session_id`; the session's is `visit_id`.
     let ids: Vec<&str> = ["session_id", "visit_id", "user_id"]
         .into_iter()
         .filter(|c| names.iter().any(|n| n == c))
         .collect();
-    let page: Vec<&str> = ["url", "url_query", "title"]
+    let page: Vec<&str> = ["url_path", "url_query", "page_title"]
         .into_iter()
         .filter(|c| names.iter().any(|n| n == c))
         .collect();
@@ -207,7 +210,7 @@ fn real(path: &Path) -> Result<()> {
                 format!("* EXCLUDE ({})", drop.join(", "))
             };
             dest.execute_batch(&format!(
-                "CREATE TABLE t AS SELECT {selection} FROM src.event;"
+                "CREATE TABLE t AS SELECT {selection} FROM src.website_event;"
             ))?;
         }
         let size = std::fs::metadata(&out)?.len();
@@ -216,7 +219,9 @@ fn real(path: &Path) -> Result<()> {
             "{name:<16} {:>9.2} MB {:>12.3} {:>12.3}",
             size as f64 / 1_048_576.0,
             size as f64 / rows as f64,
-            (base - size) as f64 / rows as f64
+            // A variant can be **bigger** than the baseline — then it saves
+            // nothing, it costs; the subtraction must not wrap around.
+            (base as f64 - size as f64) / rows as f64
         );
         let _ = std::fs::remove_file(&out);
     }
@@ -248,7 +253,7 @@ fn variants(path: &Path) -> Result<()> {
 
     let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?;
     let src = Connection::open_with_flags(path, config)?;
-    let rows: i64 = src.query_row("SELECT count(*) FROM event", [], |r| r.get(0))?;
+    let rows: i64 = src.query_row("SELECT count(*) FROM website_event", [], |r| r.get(0))?;
 
     // Which columns does this file actually have? The scratch dataset is older
     // than the current schema: it still has the v6 `session_id` (the session)
@@ -257,7 +262,7 @@ fn variants(path: &Path) -> Result<()> {
     // instead of being assumed.
     let mut stmt = src.prepare(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_name = 'event' AND table_schema = 'main'",
+         WHERE table_name = 'website_event' AND table_schema = 'main'",
     )?;
     let names: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -270,7 +275,7 @@ fn variants(path: &Path) -> Result<()> {
     } else if has("session_id") {
         "session_id"
     } else {
-        return Err(anyhow!("the event table has no session id column"));
+        return Err(anyhow!("the website_event table has no session id column"));
     };
     println!(
         "session id column: {session_col}; columns: {}",
@@ -372,7 +377,7 @@ fn variants(path: &Path) -> Result<()> {
         {
             let dest = Connection::open(&out)?;
             dest.execute_batch(&format!("ATTACH '{escaped}' AS src (READ_ONLY);"))?;
-            dest.execute_batch(&format!("CREATE TABLE t AS SELECT {} FROM src.event;", variant.select))?;
+            dest.execute_batch(&format!("CREATE TABLE t AS SELECT {} FROM src.website_event;", variant.select))?;
             if variant.time {
                 if let Some(key) = &variant.key {
                     let summary = format!(
@@ -409,7 +414,9 @@ fn variants(path: &Path) -> Result<()> {
             variant.name,
             size as f64 / 1_048_576.0,
             size as f64 / rows as f64,
-            (base - size) as f64 / rows as f64
+            // A variant can be **bigger** than the baseline — then it saves
+            // nothing, it costs; the subtraction must not wrap around.
+            (base as f64 - size as f64) / rows as f64
         );
         for (name, ms) in &times {
             println!("    {name:<16} {ms:>10.1} ms");

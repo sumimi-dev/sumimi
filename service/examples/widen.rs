@@ -18,7 +18,7 @@ fn build(path: &PathBuf, rows: i64) -> anyhow::Result<()> {
     db.with_read(|conn| {
         conn.execute_batch(
             "CREATE TABLE probe (
-                 id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT,
+                 id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT,
                  user_id VARCHAR, created_at TIMESTAMP, url VARCHAR);",
         )?;
         Ok::<_, anyhow::Error>(())
@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let outcome = db.with_write(|conn| {
         let result = conn.execute_batch(
-            "ALTER TABLE probe ALTER COLUMN visitor_id TYPE HUGEINT",
+            "ALTER TABLE probe ALTER COLUMN session_id TYPE HUGEINT",
         );
         Ok::<_, anyhow::Error>(result)
     });
@@ -79,9 +79,9 @@ fn main() -> anyhow::Result<()> {
     let db = Db::open(&path, "256MB")?;
     let (rows_now, visitors, widest): (i64, i64, i64) = db.with_read(|conn| {
         let rows: i64 = conn.query_row("SELECT count(*) FROM probe", [], |r| r.get(0))?;
-        let visitors: i64 = conn.query_row("SELECT count(DISTINCT visitor_id) FROM probe", [], |r| r.get(0))?;
+        let visitors: i64 = conn.query_row("SELECT count(DISTINCT session_id) FROM probe", [], |r| r.get(0))?;
         let widest: i64 =
-            conn.query_row("SELECT count(DISTINCT visitor_id) FROM probe WHERE visitor_id > 0", [], |r| r.get(0))?;
+            conn.query_row("SELECT count(DISTINCT session_id) FROM probe WHERE session_id > 0", [], |r| r.get(0))?;
         Ok::<_, anyhow::Error>((rows, visitors, widest))
     })?;
     println!("  after the widening: {rows_now} rows, {visitors} visitors, {widest} positive");
@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         db.with_read(|conn| {
             conn.execute_batch("INSTALL parquet; LOAD parquet;")?;
             conn.execute_batch(&format!(
-                "COPY (SELECT id, website_id, visit_id, visitor_id, user_id, created_at, url FROM probe) \
+                "COPY (SELECT id, website_id, visit_id, session_id, user_id, created_at, url FROM probe) \
                  TO '{p}' (FORMAT PARQUET)",
                 p = parquet.display()
             ))?;
@@ -111,8 +111,8 @@ fn main() -> anyhow::Result<()> {
                 let mut stmt = conn.prepare(
                     &format!(
                         "SELECT CAST(count(*) AS VARCHAR) || ' rows, ' || \
-                         CAST(count(DISTINCT visitor_id) AS VARCHAR) || ' visitors, type ' || \
-                         CAST(typeof(visitor_id) AS VARCHAR) \
+                         CAST(count(DISTINCT session_id) AS VARCHAR) || ' visitors, type ' || \
+                         CAST(any_value(typeof(session_id)) AS VARCHAR) \
                          FROM read_parquet('{p}')",
                         p = parquet.display()
                     ),
@@ -132,7 +132,7 @@ fn main() -> anyhow::Result<()> {
             let wide: Result<String, anyhow::Error> = db.with_read(|conn| {
                 let mut stmt = conn.prepare(
                     &format!(
-                        "SELECT CAST(count(DISTINCT CAST(visitor_id AS HUGEINT)) AS VARCHAR) \
+                        "SELECT CAST(count(DISTINCT CAST(session_id AS HUGEINT)) AS VARCHAR) \
                          FROM read_parquet('{p}')",
                         p = parquet.display()
                     ),

@@ -15,17 +15,25 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use sumimi_service::db::site_alias;
 use sumimi_service::db::SCHEMA_VERSION;
 use sumimi_service::pool::Db;
 use sumimi_service::storage::Storage;
 
 /// The summary's first query: the three numbers at the top of the dashboard.
+///
+/// The visitors are the distinct `session_id` (Umami's name for our visitor)
+/// and the visits the distinct `visit_id` (our session).
 const SUMMARY: &str = "SELECT COUNT(*) FILTER (WHERE event_type NOT IN ('event', 'identify')),
                               COUNT(DISTINCT {key}),
                               COUNT(DISTINCT visit_id)
-                       FROM event WHERE website_id = 'w1'";
+                       FROM website_event WHERE website_id = '{site}'";
 
 /// The summary's second query: the bounces and the average session length.
+///
+/// The length is measured from `session_start` — the row carries it, so the
+/// query does not have to work it out from the id any more (the id is a UUID
+/// now, and a UUID carries no timestamp).
 const BOUNCES: &str = "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
                                COALESCE(AVG(d), 0)
                         FROM (
@@ -34,23 +42,20 @@ const BOUNCES: &str = "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
                                    MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
                                    CASE
                                        WHEN MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')) IS NULL THEN NULL
-                                       WHEN visit_id < 0
-                                           THEN GREATEST(
-                                               date_diff('microsecond',
-                                                   MIN(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')),
-                                                   MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify'))
-                                               ), 0) / 1000000.0
                                        ELSE GREATEST(
-                                               epoch_us(MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')))
-                                               - (visit_id >> 32) * 1000000, 0) / 1000000.0
+                                           epoch_us(MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')))
+                                           - CASE WHEN MIN(session_start) IS NULL
+                                                  THEN epoch_us(MIN(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')))
+                                                  ELSE epoch_us(MIN(session_start))
+                                             END, 0) / 1000000.0
                                    END AS d
-                            FROM event WHERE website_id = 'w1'
+                            FROM website_event WHERE website_id = '{site}'
                             GROUP BY visit_id
                         )";
 
 /// The breakdown of an audience dimension — the visitors per browser.
 const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT {key}) AS value
-                          FROM event WHERE website_id = 'w1' AND event_type NOT IN ('event', 'identify')
+                          FROM website_event WHERE website_id = '{site}' AND event_type NOT IN ('event', 'identify')
                           GROUP BY name ORDER BY value DESC LIMIT 50";
 
 /// The SQL that makes a UUID out of the pair.
@@ -64,27 +69,32 @@ fn uuid_of_pair() -> String {
 }
 
 /// The three variants: the columns the file has, and the key the report counts.
+///
+/// The candidate under test is the **visitor's** id, which the v12 schema
+/// names `session_id` (Umami's name for the same thing) — so the variant that
+/// computes its own puts it in a column of that name, and the real one is
+/// excluded.
 fn variants() -> Vec<(&'static str, String, &'static str, bool)> {
     let uuid = uuid_of_pair();
     vec![
         (
             "the pair (prefix + agent)",
-            "CREATE TABLE v.event AS SELECT * FROM event;".to_string(),
+            "CREATE TABLE v.website_event AS SELECT * FROM {src};".to_string(),
             "(ip_prefix, user_agent)",
             true,
         ),
         (
             "a 16-byte hash",
             format!(
-                "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                 {uuid} AS visitor_id FROM event;"
+                "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                 {uuid} AS session_id FROM {{src}};"
             ),
-            "visitor_id",
+            "session_id",
             false,
         ),
         (
             "the pair + an 8-byte key",
-            "CREATE TABLE v.event AS SELECT *, hash(ip_prefix || chr(31) || user_agent) AS visitor_key FROM event;".to_string(),
+            "CREATE TABLE v.website_event AS SELECT *, hash(ip_prefix || chr(31) || user_agent) AS visitor_key FROM {src};".to_string(),
             "visitor_key",
             true,
         ),
@@ -101,8 +111,15 @@ fn main() -> anyhow::Result<()> {
     let source = PathBuf::from("/tmp/visitor-penalty-source.duckdb");
     let _ = std::fs::remove_file(&source);
     let db = Db::open(&source, "256MB")?;
-    db.create_website("Example", Some("example.com"), 0, None)?;
-    db.write_batch(&sumimi_service::testing::traffic(rows))?;
+    let site = db.create_website("Example", Some("example.com"), 0, None)?;
+    let mut hits = sumimi_service::testing::traffic(rows);
+    for hit in &mut hits {
+        hit.website_id = site.id.clone();
+    }
+    db.write_batch(&hits)?;
+    // **The facts live in the site's own file** (one file per site), so the
+    // source table is reached through the site's alias.
+    let src = format!("{}.website_event", site_alias(&site.id));
     println!("{rows} rows, schema v{SCHEMA_VERSION}\n");
     println!(
         "  {:<28} {:>10} {:>11} {:>11} {:>11}",
@@ -118,7 +135,7 @@ fn main() -> anyhow::Result<()> {
         let _ = std::fs::remove_file(&path);
         db.with_read(|conn| {
             conn.execute_batch(&format!("ATTACH '{}' AS v;", path.display()))?;
-            conn.execute_batch(&columns)?;
+            conn.execute_batch(&columns.replace("{src}", &src))?;
             conn.execute_batch("DETACH v;")?;
             Ok::<_, anyhow::Error>(())
         })?;
@@ -126,17 +143,17 @@ fn main() -> anyhow::Result<()> {
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let file = Db::open(&path, "256MB")?;
 
-        let summary = SUMMARY.replace("{key}", key);
-        let breakdown = BREAKDOWN.replace("{key}", key);
+        let summary = SUMMARY.replace("{key}", key).replace("{site}", &site.id);
+        let breakdown = BREAKDOWN.replace("{key}", key).replace("{site}", &site.id);
         // The same query, counting the pair itself — only where the pair is
         // still in the file.
         let pair_summary = if has_pair {
-            Some(SUMMARY.replace("{key}", "(ip_prefix, user_agent)"))
+            Some(SUMMARY.replace("{key}", "(ip_prefix, user_agent)").replace("{site}", &site.id))
         } else {
             None
         };
         let pair_breakdown = if has_pair {
-            Some(BREAKDOWN.replace("{key}", "(ip_prefix, user_agent)"))
+            Some(BREAKDOWN.replace("{key}", "(ip_prefix, user_agent)").replace("{site}", &site.id))
         } else {
             None
         };

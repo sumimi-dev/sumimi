@@ -3,7 +3,7 @@
 //!
 //! The storage numbers elsewhere were measured on a test table with a
 //! plausible-but-invented column set. This one uses **the real
-//! `EVENT_COLUMNS`** (the same constant the service creates its table with),
+//! `schema::EVENT`** (the same list the service creates its table with),
 //! filled with plausible traffic — a realistic spread of user agents, urls,
 //! referrers, sites — and measures what a row costs with the identity column
 //! at three widths.
@@ -26,7 +26,22 @@ use sumimi_service::schema;
 const VISITORS: i64 = 1_000_000;
 const SITES: i64 = 5;
 
+/// The macro the session's id is written with — DuckDB has no `uuid_of` of its own.
+///
+/// The session's own id (`visit_id`) is a UUID (sixteen bytes); only the
+/// **visitor's** id (`session_id`) is the column whose width this probe
+/// changes.
+const UUID_MACRO: &str = r#"
+CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
+    substr(sha256(s), 1, 8) || '-' || substr(sha256(s), 9, 4) || '-' ||
+    substr(sha256(s), 13, 4) || '-' || substr(sha256(s), 17, 4) || '-' ||
+    substr(sha256(s), 21, 12) AS UUID);
+"#;
+
 /// The three shapes of the identity column.
+///
+/// The identity is the **visitor**, whose id is `session_id` — the session's
+/// own id is `visit_id`, and that one stays a UUID.
 struct Shape {
     name: &'static str,
     /// The column type, and the expression that fills it.
@@ -42,24 +57,27 @@ fn shapes() -> Vec<Shape> {
         .to_string();
     vec![
         Shape {
-            name: "visitor_id BIGINT (8 bytes)",
-            ddl: "visitor_id BIGINT",
+            name: "session_id BIGINT (8 bytes)",
+            ddl: "session_id BIGINT",
             values: narrow.clone(),
         },
         Shape {
-            name: "visitor_id HUGEINT (16 bytes, real 128-bit values)",
-            ddl: "visitor_id HUGEINT",
+            name: "session_id HUGEINT (16 bytes, real 128-bit values)",
+            ddl: "session_id HUGEINT",
             values: wide.clone(),
         },
         Shape {
-            name: "visitor_id HUGEINT (8-byte values in a wide column)",
-            ddl: "visitor_id HUGEINT",
+            name: "session_id HUGEINT (8-byte values in a wide column)",
+            ddl: "session_id HUGEINT",
             values: narrow,
         },
     ]
 }
 
 /// The traffic, in the real columns.
+///
+/// The columns are named, not positional — the schema's order changes, and a
+/// positional insert that no longer matches silently measures another shape.
 fn traffic(visitor: &str, save_all: bool) -> String {
     let ip = if save_all {
         "'203.0.113.' || CAST(i % 40000 AS VARCHAR)".to_string()
@@ -79,20 +97,27 @@ fn traffic(visitor: &str, save_all: bool) -> String {
         "''".to_string()
     };
     format!(
-        "INSERT INTO probe
-         SELECT i AS id,
+        "INSERT INTO website_event
+         (event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, user_id,
+          created_at, url_path, url_query, page_title, referrer_domain, referrer_path,
+          referrer_query, referrer_name, hostname, channel, browser, browser_version, os,
+          os_version, device, screen, language, country, region, city, latitude, longitude,
+          utm_source, utm_medium, utm_campaign, utm_content, utm_term, gclid, fbclid,
+          msclkid, ttclid, li_fat_id, twclid, lcp, inp, cls, fcp, ttfb, event_type,
+          event_name, tag, data)
+         SELECT i AS event_id,
             'site-' || (i % {SITES}) AS website_id,
-            (((i // {VISITORS}) // 4)::BIGINT << 32) | (hash('v' || (i % {VISITORS})) % 4294967296) AS visit_id,
-            {visitor} AS visitor_id,
+            CAST(uuid_of('session-' || ((i // {VISITORS}) // 4)::VARCHAR) AS UUID) AS visit_id,
+            {visitor} AS session_id,
             {ip} AS ip,
             '203.0.' || CAST(i % 256 AS VARCHAR) || '.0' AS ip_prefix,
             {ua} AS user_agent,
             CASE WHEN i % 3 = 0 THEN NULL ELSE uuid() END AS user_id,
             TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i * 4) SECOND AS created_at,
-            '/blog/post-' || (i % 5000) AS url,
+            '/blog/post-' || (i % 5000) AS url_path,
             CASE WHEN i % 7 = 0 THEN 'utm_source=twitter&utm_campaign=spring' ELSE '' END AS url_query,
-            'A reasonably long article title number ' || (i % 1000) AS title,
-            CASE WHEN i % 3 = 0 THEN 'https://www.google.com/search?q=some+term&x=1' ELSE '' END AS referrer,
+            'A reasonably long article title number ' || (i % 1000) AS page_title,
+            CASE WHEN i % 3 = 0 THEN 'https://www.google.com/search?q=some+term&x=1' ELSE '' END AS referrer_domain,
             CASE WHEN i % 3 = 0 THEN '/search' ELSE '' END AS referrer_path,
             '' AS referrer_query, '' AS referrer_name,
             'example.com' AS hostname, 'Search' AS channel,
@@ -107,7 +132,7 @@ fn traffic(visitor: &str, save_all: bool) -> String {
             '1920x1080' AS screen, 'en-US' AS language, 'DE' AS country, 'Berlin' AS region,
             'Berlin' AS city, 52.52 AS latitude, 13.405 AS longitude,
             '' AS utm_source, '' AS utm_medium, '' AS utm_campaign, '' AS utm_content, '' AS utm_term,
-            '' AS gclid, '' AS fbclid, '' AS msclkid, '' AS ttclid, '' AS lifatid, '' AS twclid,
+            '' AS gclid, '' AS fbclid, '' AS msclkid, '' AS ttclid, '' AS li_fat_id, '' AS twclid,
             0.01 AS lcp, 0.02 AS inp, 0.03 AS cls, 0.4 AS fcp, 0.8 AS ttfb,
             'pageview' AS event_type, '' AS event_name, '' AS tag, '' AS data
         FROM generate_series(1, {{rows}}) t(i)"
@@ -119,7 +144,7 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .and_then(|v| v.parse().ok())
         .unwrap_or(10_000_000);
-    println!("{rows} rows, the real EVENT_COLUMNS ({SITES} sites, {VISITORS} visitors)\n");
+    println!("{rows} rows, the real schema::EVENT ({SITES} sites, {VISITORS} visitors)\n");
     println!(
         "  {:<48} {:>9} {:>12} {:>12}",
         "the shape", "B/row", "the column", "1B visitors"
@@ -135,10 +160,11 @@ fn main() -> anyhow::Result<()> {
         let columns = schema::columns_ddl_with(
             schema::EVENT,
             &Duck,
-            &[("visitor_id", shape.ddl)],
+            &[("session_id", shape.ddl)],
         );
         db.with_read(|conn| {
-            conn.execute_batch(&format!("CREATE TABLE probe ({columns});"))?;
+            conn.execute_batch(UUID_MACRO)?;
+            conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
             Ok::<_, anyhow::Error>(())
         })?;
         let sql = traffic(&shape.values, save_all)
@@ -152,7 +178,7 @@ fn main() -> anyhow::Result<()> {
         })?;
         let write = started.elapsed().as_secs_f64() * 1000.0;
         let count: i64 = db.with_read(|conn| {
-            let v: i64 = conn.query_row("SELECT count(*) FROM probe", [], |r| r.get(0))?;
+            let v: i64 = conn.query_row("SELECT count(*) FROM website_event", [], |r| r.get(0))?;
             Ok::<_, anyhow::Error>(v)
         })?;
         let before_checkpoint = std::fs::metadata(&path)?.len();

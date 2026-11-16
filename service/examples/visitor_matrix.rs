@@ -17,6 +17,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use sumimi_service::db::site_alias;
+use sumimi_service::db::site_path;
 use sumimi_service::db::SCHEMA_VERSION;
 use sumimi_service::pool::Db;
 use sumimi_service::sqlite::SqliteBackend;
@@ -42,18 +44,25 @@ const DESIGNS: [(&str, &str); 15] = [
 ];
 
 /// The summary's first query: the three numbers at the top of the dashboard.
+///
+/// The visitors are the distinct `session_id` (Umami's name for our visitor)
+/// and the visits the distinct `visit_id` (our session).
 const SUMMARY_DUCK: &str = "SELECT COUNT(*) FILTER (WHERE event_type NOT IN ('event', 'identify')),
                               COUNT(DISTINCT {key}),
                               COUNT(DISTINCT visit_id)
-                       FROM event WHERE website_id = 'w1'";
+                       FROM website_event WHERE website_id = '{site}'";
 
 const SUMMARY_SQLITE: &str =
     "SELECT COUNT(*) FILTER (WHERE event_type NOT IN ('event', 'identify')),
                                  COUNT(DISTINCT {key}),
                                  COUNT(DISTINCT visit_id)
-                          FROM event WHERE website_id = 'w1'";
+                          FROM website_event WHERE website_id = '{site}'";
 
 /// The summary's second query: the bounces and the average session length.
+///
+/// The length is measured from `session_start` — the row carries it, so the
+/// query does not have to work it out from the id any more (the id is a UUID
+/// now, and a UUID carries no timestamp).
 const BOUNCES_DUCK: &str = "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
                                COALESCE(AVG(d), 0)
                         FROM (
@@ -62,17 +71,14 @@ const BOUNCES_DUCK: &str = "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0),
                                    MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
                                    CASE
                                        WHEN MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')) IS NULL THEN NULL
-                                       WHEN visit_id < 0
-                                           THEN GREATEST(
-                                               date_diff('microsecond',
-                                                   MIN(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')),
-                                                   MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify'))
-                                               ), 0) / 1000000.0
                                        ELSE GREATEST(
-                                               epoch_us(MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')))
-                                               - (visit_id >> 32) * 1000000, 0) / 1000000.0
+                                           epoch_us(MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')))
+                                           - CASE WHEN MIN(session_start) IS NULL
+                                                  THEN epoch_us(MIN(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')))
+                                                  ELSE epoch_us(MIN(session_start))
+                                             END, 0) / 1000000.0
                                    END AS d
-                            FROM event WHERE website_id = 'w1'
+                            FROM website_event WHERE website_id = '{site}'
                             GROUP BY visit_id
                         )";
 
@@ -84,21 +90,20 @@ const BOUNCES_SQLITE: &str = "SELECT COUNT(*) FILTER (WHERE n = 1 AND custom = 0
                                       MAX(CASE WHEN event_type = 'event' THEN 1 ELSE 0 END) AS custom,
                                       CASE
                                           WHEN MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')) IS NULL THEN NULL
-                                          WHEN visit_id < 0
-                                              THEN MAX(
-                                                  MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify'))
-                                                  - MIN(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify')), 0) / 1000000.0
                                           ELSE MAX(
                                               MAX(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify'))
-                                              - (visit_id >> 32) * 1000000, 0) / 1000000.0
+                                              - CASE WHEN MIN(session_start) IS NULL
+                                                     THEN MIN(created_at) FILTER (WHERE event_type NOT IN ('event', 'identify'))
+                                                     ELSE MIN(session_start)
+                                                END, 0) / 1000000.0
                                       END AS d
-                               FROM event WHERE website_id = 'w1'
+                               FROM website_event WHERE website_id = '{site}'
                                GROUP BY visit_id
                            )";
 
 /// The breakdown of an audience dimension — the visitors per browser.
 const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT {key}) AS value
-                          FROM event WHERE website_id = 'w1' AND event_type NOT IN ('event', 'identify')
+                          FROM website_event WHERE website_id = '{site}' AND event_type NOT IN ('event', 'identify')
                           GROUP BY name ORDER BY value DESC LIMIT 50";
 
 /// The SQL that makes a 16-byte hash out of the pair (DuckDB has sha256).
@@ -124,16 +129,20 @@ fn address_of() -> String {
 }
 
 /// The key each design's report counts over.
+///
+/// The candidate under test is the **visitor's** id, which the v12 schema
+/// names `session_id` (Umami's name for the same thing) — so the designs that
+/// compute their own put it in a column of that name.
 fn key_of(design: &str, engine: &str) -> String {
     match (design, engine) {
         ("pair", "duckdb") => "(ip_prefix, user_agent)".to_string(),
         ("pair", _) => "ip_prefix || char(31) || user_agent".to_string(),
-        ("hash", _) | ("hash8", _) | ("packed", _) => "visitor_id".to_string(),
+        ("hash", _) | ("hash8", _) | ("packed", _) => "session_id".to_string(),
         // SQLite has no row values in COUNT(DISTINCT) — it concatenates.
         ("ids", "duckdb") => "(network_id, agent_id)".to_string(),
         ("ids", _) => "network_id || char(31) || agent_id".to_string(),
         ("blob8", _) | ("hex8", _) | ("b64", _) | ("b64np", _) | ("blob16", _) | ("blob32", _)
-        | ("uuidtext", _) => "visitor_id".to_string(),
+        | ("uuidtext", _) => "session_id".to_string(),
         ("split8+4", "duckdb") => "(ip_num, ua_hash)".to_string(),
         ("split8+4", _) => "ip_num || char(31) || ua_hash".to_string(),
         ("split4+8", "duckdb") => "(ip_num, ua_hash)".to_string(),
@@ -397,94 +406,112 @@ fn main() -> anyhow::Result<()> {
             // The source: the real table, the real traffic.
             let source = PathBuf::from(format!("/tmp/visitor-matrix-{engine}-source.db"));
             let _ = std::fs::remove_file(&source);
-            if engine == "duckdb" {
+            // The site the traffic belongs to — **the facts live in this site's
+            // own file** (one file per site), so the source table is reached
+            // through the site's alias, and the queries name the site's id.
+            let site = if engine == "duckdb" {
                 let db = Db::open(&source, "256MB")?;
-                db.create_website("Example", Some("example.com"), 0, None)?;
+                let site = db.create_website("Example", Some("example.com"), 0, None)?;
+                let mut hits = hits.clone();
+                for hit in &mut hits {
+                    hit.website_id = site.id.clone();
+                }
                 db.write_batch(&hits)?;
+                site
             } else {
                 let db = SqliteBackend::open(&source)?;
-                db.create_website("Example", Some("example.com"), 0, None)?;
+                let site = db.create_website("Example", Some("example.com"), 0, None)?;
+                let mut hits = hits.clone();
+                for hit in &mut hits {
+                    hit.website_id = site.id.clone();
+                }
                 db.write_batch(&hits)?;
-            }
+                site
+            };
+            let src = format!("{}.website_event", site_alias(&site.id));
 
             // The design's own file — written once, so the size is the size.
             let (summary_sql, bounces_sql, create_sql) = match engine {
                 "duckdb" => {
                     let sql = match design {
-                        "pair" => "CREATE TABLE v.event AS SELECT * FROM event;".to_string(),
+                        "pair" => "CREATE TABLE v.website_event AS SELECT * FROM {src};".to_string(),
+                        // The real `session_id` (the visitor's id) is excluded
+                        // too: the design puts its own candidate in that column.
                         "hash" => format!(
-                            "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             {} AS visitor_id FROM event;",
+                            "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             {} AS session_id FROM {src};",
                             uuid_of_pair()
                         ),
-                        "hash8" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             hash(ip_prefix || chr(31) || user_agent) AS visitor_id FROM event;"
+                        "hash8" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             hash(ip_prefix || chr(31) || user_agent) AS session_id FROM {src};"
                             .to_string(),
-                        "blob8" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             unhex(hex(hash(ip_prefix || chr(31) || user_agent))) AS visitor_id FROM event;"
+                        "blob8" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             unhex(hex(hash(ip_prefix || chr(31) || user_agent))) AS session_id FROM {src};"
                             .to_string(),
-                        "hex8" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             lpad(hex(hash(ip_prefix || chr(31) || user_agent)), 16, '0') AS visitor_id FROM event;"
+                        "hex8" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             lpad(hex(hash(ip_prefix || chr(31) || user_agent)), 16, '0') AS session_id FROM {src};"
                             .to_string(),
                         // Base64 of the same eight bytes: twelve characters with
                         // the padding, eleven without. DuckDB's inline limit is
                         // twelve bytes, so the unpadded one still sits in the
                         // row while the hex one (sixteen characters) does not.
-                        "b64" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             base64(unhex(lpad(hex(hash(ip_prefix || chr(31) || user_agent)), 16, '0'))) AS visitor_id FROM event;"
+                        "b64" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             base64(unhex(lpad(hex(hash(ip_prefix || chr(31) || user_agent)), 16, '0'))) AS session_id FROM {src};"
                             .to_string(),
-                        "b64np" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             rtrim(base64(unhex(lpad(hex(hash(ip_prefix || chr(31) || user_agent)), 16, '0'))), '=') AS visitor_id FROM event;"
+                        "b64np" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             rtrim(base64(unhex(lpad(hex(hash(ip_prefix || chr(31) || user_agent)), 16, '0'))), '=') AS session_id FROM {src};"
                             .to_string(),
                         // Sixteen bytes: the width of a UUID, the headroom the
                         // identity wants. Thirty-two: the whole of a SHA-256.
-                        "blob16" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             unhex(substr(sha256(ip_prefix || chr(31) || user_agent), 1, 32)) AS visitor_id FROM event;"
+                        "blob16" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             unhex(substr(sha256(ip_prefix || chr(31) || user_agent), 1, 32)) AS session_id FROM {src};"
                             .to_string(),
-                        "blob32" => "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             unhex(sha256(ip_prefix || chr(31) || user_agent)) AS visitor_id FROM event;"
+                        "blob32" => "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             unhex(sha256(ip_prefix || chr(31) || user_agent)) AS session_id FROM {src};"
                             .to_string(),
                         // The same sixteen bytes, in the canonical text form —
                         // what SQLite has to store, since it has no uuid type.
                         "uuidtext" => format!(
-                            "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             CAST({} AS VARCHAR) AS visitor_id FROM event;",
+                            "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             CAST({} AS VARCHAR) AS session_id FROM {src};",
                             uuid_of_pair()
                         ),
                         "split8+4" => format!(
-                            "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
+                            "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
                              CAST({} AS UBIGINT) AS ip_num, \
-                             (hash(user_agent) % 4294967296)::BIGINT AS ua_hash FROM event;",
+                             (hash(user_agent) % 4294967296)::BIGINT AS ua_hash FROM {src};",
                             address_of()
                         ),
                         "split4+8" => format!(
-                            "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
+                            "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
                              CAST({} AS UINTEGER) AS ip_num, \
-                             hash(user_agent) AS ua_hash FROM event;",
+                             hash(user_agent) AS ua_hash FROM {src};",
                             address_of()
                         ),
                         "ids" => "CREATE TABLE v.networks AS SELECT ip_prefix, \
-                             ROW_NUMBER() OVER (ORDER BY ip_prefix) AS id FROM (SELECT DISTINCT ip_prefix FROM event);\
+                             ROW_NUMBER() OVER (ORDER BY ip_prefix) AS id FROM (SELECT DISTINCT ip_prefix FROM {src});\
                              CREATE TABLE v.agents AS SELECT user_agent, \
-                             ROW_NUMBER() OVER (ORDER BY user_agent) AS id FROM (SELECT DISTINCT user_agent FROM event);\
-                             CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             n.id AS network_id, a.id AS agent_id FROM event \
-                             JOIN v.networks n ON n.ip_prefix = event.ip_prefix \
-                             JOIN v.agents a ON a.user_agent = event.user_agent;"
+                             ROW_NUMBER() OVER (ORDER BY user_agent) AS id FROM (SELECT DISTINCT user_agent FROM {src});\
+                             CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             n.id AS network_id, a.id AS agent_id FROM {src} \
+                             JOIN v.networks n ON n.ip_prefix = {src}.ip_prefix \
+                             JOIN v.agents a ON a.user_agent = {src}.user_agent;"
                             .to_string(),
                         "packed" => format!(
-                            "CREATE TABLE v.event AS SELECT * EXCLUDE (ip_prefix, user_agent), \
-                             unhex(lpad(hex({}), 8, '0') || hex(hash(user_agent))) AS visitor_id \
-                             FROM event;",
+                            "CREATE TABLE v.website_event AS SELECT * EXCLUDE (ip_prefix, user_agent, session_id), \
+                             unhex(lpad(hex({}), 8, '0') || hex(hash(user_agent))) AS session_id \
+                             FROM {src};",
                             address_of()
                         ),
-                        _ => "CREATE TABLE v.event AS SELECT *, \
-                              hash(ip_prefix || chr(31) || user_agent) AS visitor_key FROM event;"
+                        _ => "CREATE TABLE v.website_event AS SELECT *, \
+                              hash(ip_prefix || chr(31) || user_agent) AS visitor_key FROM {src};"
                             .to_string(),
                     };
                     (
-                        SUMMARY_DUCK.replace("{key}", &key_of(design, engine)),
-                        BOUNCES_DUCK.to_string(),
+                        SUMMARY_DUCK
+                            .replace("{key}", &key_of(design, engine))
+                            .replace("{site}", &site.id),
+                        BOUNCES_DUCK.replace("{site}", &site.id),
                         sql,
                     )
                 }
@@ -500,93 +527,112 @@ fn main() -> anyhow::Result<()> {
                     register_hash16(&conn)?;
                     register_hash32(&conn)?;
                     register_hash16_text(&conn)?;
+                    // The facts live in the site's own file — attach it, or the
+                    // source table is not there.
+                    let site_file = site_path(&source, &site.id, "sqlite");
+                    conn.execute_batch(&format!(
+                        "ATTACH DATABASE '{}' AS {};",
+                        site_file.display(),
+                        site_alias(&site.id)
+                    ))?;
                     let mut columns: Vec<String> = Vec::new();
-                    let mut stmt = conn.prepare("PRAGMA table_info(event)")?;
-                    let mut info = stmt.query([])?;
+                    // The schema's own table — `pragma_table_info` takes the
+                    // schema as its second argument (`PRAGMA` cannot).
+                    let mut stmt = conn
+                        .prepare("SELECT name FROM pragma_table_info('website_event', ?1)")?;
+                    let mut info = stmt.query([site_alias(&site.id)])?;
                     while let Some(row) = info.next()? {
-                        let name: String = row.get(1)?;
+                        let name: String = row.get(0)?;
                         columns.push(name);
                     }
                     let list = columns.join(", ");
                     let without_pair = list.replace("ip_prefix, ", "").replace(", user_agent", "");
-                    let list_without = without_pair
+                    // The designs that compute their own candidate put it in
+                    // `session_id` — the real one has to go, or the two collide.
+                    let without_session = without_pair.replace("session_id, ", "");
+                    let list_without = without_session
                         .split(", ")
-                        .map(|name| format!("event.{name}"))
+                        .map(|name| format!("{src}.{name}"))
                         .collect::<Vec<_>>()
                         .join(", ");
                     let sql = match design {
-                        "pair" => format!("CREATE TABLE v.event AS SELECT {list} FROM event;"),
+                        "pair" => format!("CREATE TABLE v.website_event AS SELECT {list} FROM {src};"),
                         "hash" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_hash(ip_prefix || char(31) || user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_hash(ip_prefix || char(31) || user_agent) AS session_id FROM {src};"
                         ),
                         "hash8" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_hash8(ip_prefix || char(31) || user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_hash8(ip_prefix || char(31) || user_agent) AS session_id FROM {src};"
                         ),
                         "packed" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_identity(ip, user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_identity(ip, user_agent) AS session_id FROM {src};"
                         ),
                         "blob8" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_hash8(ip_prefix || char(31) || user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_hash8(ip_prefix || char(31) || user_agent) AS session_id FROM {src};"
                         ),
                         "hex8" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             lower(hex(sumimi_hash8(ip_prefix || char(31) || user_agent))) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             lower(hex(sumimi_hash8(ip_prefix || char(31) || user_agent))) AS session_id FROM {src};"
                         ),
                         "b64" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_b64(sumimi_hash8(ip_prefix || char(31) || user_agent)) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_b64(sumimi_hash8(ip_prefix || char(31) || user_agent)) AS session_id FROM {src};"
                         ),
                         "b64np" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_b64np(sumimi_hash8(ip_prefix || char(31) || user_agent)) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_b64np(sumimi_hash8(ip_prefix || char(31) || user_agent)) AS session_id FROM {src};"
                         ),
                         "blob16" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_hash16(ip_prefix || char(31) || user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_hash16(ip_prefix || char(31) || user_agent) AS session_id FROM {src};"
                         ),
                         "blob32" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_hash32(ip_prefix || char(31) || user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_hash32(ip_prefix || char(31) || user_agent) AS session_id FROM {src};"
                         ),
                         "uuidtext" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
-                             sumimi_hash16_text(ip_prefix || char(31) || user_agent) AS visitor_id FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
+                             sumimi_hash16_text(ip_prefix || char(31) || user_agent) AS session_id FROM {src};"
                         ),
                         "split8+4" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
                              sumimi_address(ip) AS ip_num, \
-                             sumimi_hash4(user_agent) AS ua_hash FROM event;"
+                             sumimi_hash4(user_agent) AS ua_hash FROM {src};"
                         ),
                         "split4+8" => format!(
-                            "CREATE TABLE v.event AS SELECT {without_pair}, \
+                            "CREATE TABLE v.website_event AS SELECT {without_session}, \
                              sumimi_address(ip) AS ip_num, \
-                             sumimi_hash8(user_agent) AS ua_hash FROM event;"
+                             sumimi_hash8(user_agent) AS ua_hash FROM {src};"
                         ),
                         "ids" => format!(
                             "CREATE TABLE v.networks AS SELECT ip_prefix, \
-                             ROW_NUMBER() OVER (ORDER BY ip_prefix) AS id FROM (SELECT DISTINCT ip_prefix FROM event);\
+                             ROW_NUMBER() OVER (ORDER BY ip_prefix) AS id FROM (SELECT DISTINCT ip_prefix FROM {src});\
                              CREATE TABLE v.agents AS SELECT user_agent, \
-                             ROW_NUMBER() OVER (ORDER BY user_agent) AS id FROM (SELECT DISTINCT user_agent FROM event);\
-                             CREATE TABLE v.event AS SELECT {list_without}, n.id AS network_id, a.id AS agent_id \
-                             FROM event JOIN v.networks n ON n.ip_prefix = event.ip_prefix \
-                             JOIN v.agents a ON a.user_agent = event.user_agent;"
+                             ROW_NUMBER() OVER (ORDER BY user_agent) AS id FROM (SELECT DISTINCT user_agent FROM {src});\
+                             CREATE TABLE v.website_event AS SELECT {list_without}, n.id AS network_id, a.id AS agent_id \
+                             FROM {src} JOIN v.networks n ON n.ip_prefix = {src}.ip_prefix \
+                             JOIN v.agents a ON a.user_agent = {src}.user_agent;"
                         ),
                         _ => format!(
-                            "CREATE TABLE v.event AS SELECT {list}, \
-                             sumimi_hash(ip_prefix || char(31) || user_agent) AS visitor_key FROM event;"
+                            "CREATE TABLE v.website_event AS SELECT {list}, \
+                             sumimi_hash(ip_prefix || char(31) || user_agent) AS visitor_key FROM {src};"
                         ),
                     };
                     (
-                        SUMMARY_SQLITE.replace("{key}", &key_of(design, engine)),
-                        BOUNCES_SQLITE.to_string(),
+                        SUMMARY_SQLITE
+                            .replace("{key}", &key_of(design, engine))
+                            .replace("{site}", &site.id),
+                        BOUNCES_SQLITE.replace("{site}", &site.id),
                         sql,
                     )
                 }
             };
+
+            // The design's file is built from the source's rows.
+            let create_sql = create_sql.replace("{src}", &src);
 
             if engine == "duckdb" {
                 let db = Db::open(&source, "256MB")?;
@@ -607,16 +653,32 @@ fn main() -> anyhow::Result<()> {
                 register_hash16(&conn)?;
                 register_hash32(&conn)?;
                 register_hash16_text(&conn)?;
+                // The facts live in the site's own file — it has to be attached
+                // here too, or the source table is not there.
+                let site_file = site_path(&source, &site.id, "sqlite");
+                conn.execute_batch(&format!(
+                    "ATTACH DATABASE '{}' AS {};",
+                    site_file.display(),
+                    site_alias(&site.id)
+                ))?;
                 conn.execute_batch(&format!("ATTACH '{}' AS v;", path.display()))?;
                 conn.execute_batch(&create_sql)?;
-                conn.execute_batch(
-                    "CREATE INDEX v.event_website_created ON event (website_id, created_at);",
-                )?;
                 conn.execute_batch("DETACH v;")?;
+                // The index the dashboard's queries use — `(website_id,
+                // created_at)` — goes on the **design's** table, which is where
+                // they run. SQLite cannot index a table in another schema, so
+                // the design's file is opened on its own to make the index.
+                let design = rusqlite::Connection::open(&path)?;
+                design.execute_batch(
+                    "CREATE INDEX website_event_website_created \
+                     ON website_event (website_id, created_at);",
+                )?;
             }
 
             let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            let breakdown_sql = BREAKDOWN.replace("{key}", &key_of(design, engine));
+            let breakdown_sql = BREAKDOWN
+                .replace("{key}", &key_of(design, engine))
+                .replace("{site}", &site.id);
 
             // The three queries, on the design's own file.
             let mut summary_ms = f64::MAX;

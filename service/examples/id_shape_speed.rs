@@ -1,13 +1,17 @@
 //! Two versions of the ids, measured: **16 bytes** (the default) and **8 bytes**
 //! (`--eco`).
 //!
-//! - **16 bytes**: `visitor_id` and `visit_id` are UUIDs — what Umami does,
+//! - **16 bytes**: `session_id` and `visit_id` are UUIDs — what Umami does,
 //!   and what the old v7 schema had.
 //! - **8 bytes**: both ids are 64-bit values out of a SHA-256 — what the
 //!   current `visitor_key()` does (the first eight bytes of the digest).
 //!
+//! **The two ids are named the way Umami names them** (since v12): the
+//! **visitor's** id is `session_id` (the identity that spans many visits) and
+//! the **session's** id is `visit_id` (one stretch of that identity).
+//!
 //! The queries are the ones a dashboard runs (the v10 shape: the visitor is
-//! counted by `COUNT(DISTINCT visitor_id)`, the sessions by
+//! counted by `COUNT(DISTINCT session_id)`, the sessions by
 //! `COUNT(DISTINCT visit_id)`), so the numbers say what the width costs at
 //! the report's desk, not just on disk.
 //!
@@ -76,13 +80,23 @@ fn versions() -> Vec<Version> {
 }
 
 /// The traffic, in the real columns.
+///
+/// The columns are named, not positional — the schema's order changes, and a
+/// positional insert that no longer matches silently measures another shape.
 fn traffic(version: &Version) -> String {
     format!(
-        "INSERT INTO probe
-         SELECT i AS id,
+        "INSERT INTO website_event
+         (event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, user_id,
+          created_at, url_path, url_query, page_title, referrer_domain, referrer_path,
+          referrer_query, referrer_name, hostname, channel, browser, browser_version, os,
+          os_version, device, screen, language, country, region, city, latitude, longitude,
+          utm_source, utm_medium, utm_campaign, utm_content, utm_term, gclid, fbclid,
+          msclkid, ttclid, li_fat_id, twclid, lcp, inp, cls, fcp, ttfb, event_type,
+          event_name, tag, data)
+         SELECT i AS event_id,
             'site-' || (i % {SITES}) AS website_id,
             {visit} AS visit_id,
-            {visitor} AS visitor_id,
+            {visitor} AS session_id,
             '203.0.113.' || CAST(i % 40000 AS VARCHAR) AS ip,
             '203.0.' || CAST(i % 256 AS VARCHAR) || '.0' AS ip_prefix,
             CASE (i % 50)
@@ -94,10 +108,10 @@ fn traffic(version: &Version) -> String {
             END AS user_agent,
             CASE WHEN i % 3 = 0 THEN NULL ELSE uuid() END AS user_id,
             TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i * 4) SECOND AS created_at,
-            '/blog/post-' || (i % 5000) AS url,
+            '/blog/post-' || (i % 5000) AS url_path,
             CASE WHEN i % 7 = 0 THEN 'utm_source=twitter&utm_campaign=spring' ELSE '' END AS url_query,
-            'A reasonably long article title number ' || (i % 1000) AS title,
-            CASE WHEN i % 3 = 0 THEN 'https://www.google.com/search?q=some+term&x=1' ELSE '' END AS referrer,
+            'A reasonably long article title number ' || (i % 1000) AS page_title,
+            CASE WHEN i % 3 = 0 THEN 'https://www.google.com/search?q=some+term&x=1' ELSE '' END AS referrer_domain,
             CASE WHEN i % 3 = 0 THEN '/search' ELSE '' END AS referrer_path,
             '' AS referrer_query, '' AS referrer_name,
             'example.com' AS hostname, 'Search' AS channel,
@@ -112,7 +126,7 @@ fn traffic(version: &Version) -> String {
             '1920x1080' AS screen, 'en-US' AS language, 'DE' AS country, 'Berlin' AS region,
             'Berlin' AS city, 52.52 AS latitude, 13.405 AS longitude,
             '' AS utm_source, '' AS utm_medium, '' AS utm_campaign, '' AS utm_content, '' AS utm_term,
-            '' AS gclid, '' AS fbclid, '' AS msclkid, '' AS ttclid, '' AS lifatid, '' AS twclid,
+            '' AS gclid, '' AS fbclid, '' AS msclkid, '' AS ttclid, '' AS li_fat_id, '' AS twclid,
             0.01 AS lcp, 0.02 AS inp, 0.03 AS cls, 0.4 AS fcp, 0.8 AS ttfb,
             'pageview' AS event_type, '' AS event_name, '' AS tag, '' AS data
         FROM generate_series(1, {{rows}}) t(i)",
@@ -122,32 +136,35 @@ fn traffic(version: &Version) -> String {
 }
 
 /// The queries a dashboard runs.
+///
+/// The visitor is counted by `session_id` (the identity that spans many
+/// visits) and the sessions by `visit_id`.
 const QUERIES: [(&str, &str); 6] = [
     (
         "the summary",
-        "SELECT COUNT(*), COUNT(DISTINCT visitor_id), COUNT(DISTINCT visit_id) FROM probe",
+        "SELECT COUNT(*), COUNT(DISTINCT session_id), COUNT(DISTINCT visit_id) FROM website_event",
     ),
     (
         "the timeseries",
-        "SELECT date_trunc('hour', created_at), COUNT(DISTINCT visitor_id), COUNT(*) \
-         FROM probe GROUP BY 1 ORDER BY 1",
+        "SELECT date_trunc('hour', created_at), COUNT(DISTINCT session_id), COUNT(*) \
+         FROM website_event GROUP BY 1 ORDER BY 1",
     ),
     (
         "the pages",
-        "SELECT url, COUNT(DISTINCT visitor_id), COUNT(*) FROM probe GROUP BY 1 ORDER BY 3 DESC LIMIT 50",
+        "SELECT url_path, COUNT(DISTINCT session_id), COUNT(*) FROM website_event GROUP BY 1 ORDER BY 3 DESC LIMIT 50",
     ),
     (
         "the browsers",
-        "SELECT browser, COUNT(DISTINCT visitor_id), COUNT(*) FROM probe GROUP BY 1 ORDER BY 3 DESC",
+        "SELECT browser, COUNT(DISTINCT session_id), COUNT(*) FROM website_event GROUP BY 1 ORDER BY 3 DESC",
     ),
     (
         "the sessions (the first 50)",
-        "SELECT visit_id, COUNT(*), MIN(created_at), MAX(created_at) FROM probe \
+        "SELECT visit_id, COUNT(*), MIN(created_at), MAX(created_at) FROM website_event \
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50",
     ),
     (
         "the event log (the first 50)",
-        "SELECT id, url, created_at FROM probe ORDER BY created_at DESC LIMIT 50",
+        "SELECT event_id, url_path, created_at FROM website_event ORDER BY created_at DESC LIMIT 50",
     ),
 ];
 
@@ -187,18 +204,17 @@ fn main() -> anyhow::Result<()> {
         let _ = std::fs::remove_file(&path);
         let db = Db::open(&path, "512MB")?;
         // The real columns, with the two ids in this version's shape.
-        // The real columns, with the visitor id put in where the row has it:
-        // right after the visit id.
+        // The visitor's id is `session_id`; the session's is `visit_id`.
         let columns = schema::columns_ddl_with(
             schema::EVENT,
             &Duck,
             &[
                 ("visit_id", &format!("visit_id {} NOT NULL", version.visit)),
-                ("visitor_id", &format!("visitor_id {}", version.visitor)),
+                ("session_id", &format!("session_id {}", version.visitor)),
             ],
         );
         db.with_read(|conn| {
-            conn.execute_batch(&format!("CREATE TABLE probe ({columns});"))?;
+            conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
             Ok::<_, anyhow::Error>(())
         })?;
         let sql = traffic(&version).replace("{rows}", &rows.to_string());

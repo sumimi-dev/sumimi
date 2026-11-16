@@ -258,18 +258,20 @@ sumimi service stop --dir /var/lib/sumimi</code></pre>
       </p>
     </div>
     <p>
-      The state lives in three files inside the instance directory, so <code>status</code>
+      The state lives inside the instance directory, so <code>status</code>
       works without any privileges:
     </p>
     <pre class="shell"><code>/var/lib/sumimi/
-├── data.duckdb      the events
-├── instance.sqlite  the accounts, the log, the imports, the cache
-├── acme/            the TLS certificate cache
-├── jwt-secret       the signing secret
+├── data.duckdb          the sites and the bookkeeping
+├── data.sites/          the events — one file per site
+│   └── s_&lt;site&gt;.duckdb
+├── instance.sqlite      the accounts, the log, the imports, the cache
+├── acme/                the TLS certificate cache
+├── jwt-secret           the signing secret
 └── service/
-    ├── status.json   the state, rewritten every heartbeat
-    ├── log           the server's output
-    └── stop          the stop request</code></pre>
+    ├── status.json       the state, rewritten every heartbeat
+    ├── log               the server's output
+    └── stop              the stop request</code></pre>
 
     <h2>TLS — the certificate</h2>
     <p>
@@ -402,7 +404,8 @@ sumimi service start --dir /var/lib/sumimi \
     <h2>Backups</h2>
     <p>
       An instance is a <strong>directory</strong>, so a backup is one directory copy. It holds
-      the events (<code>data.duckdb</code>), the accounts, the log and the cache
+      the sites (<code>data.duckdb</code>), the events (<code>data.sites/</code> — one file per
+      site), the accounts, the log and the cache
       (<code>instance.sqlite</code>), the signing secret (<code>jwt-secret</code>), the logs and
       the TLS cache. Stop the service first so the copy is consistent — DuckDB's write-ahead
       log means a live copy can otherwise be incomplete. There is no library to back up: the
@@ -416,8 +419,9 @@ DEST=/var/backups/sumimi
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$DEST"
 sumimi service stop --dir /var/lib/sumimi
-<span class="cmt"># the events, the accounts and the signing secret</span>
+<span class="cmt"># the sites, the events (one file per site), the accounts and the secret</span>
 cp -a /var/lib/sumimi/data.duckdb "$DEST/data-$STAMP.duckdb"
+cp -a /var/lib/sumimi/data.sites "$DEST/sites-$STAMP"
 cp -a /var/lib/sumimi/instance.sqlite "$DEST/instance-$STAMP.sqlite"
 <span class="cmt"># the write-ahead log, if the server was killed instead of stopped —</span>
 <span class="cmt"># it holds whatever was written since the last checkpoint</span>
@@ -427,6 +431,7 @@ cp -a /var/lib/sumimi/jwt-secret "$DEST/" 2>/dev/null || true
 cp -a /var/lib/sumimi/acme "$DEST/" 2>/dev/null || true
 sumimi service start --dir /var/lib/sumimi
 find "$DEST" -name 'data-*.duckdb' -mtime +30 -delete
+find "$DEST" -name 'sites-*' -mtime +30 -exec rm -rf {} +
 EOF
 sudo chmod 0755 /usr/local/bin/sumimi-backup</code></pre>
     <pre class="shell"><code>sudo tee /etc/cron.d/sumimi-backup &gt;/dev/null &lt;&lt;'EOF'
@@ -441,8 +446,10 @@ sudo chmod 0644 /etc/cron.d/sumimi-backup</code></pre>
     <h3>Restoring</h3>
     <pre class="shell"><code>sumimi service stop --dir /var/lib/sumimi
 cp -a /var/backups/sumimi/data-20260115T033000Z.duckdb /var/lib/sumimi/data.duckdb
+rm -rf /var/lib/sumimi/data.sites
+cp -a /var/backups/sumimi/sites-20260115T033000Z /var/lib/sumimi/data.sites
 cp -a /var/backups/sumimi/instance-20260115T033000Z.sqlite /var/lib/sumimi/instance.sqlite
-chown sumimi:sumimi /var/lib/sumimi/data.duckdb /var/lib/sumimi/instance.sqlite
+chown -R sumimi:sumimi /var/lib/sumimi/data.duckdb /var/lib/sumimi/data.sites /var/lib/sumimi/instance.sqlite
 sumimi service start --dir /var/lib/sumimi
 curl -s http://127.0.0.1:3000/api/heartbeat</code></pre>
 

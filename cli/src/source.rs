@@ -147,6 +147,13 @@ impl Source {
                 path: path.to_path_buf(),
             }),
             Err(err) => {
+                // **Only a lock is worth a snapshot.** An instance whose shape is
+                // wrong will be just as wrong in a copy — so the error the
+                // operator needs is the one about the shape, not the one about a
+                // lock that was never there.
+                if !is_locked(&err) {
+                    return Err(err);
+                }
                 let snapshot = Self::snapshot(path)?;
                 let storage = Self::open_local(&snapshot, AccessMode::ReadOnly)?;
                 eprintln!(
@@ -180,15 +187,35 @@ impl Source {
     }
 
     /// Open a backend with the given access mode.
+    ///
+    /// **The site's files come with it.** Since v12 the facts of a site live in
+    /// a file of that site's own (see [`sumimi_service::db`]), so the instance
+    /// is the main file **and** the directory beside it. The main file is
+    /// opened with the given mode and the site's files are attached under the
+    /// same mode — DuckDB gives an `ATTACH` the access mode of the database it
+    /// is attached to, so a read-only reader gets read-only facts.
     fn open_local(path: &Path, mode: AccessMode) -> Result<Db> {
         let config = Config::default().access_mode(mode)?;
         let conn = Connection::open_with_flags(path, config)
             .with_context(|| format!("opening {}", path.display()))?;
-        Ok(Db::from_connection(path, conn))
+        // **The shape is checked before the facts are attached.** An instance
+        // whose site's files are missing cannot be attached at all — and the
+        // error that comes out of the attach says nothing about what is really
+        // wrong. So the shape is asked about first, and the operator gets the
+        // answer they can act on.
+        check_shape(path, &conn)?;
+        Db::from_connection(path, conn)
     }
 
-    /// Copy the database (and its WAL) to a temporary directory.
-    fn snapshot(path: &Path) -> Result<PathBuf> {
+    /// Copy the instance (the main file, its WAL and the sites' files) to a
+    /// temporary directory.
+    ///
+    /// **The sites' directory comes along**, and it keeps its name: the site's
+    /// file is found through the **main file's** path (`<main>.sites/`), and
+    /// the alias is worked out from the site's id. So the snapshot has to
+    /// hold the main file and a directory of that name beside it — a snapshot
+    /// without the facts is a snapshot of an empty site.
+    pub fn snapshot(path: &Path) -> Result<PathBuf> {
         let dir = std::env::temp_dir().join(format!("sumimi-snapshot-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         let target = dir.join("sumimi.duckdb");
@@ -200,6 +227,7 @@ impl Source {
         if wal.exists() {
             let _ = std::fs::copy(&wal, target.with_extension("duckdb.wal"));
         }
+        copy_sites(path, &target)?;
         Ok(target)
     }
 
@@ -291,6 +319,94 @@ fn stored_credentials() -> Result<Option<(String, String)>> {
     let username = value.get("username").and_then(|v| v.as_str()).map(str::to_string);
     let password = value.get("password").and_then(|v| v.as_str()).map(str::to_string);
     Ok(username.zip(password))
+}
+
+/// Is this the failure of a **lock** — a running server holding the file?
+///
+/// **Only a lock is worth a snapshot.** Every other failure — a shape that is
+/// wrong, a file that is not there — will be just as wrong in a copy, and
+/// hiding it behind "the server is running" sends the operator looking in the
+/// wrong place.
+///
+/// DuckDB says so in the message: `Could not set lock on file …`.
+fn is_locked(err: &anyhow::Error) -> bool {
+    let message = format!("{err}");
+    let message = message.to_lowercase();
+    message.contains("lock") && (message.contains("could not set lock") || message.contains("conflicting lock"))
+}
+
+/// Is the instance the shape we expect?
+///
+/// **A database of the old shape is not opened silently.** The facts of a
+/// site live in a file of that site's own (since v12), so a main file
+/// without the sites' directory beside it holds **no facts at all** — and a
+/// report over it would answer "0 page views" with the same confidence as a
+/// report over a site that really had none. ⇒ ⇒ So the shape is checked, and
+/// an instance that cannot be read says so.
+///
+/// The flat shape — the facts in the file itself (the archive, the tools that
+/// measure things) — is left alone: there is nothing to look for.
+fn check_shape(path: &Path, conn: &Connection) -> Result<()> {
+    // Does the file hold the facts itself? Then it is the flat shape.
+    let flat: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM information_schema.tables \
+             WHERE table_name = 'website_event' AND table_catalog = 'main_db'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if flat > 0 {
+        return Ok(());
+    }
+
+    let dir = sumimi_service::db::sites_dir(path);
+    if !dir.is_dir() {
+        return Err(anyhow!(
+            "the database {} has no facts in it: the sites' files are missing ({} is not there).\n\
+             Since v12 the facts of a site live in a file of that site's own — a main file \
+             without them holds the sites and nothing else. Start the server once so it can \
+             write the files, or point --db at the right file.",
+            path.display(),
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Copy the sites' directory of an instance beside a copy of its main file.
+///
+/// **The directory keeps its name.** The site's file is found through the
+/// **main file's** path — `sites_dir()` appends `.sites` to the main file's
+/// name — so the copy has to be named the same way, or the copied facts are
+/// not the ones that are opened.
+fn copy_sites(path: &Path, target: &Path) -> Result<()> {
+    let from = sumimi_service::db::sites_dir(path);
+    if !from.is_dir() {
+        return Ok(());
+    }
+    let to = sumimi_service::db::sites_dir(target);
+    let _ = std::fs::remove_dir_all(&to);
+    std::fs::create_dir_all(&to)?;
+    copy_dir(&from, &to)
+}
+
+/// Copy a directory, file by file.
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if source.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            copy_dir(&source, &target)?;
+        } else {
+            std::fs::copy(&source, &target).with_context(|| {
+                format!("copying {} to {}", source.display(), target.display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Where the credentials are stored.

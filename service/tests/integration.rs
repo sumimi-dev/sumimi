@@ -29,6 +29,34 @@ impl Drop for WriterGuard {
     }
 }
 
+/// Register a site under a chosen id.
+///
+/// ⇒ ⇒ A file per site is attached when the database is opened, and the sites
+/// it attaches are the **registered** ones — so a test that reads a site's
+/// facts has to register it, or its file is not there.
+fn register(db: &Db, website_id: &str) {
+    db.with_write(|conn| {
+        conn.execute(
+            "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+             VALUES (?1, ?1, ?1, now(), now(), 0, NULL)",
+            [website_id],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .unwrap();
+    db.ensure_site(website_id).unwrap();
+}
+
+/// The site's facts, in the site's own file.
+///
+/// ⇒ ⇒ Since v12 the facts of a site live in a file of that site's own, so a
+/// question about the rows is a question about **that** file — the table is
+/// named with the site's alias in front.
+fn facts(sql: &str) -> String {
+    let alias = sumimi_service::db::site_alias("website-1");
+    sql.replace("website_event", &format!("{alias}.website_event"))
+}
+
 /// A synthetic hit — every field set, so the test can prove nothing is lost.
 fn hit(website_id: &str, url: &str) -> Hit {
     HitBuilder::new(website_id, "session-1", "visitor-1")
@@ -66,6 +94,7 @@ fn hit(website_id: &str, url: &str) -> Hit {
 async fn writer_flushes_queued_hits() {
     let path = temp_db("writer");
     let db = Arc::new(Db::open(&path, "256MB").unwrap());
+    register(&db, "website-1");
 
     let (writer, _handle) = Writer::spawn(db.clone(), Duration::from_millis(200), 1000);
     let _guard = WriterGuard(writer.clone());
@@ -78,7 +107,7 @@ async fn writer_flushes_queued_hits() {
     for _ in 0..100 {
         events = db
             .with_read(|conn| {
-                let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+                let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
                 let mut rows = stmt.query([])?;
                 match rows.next()? {
                     Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -98,11 +127,13 @@ async fn writer_flushes_queued_hits() {
     let stored = db
         .with_read(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT url, url_query, title, referrer, referrer_path, referrer_query, hostname,
+                &facts(
+                    "SELECT url_path, url_query, page_title, referrer_domain, referrer_path, referrer_query, hostname,
                         browser, os, device, screen, language, country,
                         utm_source, utm_medium, utm_campaign, gclid,
                         lcp, inp, cls, fcp, ttfb, visit_id, ip_prefix, user_agent
-                 FROM event WHERE url = '/one'",
+                 FROM website_event WHERE url_path = '/one'",
+                ),
             )?;
             let mut rows = stmt.query([])?;
             match rows.next()? {
@@ -175,6 +206,7 @@ async fn writer_flushes_queued_hits() {
 async fn writer_stores_custom_events() {
     let path = temp_db("events");
     let db = Arc::new(Db::open(&path, "256MB").unwrap());
+    register(&db, "website-1");
 
     let (writer, _handle) = Writer::spawn(db.clone(), Duration::from_millis(200), 1000);
     let _guard = WriterGuard(writer.clone());
@@ -189,7 +221,7 @@ async fn writer_stores_custom_events() {
     for _ in 0..100 {
         events = db
             .with_read(|conn| {
-                let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+                let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
                 let mut rows = stmt.query([])?;
                 match rows.next()? {
                     Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -230,6 +262,9 @@ async fn api_matches_the_shared_report_layer() {
     let db = std::sync::Arc::new(Db::open(&path, "256MB").unwrap());
 
     let website_id = "website-1";
+    // The site's file is attached **before** the rows go into it — the facts
+    // live in the site's own file (since v12).
+    db.ensure_site(website_id).unwrap();
     db.with_write(|conn| {
         conn.execute(
             "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
@@ -246,9 +281,11 @@ async fn api_matches_the_shared_report_layer() {
             let (ip, ip_prefix, user_agent) =
                 sumimi_service::testing::visitor_identity(&sumimi_service::ua::uuid_from_text(visitor));
             conn.execute(
-                "INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
-                        created_at, url, event_type, browser, os, device)
+                &facts(
+                    "INSERT INTO website_event (event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
+                        created_at, url_path, event_type, browser, os, device)
                  VALUES (?1, 'website-1', ?2, ?7, ?3, ?4, ?5, now(), ?6, 'pageview', 'Chrome', 'macOS', 'desktop')",
+                ),
                 duckdb::params![
                     id,
                     session,
@@ -376,12 +413,13 @@ async fn api_matches_the_shared_report_layer() {
 async fn the_dashboard_sees_what_the_writer_wrote() {
     let path = temp_db("fresh");
     let db = Arc::new(Db::open(&path, "256MB").unwrap());
+    register(&db, "website-1");
 
     // The reader is opened *before* the write — it is the one that would go
     // stale.
     let before = db
         .with_read(|conn| {
-            let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+            let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
             let mut rows = stmt.query([])?;
             match rows.next()? {
                 Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -399,7 +437,7 @@ async fn the_dashboard_sees_what_the_writer_wrote() {
     for _ in 0..100 {
         after = db
             .with_read(|conn| {
-                let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+                let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
                 let mut rows = stmt.query([])?;
                 match rows.next()? {
                     Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -430,11 +468,22 @@ async fn the_sqlite_dashboard_sees_what_the_writer_wrote() {
     let path = dir.join("data.sqlite");
 
     let backend = Arc::new(SqliteBackend::open(&path).unwrap());
+    // The site is registered — the reader attaches the site's file for itself.
+    backend
+        .with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+                 VALUES ('website-1', 'Example', 'example.com', 1700000000000000, 1700000000000000, 0, NULL)",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
 
     // The reader is opened before the write.
     let before = backend
         .with_reader(|conn| {
-            let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+            let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
             let mut rows = stmt.query([])?;
             match rows.next()? {
                 Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -448,7 +497,7 @@ async fn the_sqlite_dashboard_sees_what_the_writer_wrote() {
 
     let after = backend
         .with_reader(|conn| {
-            let mut stmt = conn.prepare("SELECT count(*) FROM event")?;
+            let mut stmt = conn.prepare(&facts("SELECT count(*) FROM website_event"))?;
             let mut rows = stmt.query([])?;
             match rows.next()? {
                 Some(row) => Ok(row.get::<_, i64>(0)?),
@@ -487,6 +536,10 @@ async fn the_collector_says_when_it_is_shedding() {
         Ok(())
     })
     .unwrap();
+    // The site's file is attached — the facts live there (since v12).
+    db.ensure_site("website-1").unwrap();
+    // The site's file is attached — the facts live there (since v12).
+    db.ensure_site("website-1").unwrap();
 
     let mut config = Config::from_env_and_flags(
         sumimi_service::config::Paths::new(

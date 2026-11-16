@@ -32,12 +32,15 @@
 //! The CLI opens the file read-only instead (see `cli/src/main.rs`), because a snapshot
 //! is exactly what an offline analysis wants.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use anyhow::Result;
 use duckdb::Connection;
+
+use crate::storage::Layout;
 
 /// The settings every connection is opened with.
 ///
@@ -151,29 +154,67 @@ pub struct Db {
     memory_limit: String,
     /// The one and only connection.
     conn: Mutex<Connection>,
-    /// The id of the next row of the `event` table.
+    /// The id of the next row of the fact table.
     ///
     /// The id is handed out from memory instead of being asked for
-    /// (`SELECT COALESCE(MAX(id), 0) + 1 FROM event`) on every batch. That query
-    /// costs **0.24 ms**, which is 18% of the cost of a small batch, and it grows
-    /// with the table (0.25 ms at a thousand rows, 0.58 ms at a million).
+    /// (`SELECT COALESCE(MAX(event_id), 0) + 1 FROM website_event`) on every
+    /// batch. That query costs **0.24 ms**, which is 18% of the cost of a small
+    /// batch, and it grows with the table (0.25 ms at a thousand rows, 0.58 ms
+    /// at a million).
     ///
     /// There is exactly one writer — the file is locked by this process — so a
-    /// counter cannot race. It is seeded from the table when the database is
-    /// opened, so the ids stay unique across restarts.
+    /// counter cannot race. It is seeded from the tables when the database is
+    /// opened, so the ids stay unique across restarts — and across the sites,
+    /// since the counter is the largest id **any** of them holds.
     pub(crate) next_id: AtomicI64,
+    /// How the fact tables are reached.
+    layout: Layout,
+    /// The sites whose file is attached.
+    sites: Mutex<HashSet<String>>,
 }
 
 impl Db {
     /// Wrap an existing connection (used by the CLI, which opens the file itself).
-    pub fn from_connection(path: &Path, conn: Connection) -> Self {
-        let next_id = Self::seed_next_id(&conn);
-        Self {
+    ///
+    /// **The layout is read from the file**: a database that holds the fact
+    /// table itself is the flat shape, and one that does not is the shape of
+    /// an instance — the facts are in the sites' files, and they are attached
+    /// here.
+    pub fn from_connection(path: &Path, conn: Connection) -> Result<Self> {
+        let layout = Self::detect_layout(&conn);
+        let db = Self {
             path: path.to_path_buf(),
             memory_limit: "0B".to_string(),
             conn: Mutex::new(conn),
-            next_id: AtomicI64::new(next_id),
+            next_id: AtomicI64::new(1),
+            layout,
+            sites: Mutex::new(HashSet::new()),
+        };
+        db.attach_all_sites()?;
+        let next_id = db.largest_event_id()?;
+        Ok(Self { next_id: AtomicI64::new(next_id), ..db })
+    }
+
+    /// Is the fact table in this database, or in a file per site?
+    fn detect_layout(conn: &Connection) -> Layout {
+        let found = conn
+            .query_row(
+                "SELECT count(*) FROM information_schema.tables \
+                 WHERE table_name = 'website_event' AND table_catalog = 'main'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0);
+        if found > 0 {
+            Layout::Flat
+        } else {
+            Layout::PerSite
         }
+    }
+
+    /// How the fact tables are reached.
+    pub fn layout(&self) -> Layout {
+        self.layout
     }
 
     /// Open the database (creating it if needed) and make sure the schema exists.
@@ -208,7 +249,7 @@ impl Db {
             .map_err(|e| anyhow::anyhow!("opening duckdb database {}: {e}", path.display()))?;
         Self::configure(&conn, &settings)?;
 
-        // An older database is **replaced**, not migrated.
+        // An older database is **replaced**, not migrated — with one exception.
         //
         // The shape of the session id changed (sixteen bytes → eight), and the
         // rows of an old file cannot be carried over: the id means something
@@ -216,41 +257,159 @@ impl Db {
         // the old file is **set aside** under its own version number and an
         // empty one takes its place — the analysis data and the registrations
         // are not carried over, but nothing is destroyed either.
+        //
+        // **v11 is the exception**: the change to v12 is a change of *shape* —
+        // the facts move into a file per site, and five columns are renamed —
+        // and neither of those changes what a row *means*. ⇒ ⇒ So the rows
+        // are carried over: they move into their site's file, and the old file
+        // is kept beside the new one.
         let version = crate::db::schema_version(&conn);
         if version > 0 && version < crate::db::SCHEMA_VERSION {
             let backup = crate::db::versioned_backup_path(path, version);
-            tracing::warn!(
-                "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \
-                 the analysis data and the site registrations are not carried over; \
-                 the old file is kept as {}",
-                path.display(),
-                crate::db::SCHEMA_VERSION,
-                backup.display()
-            );
-            // The old file is locked by this connection — close it before the swap.
-            drop(conn);
-            std::fs::rename(path, &backup).map_err(|e| {
-                anyhow::anyhow!(
-                    "setting the old database {} aside as {}: {e}",
+            if version == 11 {
+                tracing::warn!(
+                    "the database {} was written by schema v{version}: it is split into one file per \
+                     site — the rows are carried over, and the old file is kept as {}",
                     path.display(),
                     backup.display()
-                )
-            })?;
-            conn = Connection::open(path).map_err(|e| {
-                anyhow::anyhow!("opening the new duckdb database {}: {e}", path.display())
-            })?;
-            Self::configure(&conn, &settings)?;
+                );
+                let rebuilt = crate::db::split_into_sites(path, &conn)?;
+                // The old file is locked by this connection — close it before the swap.
+                drop(conn);
+                std::fs::rename(path, &backup).map_err(|e| {
+                    anyhow::anyhow!(
+                        "setting the old database {} aside as {}: {e}",
+                        path.display(),
+                        backup.display()
+                    )
+                })?;
+                std::fs::rename(&rebuilt, path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "putting the new database {} in place: {e}",
+                        path.display()
+                    )
+                })?;
+                conn = Connection::open(path).map_err(|e| {
+                    anyhow::anyhow!("opening the new duckdb database {}: {e}", path.display())
+                })?;
+                Self::configure(&conn, &settings)?;
+            } else {
+                tracing::warn!(
+                    "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \
+                     the analysis data and the site registrations are not carried over; \
+                     the old file is kept as {}",
+                    path.display(),
+                    crate::db::SCHEMA_VERSION,
+                    backup.display()
+                );
+                // The old file is locked by this connection — close it before the swap.
+                drop(conn);
+                std::fs::rename(path, &backup).map_err(|e| {
+                    anyhow::anyhow!(
+                        "setting the old database {} aside as {}: {e}",
+                        path.display(),
+                        backup.display()
+                    )
+                })?;
+                conn = Connection::open(path).map_err(|e| {
+                    anyhow::anyhow!("opening the new duckdb database {}: {e}", path.display())
+                })?;
+                Self::configure(&conn, &settings)?;
+            }
         }
 
-        crate::db::init_schema(&conn)?;
+        // The main file holds the sites and the bookkeeping; the facts live in
+        // a file per site.
+        crate::db::init_main_schema(&conn)?;
 
-        let next_id = Self::seed_next_id(&conn);
-        Ok(Self {
+        let db = Self {
             path: path.to_path_buf(),
             memory_limit: memory_limit.to_string(),
             conn: Mutex::new(conn),
+            next_id: AtomicI64::new(1),
+            layout: Layout::PerSite,
+            sites: Mutex::new(HashSet::new()),
+        };
+
+        // Every site's file is attached — and created, if it is not there yet.
+        db.attach_all_sites()?;
+
+        // The counter starts above every id that is in use, in any of the files.
+        let next_id = db.largest_event_id()?;
+        Ok(Self {
             next_id: AtomicI64::new(next_id),
+            ..db
         })
+    }
+
+    /// Attach every site's file — and create it, if it is not there yet.
+    ///
+    /// ⇒ ⇒ The operator sees **one file per site** beside the main file, which
+    /// is the shape the decision (`D-046`) is about.
+    pub fn attach_all_sites(&self) -> Result<()> {
+        if self.layout != Layout::PerSite {
+            return Ok(());
+        }
+        let ids = self.with_read(crate::db::site_ids)?;
+        for id in ids {
+            self.ensure_site(&id)?;
+        }
+        Ok(())
+    }
+
+    /// Make sure the site's file is attached, and return its alias.
+    ///
+    /// The file is created if it is not there — a site that has never been
+    /// written to still gets a file of its own.
+    pub fn ensure_site(&self, website_id: &str) -> Result<String> {
+        if self.layout != Layout::PerSite {
+            return Ok(crate::db::site_alias(website_id));
+        }
+        let mut sites = self.sites.lock().unwrap_or_else(|e| e.into_inner());
+        if sites.contains(website_id) {
+            return Ok(crate::db::site_alias(website_id));
+        }
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let alias = crate::db::attach_site(&conn, &self.path, website_id)?;
+        sites.insert(website_id.to_string());
+        Ok(alias)
+    }
+
+    /// Forget a site — its file is gone.
+    pub fn forget_site(&self, website_id: &str) {
+        self.sites
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(website_id);
+    }
+
+    /// Take a site's file away: the site is gone, and so is its file.
+    ///
+    /// The file is attached, so it is let go first — and the empty file is
+    /// taken away afterwards, so the operator does not see a leftover.
+    pub fn drop_site(&self, website_id: &str) -> Result<()> {
+        if self.layout != Layout::PerSite {
+            return Ok(());
+        }
+        let alias = crate::db::site_alias(website_id);
+        // The file is attached — let it go before the file is taken away.
+        let _ = self.with_write(|conn| Ok(conn.execute_batch(&format!("DETACH {alias}"))?));
+        self.forget_site(website_id);
+        let _ = std::fs::remove_file(crate::db::site_path(&self.path, website_id, "duckdb"));
+        Ok(())
+    }
+
+    /// The largest id in use — in the main file or in any site's file.
+    fn largest_event_id(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut largest = crate::db::largest_event_id(&conn, None).unwrap_or(0);
+        if self.layout == Layout::PerSite {
+            for site in self.sites.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                let alias = crate::db::site_alias(site);
+                largest = largest.max(crate::db::largest_event_id(&conn, Some(&alias)).unwrap_or(0));
+            }
+        }
+        Ok(largest + 1)
     }
 
     /// Apply the full set of DuckDB settings.
@@ -309,7 +468,7 @@ impl Db {
         let escape = |value: &str| value.replace('\'', "''");
         let root = pattern.trim_end_matches("/*").trim_end_matches('/');
 
-        for (table, sub) in [("event", "events"), ("revenue", "revenue")] {
+        for (table, sub) in [("website_event", "events"), ("revenue", "revenue")] {
             let directory = format!("{root}/{sub}");
             if !has_parquet_files(std::path::Path::new(&directory)) {
                 continue;
@@ -333,16 +492,19 @@ impl Db {
             conn: Mutex::new(conn),
             // An archive is read-only; nothing is ever appended to it.
             next_id: AtomicI64::new(1),
+            // The archive is one flat set of files — there is no file per site.
+            layout: Layout::Flat,
+            sites: Mutex::new(HashSet::new()),
         })
     }
 
-    /// The id of the next row of the `event` table.
+    /// The id of the next row of the fact table.
     ///
     /// The counter is the only thing that hands out ids, so it has to start at
     /// the right place: the first id after the largest one already in the table.
     pub fn seed_next_id(conn: &Connection) -> i64 {
         conn.query_row(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM event",
+            "SELECT COALESCE(MAX(event_id), 0) + 1 FROM website_event",
             [],
             |row| row.get(0),
         )

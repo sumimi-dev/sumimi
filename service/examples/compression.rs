@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut stmt = conn.prepare(
         "SELECT column_name, segment_type, compression, count(*) AS segments
-         FROM pragma_storage_info('event')
+         FROM pragma_storage_info('website_event')
          GROUP BY column_name, segment_type, compression
          ORDER BY column_name, segments DESC",
     )?;

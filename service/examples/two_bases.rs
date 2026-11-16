@@ -3,9 +3,9 @@
 //! When a site turns the mode on, anonymous visitors write `ANA-<baseurl>`
 //! into `user_id` and logged-in visitors write their own id. The visitor count
 //! then has to come from two places: the anonymous ones counted by
-//! `visitor_id`, the logged-in ones counted by `user_id`.
+//! `session_id` (the visitor's id), the logged-in ones counted by `user_id`.
 //!
-//! This measures that against counting everything by `visitor_id` alone —
+//! This measures that against counting everything by `session_id` alone —
 //! one query with two aggregates, and two separate queries.
 //!
 //! ```bash
@@ -19,27 +19,27 @@ use sumimi_service::pool::Db;
 
 const VISITORS: i64 = 120_000;
 
-/// One query, two bases: the anonymous counted by the hash, the logged-in by
-/// their own id.
+/// One query, two bases: the anonymous counted by the visitor id, the
+/// logged-in by their own id.
 const TWO_BASES: &str = "
-    SELECT CAST(count(DISTINCT visitor_id) FILTER (WHERE user_id LIKE 'ANA-%') AS VARCHAR)
+    SELECT CAST(count(DISTINCT session_id) FILTER (WHERE user_id LIKE 'ANA-%') AS VARCHAR)
         || ' / ' ||
         CAST(count(DISTINCT user_id) FILTER (WHERE user_id NOT LIKE 'ANA-%' AND user_id IS NOT NULL) AS VARCHAR)
     FROM probe";
 
 /// The same, as two queries.
 const ANON_ONLY: &str =
-    "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) FROM probe WHERE user_id LIKE 'ANA-%'";
+    "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) FROM probe WHERE user_id LIKE 'ANA-%'";
 const LOGGED_ONLY: &str =
     "SELECT CAST(count(DISTINCT user_id) AS VARCHAR) FROM probe \
      WHERE user_id IS NOT NULL AND user_id NOT LIKE 'ANA-%'";
 
-/// One basis: everything by the hash.
-const ONE_BASIS: &str = "SELECT CAST(count(DISTINCT visitor_id) AS VARCHAR) FROM probe";
+/// One basis: everything by the visitor id.
+const ONE_BASIS: &str = "SELECT CAST(count(DISTINCT session_id) AS VARCHAR) FROM probe";
 
 /// The breakdown, which is what a dashboard actually shows.
 const BREAKDOWN: &str = "
-    SELECT COALESCE(browser, 'unknown') AS name, count(DISTINCT visitor_id) AS value
+    SELECT COALESCE(browser, 'unknown') AS name, count(DISTINCT session_id) AS value
     FROM probe GROUP BY name ORDER BY value DESC LIMIT 50";
 
 fn build(rows: i64, logged_in_share: i64) -> anyhow::Result<PathBuf> {
@@ -49,7 +49,7 @@ fn build(rows: i64, logged_in_share: i64) -> anyhow::Result<PathBuf> {
     db.with_read(|conn| {
         conn.execute_batch(
             "CREATE TABLE probe (
-                 id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id BIGINT,
+                 id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id BIGINT,
                  user_id VARCHAR, created_at TIMESTAMP, url VARCHAR, title VARCHAR,
                  browser VARCHAR, browser_version VARCHAR, os VARCHAR, os_version VARCHAR,
                  device VARCHAR, screen VARCHAR, language VARCHAR, country VARCHAR,
@@ -63,7 +63,7 @@ fn build(rows: i64, logged_in_share: i64) -> anyhow::Result<PathBuf> {
             "INSERT INTO probe
              SELECT i AS id, 'w1' AS website_id,
                 ((i // {VISITORS}) // 4)::BIGINT << 32 | (hash('v' || (i % {VISITORS})) % 4294967296) AS visit_id,
-                CAST(hash('v' || (i % {VISITORS})) % 9223372036854775807 AS BIGINT) AS visitor_id,
+                CAST(hash('v' || (i % {VISITORS})) % 9223372036854775807 AS BIGINT) AS session_id,
                 CASE
                     WHEN (i % 100) < {logged_in_share} THEN 'user-' || (i % {VISITORS})
                     WHEN (i % 100) < {logged_in_share} + 20 THEN 'ANA-example.com'

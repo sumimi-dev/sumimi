@@ -20,12 +20,12 @@ const VISITORS: i64 = 120_000;
 
 /// The summary: the three numbers at the top of the dashboard.
 const SUMMARY: &str = "SELECT COUNT(*) FILTER (WHERE event_type NOT IN ('event', 'identify')),
-                              COUNT(DISTINCT visitor_id),
+                              COUNT(DISTINCT session_id),
                               COUNT(DISTINCT visit_id)
                        FROM probe WHERE website_id = 'w1'";
 
 /// The audience breakdown: the visitors per browser.
-const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT visitor_id) AS value
+const BREAKDOWN: &str = "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT session_id) AS value
                           FROM probe WHERE website_id = 'w1' AND event_type NOT IN ('event', 'identify')
                           GROUP BY name ORDER BY value DESC LIMIT 50";
 
@@ -74,7 +74,7 @@ fn build(engine: &str, rows: i64, shape: &str) -> anyhow::Result<(PathBuf, f64)>
         db.with_read(|conn| {
             conn.execute_batch(&format!(
                 "CREATE TABLE probe (
-                     id BIGINT, website_id VARCHAR, visit_id BIGINT, visitor_id {}, user_id VARCHAR,
+                     id BIGINT, website_id VARCHAR, visit_id BIGINT, session_id {}, user_id VARCHAR,
                      created_at TIMESTAMP, url VARCHAR, url_query VARCHAR, title VARCHAR,
                      referrer VARCHAR, referrer_path VARCHAR, hostname VARCHAR, channel VARCHAR,
                      browser VARCHAR, browser_version VARCHAR, os VARCHAR, os_version VARCHAR,
@@ -105,7 +105,7 @@ fn build(engine: &str, rows: i64, shape: &str) -> anyhow::Result<(PathBuf, f64)>
         register_hash8_bytes(&conn)?;
         conn.execute_batch(&format!(
             "CREATE TABLE probe (
-                 id INTEGER, website_id TEXT, visit_id INTEGER, visitor_id {}, user_id TEXT,
+                 id INTEGER, website_id TEXT, visit_id INTEGER, session_id {}, user_id TEXT,
                  created_at TIMESTAMP, url TEXT, url_query TEXT, title TEXT,
                  referrer TEXT, referrer_path TEXT, hostname TEXT, channel TEXT,
                  browser TEXT, browser_version TEXT, os TEXT, os_version TEXT,
@@ -178,7 +178,7 @@ fn traffic(engine: &str, rows: i64, shape: &str) -> String {
         "INSERT INTO probe
          SELECT i AS id, 'w1' AS website_id,
             {visit} AS visit_id,
-            {visitor} AS visitor_id,
+            {visitor} AS session_id,
             CASE WHEN i % 3 = 0 THEN NULL ELSE 'user-' || (i % {VISITORS}) END AS user_id,
             TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i * 4) SECOND AS created_at,
             '/blog/post-' || (i % 5000) AS url,
