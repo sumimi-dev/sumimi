@@ -30,6 +30,15 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The sitemap's `lastmod` is the date of the commit that last
+          # touched each page — so the history has to be there.
+          fetch-depth: 0
+
+      # The sitemap is **written from the pages**, so it cannot be out of
+      # date and it cannot be missing a page that was added.
+      - name: The sitemap
+        run: python3 scripts/gen-sitemap.py
 
       - name: The URLs
         run: python3 scripts/indexnow.py --list
