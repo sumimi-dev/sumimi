@@ -44,7 +44,7 @@ pub trait Row {
 /// The row of the **event log**.
 pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
     Ok(EventRow {
-        id: row.int("event_id")?.unwrap_or_default().to_string(),
+        id: row.text("event_id")?.unwrap_or_default(),
         website_id: row.text("website_id")?.unwrap_or_default(),
         // The two ids, named the way Umami names them: the `session_id` is
         // the visitor, the `visit_id` is the stretch of activity it is in.
@@ -76,7 +76,7 @@ pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
 /// The row of the **session log** — the event the session is built from.
 pub fn session_event_row(row: &dyn Row) -> Result<SessionEvent> {
     Ok(SessionEvent {
-        id: row.int("event_id")?.unwrap_or_default(),
+        id: row.text("event_id")?.unwrap_or_default(),
         visit_id: row.uuid("visit_id")?.unwrap_or_else(Uuid::nil),
         session_start: row.time("session_start")?,
         ip_prefix: row.text("ip_prefix")?.unwrap_or_default(),

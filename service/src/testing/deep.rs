@@ -15,8 +15,8 @@ use crate::models::Hit;
 /// One stored row.
 #[derive(Debug, Clone)]
 pub struct StoredRow {
-    /// The row id the backend assigned.
-    pub id: i64,
+    /// The row id the backend assigned — **the text of the uuid**.
+    pub id: String,
     /// The hit, as the backend read it back.
     pub hit: Hit,
 }

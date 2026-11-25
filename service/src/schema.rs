@@ -32,6 +32,11 @@ use std::fmt::Write as _;
 pub enum Kind {
     /// The engine's own row id — it counts the rows.
     RowId,
+    /// **The event id** — 128 bits, our own (see [`crate::event_id`]).
+    ///
+    /// It is not the engine's row id: it is the same value in every
+    /// engine, and it survives a move from one instance to another.
+    EventId,
     /// Text.
     Text,
     /// A sixteen-byte id.
@@ -120,6 +125,12 @@ pub trait Types {
     /// A sixteen-byte id.
     fn uuid(&self) -> String;
 
+    /// **The event id** — sixteen bytes, our own layout.
+    ///
+    /// DuckDB and Postgres have a uuid type; SQLite has not, so the id
+    /// goes in as sixteen raw bytes (a blob).
+    fn event_id(&self) -> String;
+
     /// A whole number.
     fn int(&self) -> String;
 
@@ -146,6 +157,7 @@ pub fn column_ddl(column: &Column, types: &dyn Types) -> String {
         Kind::RowId => unreachable!("the row id is handled above"),
         Kind::Text => types.text(),
         Kind::Uuid => types.uuid(),
+        Kind::EventId => types.event_id(),
         Kind::Int => types.int(),
         Kind::Small => types.small(),
         Kind::Real => types.real(),
@@ -238,7 +250,7 @@ pub fn names(columns: &[Column]) -> Vec<&'static str> {
 /// [`crate::session`]). That is why the two can share the column — and why
 /// the numbers of two datasets are only comparable within one of them.
 pub const EVENT: &[Column] = &[
-    Column::required("event_id", Kind::RowId),
+    Column::required("event_id", Kind::EventId),
     Column::required("website_id", Kind::Text),
     Column::required("visit_id", Kind::Uuid),
     Column::required("session_id", Kind::Uuid),
@@ -302,7 +314,7 @@ pub const REVENUE: &[Column] = &[
     Column::required("id", Kind::RowId),
     Column::required("website_id", Kind::Text),
     Column::new("visit_id", Kind::Uuid),
-    Column::new("event_id", Kind::Int),
+    Column::new("event_id", Kind::EventId),
     Column::new("event_name", Kind::Text),
     Column::with_default("currency", Kind::Text, "'USD'"),
     Column::required("revenue", Kind::Real),
@@ -343,6 +355,9 @@ mod tests {
         fn uuid(&self) -> String {
             "UUID".to_string()
         }
+        fn event_id(&self) -> String {
+            "UUID".to_string()
+        }
         fn int(&self) -> String {
             "BIGINT".to_string()
         }
@@ -370,6 +385,9 @@ mod tests {
         fn uuid(&self) -> String {
             "TEXT".to_string()
         }
+        fn event_id(&self) -> String {
+            "BLOB".to_string()
+        }
         fn int(&self) -> String {
             "INTEGER".to_string()
         }
@@ -395,7 +413,10 @@ mod tests {
             "TEXT".to_string()
         }
         fn uuid(&self) -> String {
-            "UUID".to_string()
+            "uuid".to_string()
+        }
+        fn event_id(&self) -> String {
+            "uuid".to_string()
         }
         fn int(&self) -> String {
             "BIGINT".to_string()
@@ -413,12 +434,24 @@ mod tests {
 
     #[test]
     fn the_row_id_is_the_engines_own() {
-        assert_eq!(column_ddl(&EVENT[0], &Duck), "event_id BIGINT NOT NULL");
+        assert_eq!(column_ddl(&REVENUE[0], &Duck), "id BIGINT NOT NULL");
         assert_eq!(
-            column_ddl(&EVENT[0], &Sqlite),
-            "event_id INTEGER PRIMARY KEY"
+            column_ddl(&REVENUE[0], &Sqlite),
+            "id INTEGER PRIMARY KEY"
         );
-        assert_eq!(column_ddl(&EVENT[0], &Pg), "event_id BIGSERIAL NOT NULL");
+        assert_eq!(column_ddl(&REVENUE[0], &Pg), "id BIGSERIAL NOT NULL");
+    }
+
+    #[test]
+    fn the_event_id_is_the_same_value_in_every_engine() {
+        // **Sixteen bytes everywhere** — the id is ours, not the engine's.
+        assert_eq!(column_ddl(&EVENT[0], &Duck), "event_id UUID NOT NULL");
+        assert_eq!(column_ddl(&EVENT[0], &Sqlite), "event_id BLOB NOT NULL");
+        assert_eq!(column_ddl(&EVENT[0], &Pg), "event_id uuid NOT NULL");
+        // The revenue table points at an event with the same id.
+        assert_eq!(column_ddl(&REVENUE[3], &Duck), "event_id UUID");
+        assert_eq!(column_ddl(&REVENUE[3], &Sqlite), "event_id BLOB");
+        assert_eq!(column_ddl(&REVENUE[3], &Pg), "event_id uuid");
     }
 
     #[test]

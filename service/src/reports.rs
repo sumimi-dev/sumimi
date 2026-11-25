@@ -6,7 +6,6 @@
 //!
 //! The SQLite and PostgreSQL backends live in the private `sumimi-pro` repository.
 
-use std::sync::atomic::{AtomicI64, Ordering};
 
 use anyhow::Result;
 use chrono::NaiveDateTime;
@@ -51,6 +50,11 @@ impl Duck {
 }
 
 impl Dialect for Duck {
+    /// DuckDB has a uuid type and prints it in the standard form.
+    fn event_id_text(&self, expr: &str) -> String {
+        format!("{expr}::VARCHAR")
+    }
+
     /// DuckDB's parameters are positional: the number does not matter.
     fn placeholder(&self, _n: usize) -> String {
         "?".to_string()
@@ -254,7 +258,7 @@ impl Storage for Db {
         for hit in hits {
             self.ensure_site(&hit.website_id)?;
         }
-        self.with_write(|conn| write_batch(conn, hits, &self.next_id, self.layout()))
+        self.with_write(|conn| write_batch(conn, hits, &self.event_ids, self.layout()))
     }
 
     fn write_revenue(&self, records: &[crate::models::Revenue]) -> Result<()> {
@@ -712,7 +716,7 @@ fn revenue(
         out.push(crate::models::Revenue {
             website_id: crate::row::Row::text(&row, "website_id")?.unwrap_or_default(),
             visit_id: crate::row::Row::uuid(&row, "visit_id")?,
-            event_id: crate::row::Row::int(&row, "event_id")?,
+            event_id: crate::row::Row::text(&row, "event_id")?,
             event_name: crate::row::Row::text(&row, "event_name")?,
             currency: crate::row::Row::text(&row, "currency")?.unwrap_or_default(),
             revenue: crate::row::Row::float(&row, "revenue")?.unwrap_or_default(),
@@ -736,7 +740,7 @@ fn revenue(
 fn write_batch(
     conn: &Connection,
     batch: &[Hit],
-    next_id: &AtomicI64,
+    event_ids: &crate::event_id::Generator,
     layout: Layout,
 ) -> Result<()> {
     let now = crate::db::now();
@@ -770,10 +774,10 @@ fn write_batch(
 
     for (website_id, hits) in &by_site {
         // The appender does not apply column defaults, so the id is assigned here.
-        // The ids come from the counter in memory: asking the database for the next
+        // The ids come from the generator in memory: asking the database for the next
         // one (`MAX(event_id) + 1`) costs 0.24 ms per batch, and there is no primary
-        // key on the fact table to enforce uniqueness (see `db.rs`) — the single
-        // writer and the counter are what keep the ids unique.
+        // key on the fact table to enforce uniqueness (see `db.rs`) — the generator
+        // is what keeps the ids unique, and it keeps them growing.
         let mut appender = match layout {
             Layout::PerSite => conn.appender_to_catalog_and_db(
                 "website_event",
@@ -783,7 +787,7 @@ fn write_batch(
             Layout::Flat => conn.appender("website_event")?,
         };
         for hit in hits {
-            let id = next_id.fetch_add(1, Ordering::Relaxed);
+            let id = event_ids.next();
             let kind = hit.kind.as_str();
             let row = crate::db::event_row(&id, hit, &kind);
             appender.append_row(&row[..])?;

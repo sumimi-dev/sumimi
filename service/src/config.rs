@@ -675,6 +675,17 @@ fn env_flag(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// The instance field of the event ids, when it is set in the environment.
+///
+/// Two nodes writing into the same instance have to have different fields, or
+/// they hand out the same ids — so the field is set per node when there is
+/// more than one. A single node does not have to set anything.
+pub fn event_id_instance_override() -> Option<u128> {
+    env_any("SUMIMI_EVENT_ID_INSTANCE")
+        .and_then(|value| crate::event_id::instance_from_hex(value.trim()))
+        .map(|value| value & crate::event_id::INSTANCE_MAX)
+}
+
 /// Read an environment variable, with the **old** name as a fallback.
 ///
 /// The project was called `sumami` until v0.2.0; the settings it took with it

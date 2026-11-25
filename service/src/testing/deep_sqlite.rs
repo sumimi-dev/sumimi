@@ -22,7 +22,7 @@ impl DeepRead for SqliteBackend {
             let mut rows = stmt.query(rusqlite::params![website_id])?;
             let mut out = Vec::new();
             while let Some(row) = rows.next()? {
-                let id: i64 = row.get(0)?;
+                let id: String = row.get(0)?;
                 let hit = crate::row::hit_row(&crate::sqlite::SqliteRow(row))?;
                 out.push(StoredRow { id, hit });
             }

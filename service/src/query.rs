@@ -81,6 +81,16 @@ pub trait Dialect {
 
     /// The **revenue table**, as this engine names it.
     fn revenue_table(&self, website_id: &str) -> String;
+
+    /// **The event id, as text.**
+    ///
+    /// The id is sixteen bytes. DuckDB has a uuid type and prints it in the
+    /// standard form; SQLite has not, so the bytes are put into that form by
+    /// hand.
+    ///
+    /// ⇒ ⇒ **the same string in both engines** — the API is one API, and the
+    /// id that comes out of it is the same id in either.
+    fn event_id_text(&self, expr: &str) -> String;
 }
 
 /// How fine the buckets of a time series are.
@@ -421,7 +431,7 @@ pub fn query_strings(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT event_id, website_id, visit_id, session_id, created_at, event_name, url_path, hostname, channel, data,
+        "SELECT {event_id} AS event_id, website_id, visit_id, session_id, created_at, event_name, url_path, hostname, channel, data,
                 referrer_domain, referrer_path, referrer_query, country, city, browser, os,
                 utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
          FROM {table} WHERE {where_clause}
@@ -429,6 +439,7 @@ pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
          LIMIT {limit} OFFSET {offset}",
         table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
+        event_id = dialect.event_id_text("event_id"),
         limit = query.limit.clamp(1, 1000),
         offset = query.offset.max(0),
     );
@@ -443,7 +454,7 @@ pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn recent_events(query: &ReportQuery, limit: i64, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT event_id, visit_id, session_start, created_at, url_path, page_title, referrer_domain, referrer_path,
+        "SELECT {event_id} AS event_id, visit_id, session_start, created_at, url_path, page_title, referrer_domain, referrer_path,
                 hostname, channel, browser, os, device, country, region, city, language, screen,
                 ip_prefix, user_agent
          FROM {table} WHERE {where_clause}
@@ -451,6 +462,7 @@ pub fn recent_events(query: &ReportQuery, limit: i64, dialect: &dyn Dialect) -> 
          LIMIT {limit}",
         table = dialect.event_table(&query.website_id),
         where_clause = filters.clause(),
+        event_id = dialect.event_id_text("event_id"),
         limit = limit.clamp(1, 1_000_000),
     );
     Statement::of(sql, filters.values().to_vec())
@@ -464,11 +476,12 @@ pub fn recent_events(query: &ReportQuery, limit: i64, dialect: &dyn Dialect) -> 
 pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT id, website_id, visit_id, event_id, event_name, currency, revenue, created_at
+        "SELECT id, website_id, visit_id, {event_id} AS event_id, event_name, currency, revenue, created_at
          FROM {table} WHERE {where_clause}
          ORDER BY created_at DESC, id DESC
          LIMIT {limit} OFFSET {offset}",
         table = dialect.revenue_table(&query.website_id),
+        event_id = dialect.event_id_text("event_id"),
         where_clause = filters.clause(),
         limit = query.limit.clamp(1, 1000),
         offset = query.offset.max(0),
@@ -484,7 +497,17 @@ pub fn revenue(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 pub fn event_rows(website_id: &str, dialect: &dyn Dialect) -> Statement {
     let sql = format!(
         "SELECT {columns} FROM {table} WHERE website_id = {website} ORDER BY event_id ASC",
-        columns = crate::row::EVENT_COLUMNS,
+        columns = crate::row::EVENT_COLUMNS
+            .split(", ")
+            .map(|column| {
+                if column == "event_id" {
+                    dialect.event_id_text(column)
+                } else {
+                    column.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
         table = dialect.event_table(website_id),
         website = dialect.placeholder(1),
     );
@@ -500,6 +523,10 @@ mod tests {
     struct Numbered;
 
     impl Dialect for Numbered {
+        fn event_id_text(&self, expr: &str) -> String {
+            expr.to_string()
+        }
+
         fn placeholder(&self, n: usize) -> String {
             format!("${n}")
         }

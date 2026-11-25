@@ -7,15 +7,21 @@
 //!
 //! | piece | what it is |
 //! | --- | --- |
-//! | the id query | `SELECT MAX(event_id) + 1 FROM website_event` — how the next row id is found |
+//! | the id query | **the resume query** — the largest counter in use, asked **once per file** when it opens |
 //! | the appender | the appender on `website_event` — starting an append transaction |
 //! | the appends | binding 42 values per row |
 //! | the flush | committing the append transaction |
 //!
 //! It also runs two variants, so the cost of the design choices is visible:
 //!
-//! * **the id counter** — the next id is kept in memory instead of asked for;
+//! * **the id counter** — the id is handed out from memory (the counter);
 //! * **one appender** — the appender is created once and flushed per batch.
+//!
+//! **The id query left the write path.** The id is a counter in memory now
+//! (the snowflake it replaces was asked for from the table on every batch,
+//! which cost 0.24 ms — 18% of a small batch). What is left of it is the
+//! **resume query**: the largest counter in use, asked once when the file
+//! opens.
 //!
 //! ```bash
 //! cargo run --release --example write_probe -p sumimi-service -- 100000
@@ -81,22 +87,19 @@ fn duckdb_current(hits: &[Hit]) -> anyhow::Result<Parts> {
 
     let mut parts = Parts::default();
     db.with_write(|conn| {
-        for chunk in hits.chunks(batch()) {
-            let started = Instant::now();
-            let next_id: i64 = conn.query_row(
-                &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
-                [],
-                |row| row.get(0),
-            )?;
-            parts.id_query += started.elapsed();
+        // The resume query: once per file, not once per batch.
+        let started = Instant::now();
+        let counter = resume_counter(conn, &table)?;
+        parts.id_query += started.elapsed();
 
+        for chunk in hits.chunks(batch()) {
             let started = Instant::now();
             let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
             parts.appender += started.elapsed();
 
             let started = Instant::now();
             for (index, hit) in chunk.iter().enumerate() {
-                append_row(&mut appender, next_id + index as i64, hit)?;
+                append_row(&mut appender, counter + index as u64, hit)?;
             }
             parts.appends += started.elapsed();
 
@@ -119,11 +122,10 @@ fn duckdb_counter(hits: &[Hit]) -> anyhow::Result<Parts> {
 
     let mut parts = Parts::default();
     db.with_write(|conn| {
-        let next_id: i64 = conn.query_row(
-            &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
-            [],
-            |row| row.get(0),
-        )?;
+        // The resume query: the largest counter in use, asked once per file.
+        let started = Instant::now();
+        let counter = resume_counter(conn, &table)?;
+        parts.id_query += started.elapsed();
         for chunk in hits.chunks(batch()) {
             let started = Instant::now();
             let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
@@ -131,7 +133,7 @@ fn duckdb_counter(hits: &[Hit]) -> anyhow::Result<Parts> {
 
             let started = Instant::now();
             for (index, hit) in chunk.iter().enumerate() {
-                append_row(&mut appender, next_id + index as i64, hit)?;
+                append_row(&mut appender, counter + index as u64, hit)?;
             }
             parts.appends += started.elapsed();
 
@@ -154,16 +156,15 @@ fn duckdb_one_appender(hits: &[Hit]) -> anyhow::Result<Parts> {
 
     let mut parts = Parts::default();
     db.with_write(|conn| {
-        let next_id: i64 = conn.query_row(
-            &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
-            [],
-            |row| row.get(0),
-        )?;
+        // The resume query: the largest counter in use, asked once per file.
+        let started = Instant::now();
+        let counter = resume_counter(conn, &table)?;
+        parts.id_query += started.elapsed();
         let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
         for chunk in hits.chunks(batch()) {
             let started = Instant::now();
             for (index, hit) in chunk.iter().enumerate() {
-                append_row(&mut appender, next_id + index as i64, hit)?;
+                append_row(&mut appender, counter + index as u64, hit)?;
             }
             parts.appends += started.elapsed();
 
@@ -196,18 +197,31 @@ fn sqlite(hits: &[Hit]) -> anyhow::Result<(f64, u64)> {
 /// Append one row, in the column order of the schema.
 fn append_row(
     appender: &mut duckdb::Appender<'_>,
-    id: i64,
+    counter: u64,
     hit: &Hit,
 ) -> anyhow::Result<()> {
     // The row is the server's row: the columns and their order come from the
     // schema, so this cannot drift away from it.
     let kind = hit.kind.as_str();
+    let id = sumimi_service::event_id::compose(7, counter);
     let row = sumimi_service::db::event_row(&id, hit, &kind);
     appender.append_row(&row[..])?;
     Ok(())
 }
 
-/// How expensive is `MAX(event_id)` on a table of `rows` rows?
+/// The largest counter in use — the query that runs when a file opens.
+fn resume_counter(conn: &duckdb::Connection, table: &str) -> anyhow::Result<u64> {
+    let low = sumimi_service::event_id::compose(7, 0);
+    let high = sumimi_service::event_id::compose(7, sumimi_service::event_id::COUNTER_MAX);
+    let id: Option<uuid::Uuid> = conn.query_row(
+        &format!("SELECT MAX(event_id) FROM {table} WHERE event_id BETWEEN ?1 AND ?2"),
+        [&low, &high],
+        |row| row.get(0),
+    )?;
+    Ok(id.map(|id| sumimi_service::event_id::counter_of(&id)).unwrap_or(0))
+}
+
+/// How expensive is the resume query on a table of `rows` rows?
 ///
 /// The schema comment says the id is handed out by `MAX(event_id) + 1`, "answered from
 /// the column statistics in constant time". This checks that claim.
@@ -221,26 +235,23 @@ fn id_query_cost(rows: usize) -> anyhow::Result<(f64, f64)> {
     db.with_write(|conn| {
         let mut appender = conn.appender_to_catalog_and_db("website_event", &alias, "main")?;
         for (index, hit) in hits.iter().enumerate() {
-            append_row(&mut appender, 1 + index as i64, hit)?;
+            append_row(&mut appender, 1 + index as u64, hit)?;
         }
         appender.flush()?;
         Ok::<_, anyhow::Error>(())
     })?;
 
     let (plain, coalesced) = db.with_read(|conn| {
-        // The plain aggregate.
+        // The plain aggregate — the whole column.
         let started = Instant::now();
-        let _: Option<i64> =
+        let _: Option<uuid::Uuid> =
             conn.query_row(&format!("SELECT MAX(event_id) FROM {table}"), [], |row| row.get(0))?;
         let plain = started.elapsed().as_secs_f64() * 1000.0;
 
-        // The one the server actually runs.
+        // The one the server actually runs: the range that covers this
+        // instance's own ids.
         let started = Instant::now();
-        let _: i64 = conn.query_row(
-            &format!("SELECT COALESCE(MAX(event_id), 0) + 1 FROM {table}"),
-            [],
-            |row| row.get(0),
-        )?;
+        let _ = resume_counter(conn, &table)?;
         let coalesced = started.elapsed().as_secs_f64() * 1000.0;
         Ok::<_, anyhow::Error>((plain, coalesced))
     })?;
@@ -296,7 +307,7 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "-".repeat(78));
     println!(
         "{:<24} {:>14} {:>20}",
-        "rows", "MAX(event_id)", "COALESCE(MAX(event_id),0)+1"
+        "rows", "MAX(event_id)", "the resume query"
     );
     for rows in [100usize, 10_000, 100_000, 1_000_000] {
         let (plain, coalesced) = id_query_cost(rows)?;

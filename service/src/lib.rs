@@ -12,6 +12,7 @@ pub mod channels;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod event_id;
 pub mod geo;
 pub mod instance;
 pub mod limits;

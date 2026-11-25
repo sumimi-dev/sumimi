@@ -143,7 +143,7 @@ fn the_ids_are_unique_without_a_constraint() {
                      VALUES (?1, ?2, ?3, ?4, '', '203.0.113', 'UA', now(), '/x')"
                 ),
                 duckdb::params![
-                    i as i64,
+                    sumimi_service::event_id::compose(7, i as u64),
                     website.id,
                     sumimi_service::session::client_session_id("s"),
                     sumimi_service::ua::visitor_id("203.0.113", "UA", &website.id),
@@ -186,7 +186,7 @@ fn deleting_a_website_removes_its_events() {
     let one = db.create_website("One", Some("one.example"), 0, None).unwrap();
     let two = db.create_website("Two", Some("two.example"), 0, None).unwrap();
 
-    for (id, website) in [(1i64, &one.id), (2, &one.id), (3, &two.id)] {
+    for (counter, website) in [(1u64, &one.id), (2, &one.id), (3, &two.id)] {
         let alias = alias(website);
         db.with_write(|conn| {
             conn.execute(
@@ -195,7 +195,7 @@ fn deleting_a_website_removes_its_events() {
                      VALUES (?1, ?2, ?3, ?4, '', '203.0.113', 'UA', now(), '/x')"
                 ),
                 duckdb::params![
-                    id,
+                    sumimi_service::event_id::compose(7, counter),
                     website,
                     sumimi_service::session::client_session_id("s"),
                     sumimi_service::ua::visitor_id("203.0.113", "UA", website),
@@ -229,9 +229,9 @@ fn deleting_a_website_removes_its_events() {
 
 /// The row ids must stay unique when the server restarts.
 ///
-/// The ids are handed out from a counter in memory (the database is asked once,
-/// when it is opened), so the counter has to start at the right place — and it
-/// has to stay right when the process that wrote the rows is gone.
+/// The ids are handed out from a generator in memory (the database is asked
+/// once, when it is opened), so the generator has to start at the right place —
+/// and it has to stay right when the process that wrote the rows is gone.
 #[test]
 fn the_row_ids_stay_unique_across_a_restart() {
     let dir = std::env::temp_dir().join(format!("sumimi-ids-{}", std::process::id()));
@@ -262,9 +262,9 @@ fn the_row_ids_stay_unique_across_a_restart() {
     let db = Db::open(&path, "256MB").unwrap();
     let alias = alias("w1");
     let (count, distinct, smallest, largest) = db
-        .with_connection(|conn| -> anyhow::Result<(i64, i64, i64, i64)> {
+        .with_connection(|conn| -> anyhow::Result<(i64, i64, String, String)> {
             let mut stmt = conn.prepare(&format!(
-                "SELECT count(*), count(DISTINCT event_id), min(event_id), max(event_id) FROM {alias}.website_event",
+                "SELECT count(*), count(DISTINCT event_id), min(event_id)::VARCHAR, max(event_id)::VARCHAR FROM {alias}.website_event",
             ))?;
             let mut rows = stmt.query([])?;
             let row = rows.next()?.unwrap();
@@ -274,8 +274,25 @@ fn the_row_ids_stay_unique_across_a_restart() {
 
     assert_eq!(count, 6, "every row is there");
     assert_eq!(distinct, 6, "every row has its own id");
-    assert_eq!(smallest, 1, "the ids start at one");
-    assert_eq!(largest, 6, "the ids are consecutive");
+    assert!(smallest < largest, "the ids grow");
+    // The id is **the instance's half and a counter** (`crate::event_id`), so
+    // the ids are not consecutive — but they are in **one namespace**: the
+    // instance half is the same in both runs, so the ids of the second run
+    // cannot collide with the ones of the first.
+    let halves: Vec<String> = db
+        .with_connection(|conn| -> anyhow::Result<Vec<String>> {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT DISTINCT substr(event_id::VARCHAR, 1, 20) FROM {alias}.website_event ORDER BY 1",
+            ))?;
+            let mut rows = stmt.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(out)
+        })
+        .unwrap();
+    assert_eq!(halves.len(), 1, "the ids are in one namespace");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -335,7 +352,8 @@ fn the_row_ids_stay_unique_when_the_cli_opens_the_database() {
 fn the_event_row_has_a_value_for_every_column() {
     let hit = HitBuilder::new("w1", "s1", "v1").build();
     let kind = hit.kind.as_str();
-    let row = sumimi_service::db::event_row(&1, &hit, &kind);
+    let id = sumimi_service::event_id::compose(7, 1);
+    let row = sumimi_service::db::event_row(&id, &hit, &kind);
 
     assert_eq!(row.len(), sumimi_service::db::event_columns().len());
 }
@@ -393,8 +411,11 @@ fn the_facts_live_in_the_sites_own_file() {
 ///
 /// ⇒ ⇒ This is the first change of the schema that does not throw the data
 /// away: the sites' rows move into their own files (with the columns renamed
-/// on the way), the old file is kept beside the new one, and the row count and
-/// the row ids do not change.
+/// on the way), the old file is kept beside the new one, and the row count does
+/// not change.
+///
+/// **The ids are new** — the old ones were integers, the new ones are 128
+/// bits ⇒ ⇒ what is carried over is the data, not the id.
 #[test]
 fn a_v11_database_is_split_into_one_file_per_site() {
     let path = temp_db("split-v11");
@@ -527,12 +548,16 @@ fn a_v11_database_is_split_into_one_file_per_site() {
     assert_eq!(site_rows(&db, "w1"), 2, "w1's rows are in w1's file");
     assert_eq!(site_rows(&db, "w2"), 1, "w2's rows are in w2's file");
 
-    // The ids did not change — they are the ids the old file had.
-    let ids: Vec<i64> = db
+    // **The ids are new** — the old ones were integers, the new ones are 128
+    // bits ⇒ ⇒ the rows get fresh ids, and the revenue rows that point at
+    // them are rewritten with the same map.
+    //
+    // ⇒ ⇒ What is carried over is the **data**, not the id.
+    let ids: Vec<String> = db
         .with_read(|conn| {
             let alias = alias("w1");
             let mut stmt = conn.prepare(&format!(
-                "SELECT event_id FROM {alias}.website_event ORDER BY event_id"
+                "SELECT event_id::VARCHAR FROM {alias}.website_event ORDER BY event_id"
             ))?;
             let mut rows = stmt.query([])?;
             let mut ids = Vec::new();
@@ -542,7 +567,15 @@ fn a_v11_database_is_split_into_one_file_per_site() {
             Ok(ids)
         })
         .unwrap();
-    assert_eq!(ids, vec![1, 2], "the row ids are the ones the old file had");
+    assert_eq!(ids.len(), 2, "both rows are there");
+    assert_ne!(ids[0], ids[1], "every row has its own id");
+    // The counters are the rows' places in the old file (0, 1, 2 — the whole
+    // table, so that they are unique across the instance).
+    for id in &ids {
+        // The counter is the last six bytes: the last twelve hex characters.
+        let counter = u64::from_str_radix(&id[24..], 16).unwrap();
+        assert!(counter < 3, "the counter is the row's place in the old file");
+    }
 
     // The columns are renamed — the old names are gone, the new ones are there.
     db.with_read(|conn| {
@@ -582,7 +615,7 @@ fn a_v11_database_is_split_into_one_file_per_site() {
             Ok(conn.query_row(
                 &format!(
                     "SELECT url_path, url_query, page_title, referrer_domain, referrer_path \
-                     FROM {alias}.website_event WHERE event_id = 1"
+                     FROM {alias}.website_event WHERE url_path = '/one'"
                 ),
                 [],
                 |row| {
@@ -615,6 +648,25 @@ fn a_v11_database_is_split_into_one_file_per_site() {
         })
         .unwrap();
     assert_eq!(revenue, 1, "the revenue is carried over too");
+
+    // **The revenue's reference was rewritten** — it points at the event's
+    // new id, not at the old integer.
+    let (reference, is_uuid): (Option<String>, bool) = db
+        .with_read(|conn| {
+            let alias = alias("w1");
+            Ok(conn.query_row(
+                &format!("SELECT event_id::VARCHAR, event_id IS NOT NULL FROM {alias}.revenue"),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert!(is_uuid, "the revenue points at an event");
+    assert_eq!(
+        reference.as_deref().map(|id| id.len()),
+        Some(36),
+        "the reference is the event's new uuid"
+    );
 
     // The old file is still there, under its own version number.
     let backup = db::versioned_backup_path(&path, 11);

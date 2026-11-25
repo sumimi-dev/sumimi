@@ -478,7 +478,10 @@ pub struct WebsitePatch {
 #[derive(Debug, Clone)]
 pub struct SessionEvent {
     /// The row id — the tiebreaker when two events share a timestamp.
-    pub id: i64,
+    ///
+    /// **The text of the id** (the standard uuid form): the counter is in
+    /// its last bytes, so the text sorts the same way the counter does.
+    pub id: String,
     /// The visit the event belongs to.
     pub visit_id: crate::session::VisitId,
     /// When the visit started — `None` for a visit the client named itself.

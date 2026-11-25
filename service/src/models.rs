@@ -219,8 +219,8 @@ pub struct Revenue {
     pub website_id: String,
     /// The visit that earned it.
     pub visit_id: Option<crate::session::VisitId>,
-    /// The event that earned it.
-    pub event_id: Option<i64>,
+    /// The event that earned it — the id of the event row.
+    pub event_id: Option<String>,
     /// The name of the revenue source (`carbon`, `adsense`, …).
     pub event_name: Option<String>,
     /// The currency the amount is in.

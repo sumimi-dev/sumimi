@@ -272,11 +272,12 @@ async fn api_matches_the_shared_report_layer() {
             [],
         )?;
         // Three page views: /a twice in one session, /b once in another.
-        for (id, session, visitor, url) in [
-            (1i64, "s1", "v1", "/a"),
+        for (counter, session, visitor, url) in [
+            (1u64, "s1", "v1", "/a"),
             (2, "s1", "v1", "/a"),
             (3, "s2", "v2", "/b"),
         ] {
+            let id = sumimi_service::event_id::compose(7, counter);
             let session = sumimi_service::session::client_session_id(session);
             let (ip, ip_prefix, user_agent) =
                 sumimi_service::testing::visitor_identity(&sumimi_service::ua::uuid_from_text(visitor));

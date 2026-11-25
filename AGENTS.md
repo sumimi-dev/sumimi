@@ -558,7 +558,7 @@ under the same names, and the two tables can be read as one.
 
 ```sql
 website_event(
-    event_id BIGINT,        -- monotonic, assigned by the writer, NOT a primary key
+    event_id UUID,          -- the 128-bit v8 id: the instance half + a counter
     website_id,
     created_at,
 
@@ -591,10 +591,23 @@ website_event(
 )
 
 revenue(                    -- what the owner earned, imported (not tracked)
-    id BIGINT, website_id, visit_id, event_id,
+    id BIGINT, website_id, visit_id, event_id UUID,
     event_name, currency, revenue, created_at
 )
 ```
+
+**The event id** (schema v13, D-060). **Sixteen bytes, ours, the same in every
+engine** — DuckDB `UUID`, Postgres `uuid`, SQLite `BLOB(16)`. It is a **v8
+uuid** (RFC 9562's slot for "the layout is the implementer's"): the first 74 bits
+are **the instance** — one random value, fixed for the instance's life — and the
+last 48 bits are **a counter**. ⇒ ⇒ Two instances cannot hand out the same id
+(74 random bits), one instance's ids never repeat (the counter only grows), and
+the id survives a move from one instance to another unchanged. ⇒ ⇒ **And it costs
+the same as the engine's own row id** (measured: DuckDB 36.19 B/row for both; the
+cold tier is even 0.41 B/row smaller) — because the instance half is constant and
+the counter is dense, which is exactly the shape a columnar store compresses
+best. ⇒ ⇒ **The id is also the reference** (`revenue.event_id`), so it stays one
+column and one key.
 
 **The file per site** (schema v12, D-046). The main file holds the sites
 (`website`) and the bookkeeping (`meta`); the facts of each site live in a file of

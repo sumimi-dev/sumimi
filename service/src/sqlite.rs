@@ -56,6 +56,14 @@ impl crate::schema::Types for Sqlite {
     fn uuid(&self) -> String {
         "TEXT".to_string()
     }
+    fn event_id(&self) -> String {
+        // SQLite has no uuid type: the event id goes in as sixteen raw
+        // bytes. **Not** as text (a 36-character string costs 72 bytes a
+        // row more than the blob — measured) and **not** as the primary
+        // key (the index would cost 42 bytes a row more, and nothing ever
+        // looks an event up by its id).
+        "BLOB".to_string()
+    }
     fn int(&self) -> String {
         "INTEGER".to_string()
     }
@@ -157,6 +165,21 @@ impl SqliteDialect {
 }
 
 impl Dialect for SqliteDialect {
+    /// SQLite has no uuid type: the id is sixteen bytes in a blob, and this
+    /// puts them into the **standard text form** — the same string DuckDB
+    /// prints for its uuid column.
+    ///
+    /// `hex()` gives the thirty-two hex characters; the dashes go back in
+    /// where they belong (8-4-4-4-12).
+    fn event_id_text(&self, expr: &str) -> String {
+        let hex = format!("lower(hex({expr}))");
+        format!(
+            "(substr({hex}, 1, 8) || '-' || substr({hex}, 9, 4) || '-' || substr({hex}, 13, 4) || '-' || \
+             substr({hex}, 17, 4) || '-' || substr({hex}, 21, 12))",
+            hex = hex
+        )
+    }
+
     /// SQLite's parameters are numbered: `?1`, `?2`, …
     fn placeholder(&self, n: usize) -> String {
         format!("?{n}")
@@ -266,6 +289,11 @@ pub struct SqliteBackend {
     /// attachment belongs to the connection, not to the database — so the set
     /// says which files exist, not which connections have them.
     sites: Mutex<HashSet<String>>,
+    /// The ids of the rows of the fact table.
+    ///
+    /// The same shape as the DuckDB backend's (`crate::event_id`) — the two
+    /// engines have to answer the same, down to the id in the log.
+    event_ids: crate::event_id::Generator,
 }
 
 impl SqliteBackend {
@@ -299,7 +327,9 @@ impl SqliteBackend {
                     path.display(),
                     backup.display()
                 );
-                let rebuilt = split_into_sites(path, &conn)?;
+                // The half the carried-over rows get — the new file keeps it.
+                let instance = crate::event_id::pick_instance(&[]);
+                let rebuilt = split_into_sites(path, &conn, instance)?;
                 // Fold the write-ahead log into the file first, so the copy that
                 // is kept aside really holds everything the old database had.
                 conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
@@ -346,12 +376,13 @@ impl SqliteBackend {
             }
         }
 
-        let backend = Self {
+        let mut backend = Self {
             writer: Mutex::new(conn),
             readers: Some(Pool::new(4)),
             path: path.to_path_buf(),
             layout: Layout::PerSite,
             sites: Mutex::new(HashSet::new()),
+            event_ids: crate::event_id::Generator::new(0),
         };
 
         // The main file holds the sites and the bookkeeping; the facts live in a
@@ -359,6 +390,14 @@ impl SqliteBackend {
         backend.prepare_main()?;
         // Every site's file is attached — and created, if it is not there yet.
         backend.attach_all_sites()?;
+
+        // The instance field of the ids, and the seed they start from.
+        let instance = {
+            let conn = backend.writer.lock().unwrap_or_else(|e| e.into_inner());
+            event_id_instance(&conn)
+        };
+        let counter = backend.largest_counter()?;
+        backend.event_ids = crate::event_id::Generator::with_counter(instance, counter);
 
         Ok(backend)
     }
@@ -385,7 +424,44 @@ impl SqliteBackend {
             path: PathBuf::from(":memory:"),
             layout: Layout::Flat,
             sites: Mutex::new(HashSet::new()),
+            event_ids: crate::event_id::Generator::new(0),
         })
+    }
+
+    /// The largest counter in use — in the main file or in any site's file.
+    ///
+    /// It is the **seed** of the generator, not the counter to hand out next:
+    /// the generator continues from it, and the counter it hands out is
+    /// always above this one.
+    ///
+    /// **Only the rows of this instance count** — the ids of another instance
+    /// (rows that came with a site that moved here) carry that instance's
+    /// half, and their counters are not ours to continue.
+    fn largest_counter(&self) -> Result<u64> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let instance = self.event_ids.instance();
+        let low = crate::event_id::compose(instance, 0);
+        let high = crate::event_id::compose(instance, crate::event_id::COUNTER_MAX);
+        let largest_of = |table: &str| -> u64 {
+            let id: Option<Vec<u8>> = conn
+                .query_row(
+                    &format!("SELECT MAX(event_id) FROM {table} WHERE event_id BETWEEN ?1 AND ?2"),
+                    params![low.as_bytes().as_slice(), high.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(None);
+            id.and_then(|bytes| uuid::Uuid::from_slice(&bytes).ok())
+                .map(|id| crate::event_id::counter_of(&id))
+                .unwrap_or(0)
+        };
+        let mut largest = largest_of("website_event");
+        if self.layout == Layout::PerSite {
+            for site in self.sites.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                let table = event_table(self.layout, site);
+                largest = largest.max(largest_of(&table));
+            }
+        }
+        Ok(largest)
     }
 
     /// The pragmas of a connection.
@@ -686,7 +762,7 @@ fn ts(value: chrono::NaiveDateTime) -> i64 {
 ///   page is `url_path`, its title is `page_title`, the referrer's host is
 ///   `referrer_domain`, and the click id is `li_fat_id`. ⇒ ⇒ The main file
 ///   holds the sites and the bookkeeping; each site's file holds its facts.
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 /// The schema version the database was written with (`0` for a fresh file).
 fn read_schema_version(conn: &Connection) -> Result<i64> {
@@ -723,6 +799,111 @@ fn write_schema_version(conn: &Connection) -> Result<()> {
         params![SCHEMA_VERSION.to_string()],
     )?;
     Ok(())
+}
+
+/// The instance field of the event ids.
+///
+/// The same rule as the DuckDB backend's (`pool.rs`): the environment wins, then
+/// the instance's own bookkeeping, and an instance that has neither draws one
+/// from the operating system and records it.
+fn event_id_instance(conn: &Connection) -> u128 {
+    if let Some(half) = crate::config::event_id_instance_override() {
+        remember_event_id_instance(conn, half);
+        return half;
+    }
+    if let Some(half) = read_event_id_instance(conn) {
+        return half;
+    }
+    let used = used_event_id_instances(conn);
+    let half = crate::event_id::pick_instance(&used);
+    remember_event_id_instance(conn, half);
+    half
+}
+
+/// Record the instance field, and say so when it cannot be recorded.
+///
+/// The ids are still unique without the record — the field is in them — but
+/// the record is what keeps the **next** start on the same field, and what
+/// tells an import that the field is taken.
+fn remember_event_id_instance(conn: &Connection, half: u128) {
+    if let Err(error) = remember_event_id_instance_(conn, half) {
+        tracing::warn!(
+            %error,
+            half = crate::event_id::instance_hex(half),
+            "the instance half of the event ids could not be recorded — the next start will draw another one"
+        );
+    }
+}
+
+/// The instance field of the event ids, as the instance's bookkeeping has it.
+fn read_event_id_instance(conn: &Connection) -> Option<u128> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![crate::db::EVENT_ID_INSTANCE],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    value.and_then(|value| crate::event_id::instance_from_hex(value.trim()))
+}
+
+/// The instance fields this instance has used.
+fn used_event_id_instances(conn: &Connection) -> Vec<u128> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![crate::db::EVENT_ID_INSTANCES_USED],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    value
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|part| crate::event_id::instance_from_hex(part.trim()))
+        .collect()
+}
+
+/// Record an instance field as used — the current one, and every one before it.
+fn remember_event_id_instance_(conn: &Connection, instance: u128) -> Result<()> {
+    let mut used = used_event_id_instances(conn);
+    if !used.contains(&instance) {
+        used.push(instance);
+    }
+    used.sort_unstable();
+    let list = used
+        .iter()
+        .map(|half| crate::event_id::instance_hex(*half))
+        .collect::<Vec<_>>()
+        .join(",");
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![crate::db::EVENT_ID_INSTANCES_USED, list],
+    )?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![crate::db::EVENT_ID_INSTANCE, crate::event_id::instance_hex(instance)],
+    )?;
+    Ok(())
+}
+
+/// Move this instance to another field.
+///
+/// The field is what keeps two instances from handing out the same id. When a
+/// site moves here from an instance that has the same field, the target moves
+/// out of the way — **the ids of the rows that came with the site are not
+/// touched**, so the references to them stay valid.
+fn switch_event_id_instance(conn: &Connection) -> Result<u128> {
+    let mut used = used_event_id_instances(conn);
+    if let Some(current) = read_event_id_instance(conn) {
+        used.push(current);
+    }
+    let half = crate::event_id::pick_instance(&used);
+    remember_event_id_instance_(conn, half)?;
+    Ok(half)
 }
 
 /// The ids of the sites in the main file.
@@ -845,8 +1026,20 @@ fn new_main_path(path: &Path) -> PathBuf {
 ///
 /// Returns the path of the **new main file** — the caller closes the old
 /// connection and swaps the two over.
-fn split_into_sites(path: &Path, conn: &Connection) -> Result<PathBuf> {
+fn split_into_sites(path: &Path, conn: &Connection, instance: u128) -> Result<PathBuf> {
     let ids = site_ids(conn)?;
+
+    // **The new ids are made first, for the whole table** — the counters have
+    // to be unique across the whole instance, not per site.
+    if table_exists(conn, "event") {
+        conn.execute_batch(&format!(
+            "CREATE TEMP TABLE id_map AS \
+             SELECT id AS old_id, unhex('{half}' || substr('000000000000' || hex(n), -12)) AS new_id FROM (\
+                 SELECT id, row_number() OVER () - 1 AS n FROM main.event\
+             )",
+            half = crate::event_id::instance_hex(instance),
+        ))?;
+    }
 
     // Every site's rows move into a file of its own.
     for id in &ids {
@@ -895,6 +1088,16 @@ fn split_into_sites(path: &Path, conn: &Connection) -> Result<PathBuf> {
         drop(stmt);
 
         write_schema_version(&fresh)?;
+
+        // **The half the carried-over rows got is the instance's half.**
+        fresh.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![
+                crate::db::EVENT_ID_INSTANCE,
+                crate::event_id::instance_hex(instance)
+            ],
+        )?;
     }
 
     Ok(new_path)
@@ -907,24 +1110,51 @@ fn split_into_sites(path: &Path, conn: &Connection) -> Result<PathBuf> {
 /// on the right-hand side and the new one on the left-hand side.
 fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()> {
     if table_exists(conn, "event") {
+        // **The ids are new** — the map was built over the whole table.
         let new_names: Vec<&str> = crate::schema::EVENT.iter().map(|c| c.name).collect();
         let old_names: Vec<&str> = crate::schema::EVENT.iter().map(|c| old_name(c.name)).collect();
+        let columns: Vec<String> = new_names
+            .iter()
+            .zip(old_names.iter())
+            .map(|(new, old)| {
+                if *new == "event_id" {
+                    "m.new_id".to_string()
+                } else {
+                    format!("e.{old}")
+                }
+            })
+            .collect();
         conn.execute(
             &format!(
-                "INSERT INTO {alias}.website_event ({new}) SELECT {old} FROM main.event WHERE website_id = ?1",
+                "INSERT INTO {alias}.website_event ({new}) SELECT {old} FROM main.event e \
+                 JOIN id_map m ON e.id = m.old_id WHERE e.website_id = ?1",
                 new = new_names.join(", "),
-                old = old_names.join(", "),
+                old = columns.join(", "),
             ),
             params![website_id],
         )?;
     }
 
     if table_exists(conn, "revenue") {
+        // The revenue's own id is the engine's row id (an integer); the
+        // **reference** to the event is the new uuid.
         let names: Vec<&str> = crate::schema::REVENUE.iter().map(|c| c.name).collect();
-        let names = names.join(", ");
+        let columns: Vec<String> = names
+            .iter()
+            .map(|name| {
+                if *name == "event_id" {
+                    "m.new_id".to_string()
+                } else {
+                    format!("r.{name}")
+                }
+            })
+            .collect();
         conn.execute(
             &format!(
-                "INSERT INTO {alias}.revenue ({names}) SELECT {names} FROM main.revenue WHERE website_id = ?1"
+                "INSERT INTO {alias}.revenue ({new}) SELECT {old} FROM main.revenue r \
+                 LEFT JOIN id_map m ON r.event_id = m.old_id WHERE r.website_id = ?1",
+                new = names.join(", "),
+                old = columns.join(", "),
             ),
             params![website_id],
         )?;
@@ -1249,19 +1479,20 @@ INSERT INTO {table} (
     lcp, inp, cls, fcp, ttfb,
     event_type, event_name, tag, data
 ) VALUES (
-    NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-    ?11, ?12, ?13,
-    ?14, ?15, ?16, ?17, ?18, ?19,
-    ?20, ?21, ?22, ?23, ?24, ?25, ?26,
-    ?27, ?28, ?29, ?30, ?31,
-    ?32, ?33, ?34, ?35, ?36, ?37,
-    ?38, ?39, ?40, ?41, ?42,
-    ?43, ?44, ?45, ?46, ?47,
-    ?48, ?49, ?50
+    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+    ?12, ?13, ?14,
+    ?15, ?16, ?17, ?18, ?19, ?20,
+    ?21, ?22, ?23, ?24, ?25, ?26, ?27,
+    ?28, ?29, ?30, ?31, ?32,
+    ?33, ?34, ?35, ?36, ?37, ?38,
+    ?39, ?40, ?41, ?42, ?43,
+    ?44, ?45, ?46, ?47, ?48, ?49,
+    ?50, ?51
 )"#
                 ))?;
                 for hit in hits {
                     insert.execute(params![
+                        self.event_ids.next().as_bytes().to_vec(),
                         hit.website_id,
                         hit.visit_id.to_string(),
                         hit.visitor_id.to_string(),
@@ -1750,7 +1981,7 @@ fn revenue(
         out.push(Revenue {
             website_id: crate::row::Row::text(&row, "website_id")?.unwrap_or_default(),
             visit_id: crate::row::Row::uuid(&row, "visit_id")?,
-            event_id: crate::row::Row::int(&row, "event_id")?,
+            event_id: crate::row::Row::text(&row, "event_id")?,
             event_name: crate::row::Row::text(&row, "event_name")?,
             currency: crate::row::Row::text(&row, "currency")?.unwrap_or_default(),
             revenue: crate::row::Row::float(&row, "revenue")?.unwrap_or_default(),

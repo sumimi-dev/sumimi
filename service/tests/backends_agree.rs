@@ -122,6 +122,19 @@ fn json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap()
 }
 
+/// A log entry without its row id.
+///
+/// **The row id is a stamp of the moment the row was written**
+/// (`crate::event_id`): the two engines are written to at different moments,
+/// so their ids cannot be equal. Everything else about the entry has to be.
+fn without_id(entry: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(entry).unwrap();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("id");
+    }
+    value.to_string()
+}
+
 /// Two answers must be the same.
 fn same<T: serde::Serialize>(what: &str, duck: &T, sqlite: &T) {
     assert_eq!(
@@ -219,8 +232,18 @@ fn the_two_engines_answer_the_same() {
         "the sessions must be the same on both engines"
     );
 
-    let mut duck_log: Vec<String> = duck.event_log(&query).unwrap().iter().map(json).collect();
-    let mut sqlite_log: Vec<String> = sqlite.event_log(&query).unwrap().iter().map(json).collect();
+    let mut duck_log: Vec<String> = duck
+        .event_log(&query)
+        .unwrap()
+        .iter()
+        .map(|entry| without_id(&json(entry)))
+        .collect();
+    let mut sqlite_log: Vec<String> = sqlite
+        .event_log(&query)
+        .unwrap()
+        .iter()
+        .map(|entry| without_id(&json(entry)))
+        .collect();
     duck_log.sort();
     sqlite_log.sort();
     assert_eq!(

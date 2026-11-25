@@ -34,7 +34,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use anyhow::Result;
@@ -154,23 +154,62 @@ pub struct Db {
     memory_limit: String,
     /// The one and only connection.
     conn: Mutex<Connection>,
-    /// The id of the next row of the fact table.
+    /// The ids of the rows of the fact table.
     ///
-    /// The id is handed out from memory instead of being asked for
+    /// The id is a **Snowflake-style** id: eight bytes, time-ordered, so the
+    /// shards of the cold tier compress it away (`crate::event_id` has the
+    /// numbers). It is handed out from memory instead of being asked for
     /// (`SELECT COALESCE(MAX(event_id), 0) + 1 FROM website_event`) on every
     /// batch. That query costs **0.24 ms**, which is 18% of the cost of a small
     /// batch, and it grows with the table (0.25 ms at a thousand rows, 0.58 ms
     /// at a million).
     ///
-    /// There is exactly one writer — the file is locked by this process — so a
-    /// counter cannot race. It is seeded from the tables when the database is
-    /// opened, so the ids stay unique across restarts — and across the sites,
-    /// since the counter is the largest id **any** of them holds.
-    pub(crate) next_id: AtomicI64,
+    /// The generator holds the last id it handed out — the id carries the clock
+    /// and the sequence in it, so there is nothing else to keep. It is seeded
+    /// from the tables when the database is opened, so the ids stay above the
+    /// ones already in use — and across the sites, since the seed is the
+    /// largest id **any** of them holds.
+    pub(crate) event_ids: crate::event_id::Generator,
     /// How the fact tables are reached.
     layout: Layout,
     /// The sites whose file is attached.
     sites: Mutex<HashSet<String>>,
+}
+
+/// The instance field of the event ids.
+///
+/// It comes from the environment when it is set — two nodes writing into the
+/// same instance have to have different fields, or they hand out the same ids
+/// — and from the instance's own bookkeeping otherwise. An instance that has
+/// neither draws one from the operating system and records it, so the next
+/// start finds the same one.
+fn event_id_instance(conn: &Connection) -> u128 {
+    if let Some(half) = crate::config::event_id_instance_override() {
+        remember_event_id_instance(conn, half);
+        return half;
+    }
+    if let Some(half) = crate::db::event_id_instance(conn) {
+        return half;
+    }
+    let used = crate::db::used_event_id_instances(conn);
+    let half = crate::event_id::pick_instance(&used);
+    remember_event_id_instance(conn, half);
+    half
+}
+
+/// Record the instance field, and say so when it cannot be recorded.
+///
+/// The ids are still unique without the record — the field is in them — but
+/// the record is what keeps the **next** start on the same field, and what
+/// tells an import that the field is taken.
+fn remember_event_id_instance(conn: &Connection, half: u128) {
+    if let Err(error) = crate::db::remember_event_id_instance(conn, half) {
+        tracing::warn!(
+            %error,
+            half = crate::event_id::instance_hex(half),
+            "the instance half of the event ids could not be recorded — the next start will draw another one"
+        );
+    }
 }
 
 impl Db {
@@ -182,17 +221,21 @@ impl Db {
     /// here.
     pub fn from_connection(path: &Path, conn: Connection) -> Result<Self> {
         let layout = Self::detect_layout(&conn);
+        let instance = event_id_instance(&conn);
         let db = Self {
             path: path.to_path_buf(),
             memory_limit: "0B".to_string(),
             conn: Mutex::new(conn),
-            next_id: AtomicI64::new(1),
+            event_ids: crate::event_id::Generator::new(instance),
             layout,
             sites: Mutex::new(HashSet::new()),
         };
         db.attach_all_sites()?;
-        let next_id = db.largest_event_id()?;
-        Ok(Self { next_id: AtomicI64::new(next_id), ..db })
+        let counter = db.largest_counter()?;
+        Ok(Self {
+            event_ids: crate::event_id::Generator::with_counter(instance, counter),
+            ..db
+        })
     }
 
     /// Is the fact table in this database, or in a file per site?
@@ -273,7 +316,9 @@ impl Db {
                     path.display(),
                     backup.display()
                 );
-                let rebuilt = crate::db::split_into_sites(path, &conn)?;
+                // The half the carried-over rows get — the new file keeps it.
+                let instance = crate::event_id::pick_instance(&[]);
+                let rebuilt = crate::db::split_into_sites(path, &conn, instance)?;
                 // The old file is locked by this connection — close it before the swap.
                 drop(conn);
                 std::fs::rename(path, &backup).map_err(|e| {
@@ -322,11 +367,12 @@ impl Db {
         // a file per site.
         crate::db::init_main_schema(&conn)?;
 
+        let instance = event_id_instance(&conn);
         let db = Self {
             path: path.to_path_buf(),
             memory_limit: memory_limit.to_string(),
             conn: Mutex::new(conn),
-            next_id: AtomicI64::new(1),
+            event_ids: crate::event_id::Generator::new(instance),
             layout: Layout::PerSite,
             sites: Mutex::new(HashSet::new()),
         };
@@ -334,10 +380,10 @@ impl Db {
         // Every site's file is attached — and created, if it is not there yet.
         db.attach_all_sites()?;
 
-        // The counter starts above every id that is in use, in any of the files.
-        let next_id = db.largest_event_id()?;
+        // The ids start above every id that is in use, in any of the files.
+        let counter = db.largest_counter()?;
         Ok(Self {
-            next_id: AtomicI64::new(next_id),
+            event_ids: crate::event_id::Generator::with_counter(instance, counter),
             ..db
         })
     }
@@ -399,17 +445,24 @@ impl Db {
         Ok(())
     }
 
-    /// The largest id in use — in the main file or in any site's file.
-    fn largest_event_id(&self) -> Result<i64> {
+    /// The largest counter in use — in the main file or in any site's file.
+    ///
+    /// It is the **seed** of the generator, not the counter to hand out next:
+    /// the generator continues from it, and the counter it hands out is
+    /// always above this one.
+    fn largest_counter(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut largest = crate::db::largest_event_id(&conn, None).unwrap_or(0);
+        let instance = self.event_ids.instance();
+        let mut largest = crate::db::largest_counter(&conn, None, instance).unwrap_or(0);
         if self.layout == Layout::PerSite {
             for site in self.sites.lock().unwrap_or_else(|e| e.into_inner()).iter() {
                 let alias = crate::db::site_alias(site);
-                largest = largest.max(crate::db::largest_event_id(&conn, Some(&alias)).unwrap_or(0));
+                largest = largest.max(
+                    crate::db::largest_counter(&conn, Some(&alias), instance).unwrap_or(0),
+                );
             }
         }
-        Ok(largest + 1)
+        Ok(largest)
     }
 
     /// Apply the full set of DuckDB settings.
@@ -491,32 +544,19 @@ impl Db {
             memory_limit: "0B".to_string(),
             conn: Mutex::new(conn),
             // An archive is read-only; nothing is ever appended to it.
-            next_id: AtomicI64::new(1),
+            event_ids: crate::event_id::Generator::new(0),
             // The archive is one flat set of files — there is no file per site.
             layout: Layout::Flat,
             sites: Mutex::new(HashSet::new()),
         })
     }
 
-    /// The id of the next row of the fact table.
-    ///
-    /// The counter is the only thing that hands out ids, so it has to start at
-    /// the right place: the first id after the largest one already in the table.
-    pub fn seed_next_id(conn: &Connection) -> i64 {
-        conn.query_row(
-            "SELECT COALESCE(MAX(event_id), 0) + 1 FROM website_event",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(1)
-    }
-
     /// The id of the next row of the `event` table.
     ///
     /// Handed out from memory: the writer is the only one that writes, so the
-    /// counter cannot race.
-    pub fn next_event_id(&self) -> i64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+    /// generator cannot race.
+    pub fn next_event_id(&self) -> uuid::Uuid {
+        self.event_ids.next()
     }
 
     /// Run `f` with the connection.

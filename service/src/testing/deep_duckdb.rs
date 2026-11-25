@@ -30,7 +30,7 @@ pub fn read_rows(
     let mut rows = stmt.query([website_id])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
-        let id: i64 = row.get(0)?;
+        let id: String = row.get(0)?;
         let hit = crate::row::hit_row(&DuckRow(row))?;
         out.push(StoredRow { id, hit });
     }
