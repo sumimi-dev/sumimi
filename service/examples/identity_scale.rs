@@ -19,10 +19,14 @@
 //! - **on the three axes the owner named**: disk, memory, cpu.
 //!
 //! ```bash
-//! cargo run --release --example identity_scale -p sumimi-service -- --rows 20000000
+//! cargo run --release --example identity_scale -p sumimi-service -- --rows 1000000
 //! # one layout per process, so the peak RSS is attributable:
-//! cargo run --release --example identity_scale -p sumimi-service -- --rows 20000000 --layouts selfdesc8
+//! cargo run --release --example identity_scale -p sumimi-service -- --rows 1000000 --layouts selfdesc8
 //! ```
+//!
+//! **A million rows is the baseline.** Twenty million is for the scale
+//! effects only — "does this still answer under the memory ceiling?" — and it
+//! is slow, so ask for it by name.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -672,6 +676,7 @@ fn measure(
     visit_stride: i64,
     sites: i64,
     grow_visitors: i64,
+    cost_columns: Vec<String>,
 ) -> anyhow::Result<Row> {
     let path = dir.join(format!("{}.duckdb", pair.name));
     let _ = fs::remove_file(&path);
@@ -746,7 +751,7 @@ fn measure(
     // The event id is the control: its counter is handed out while the rows
     // are written, so the file's order is the counter's order — whatever the
     // traffic looks like.
-    for column in ["session_id", "visit_id", "event_id"] {
+    for column in cost_columns.iter() {
         let file = dir.join(format!("{}-without-{column}.duckdb", pair.name));
         let _ = fs::remove_file(&file);
         let _ = conn.execute_batch("SET memory_limit='8GB'");
@@ -1052,7 +1057,7 @@ fn debug_bisect(
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut rows: i64 = 20_000_000;
+    let mut rows: i64 = 1_000_000;
     let mut visitors: i64 = 1_000_000;
     let mut only: Option<Vec<String>> = None;
     let mut memory_limit = PRODUCT_MEMORY_LIMIT.to_string();
@@ -1068,6 +1073,7 @@ fn main() -> anyhow::Result<()> {
     let mut visit_stride = 1i64;
     let mut sites = 1i64;
     let mut grow_visitors = 0i64;
+    let mut cost_columns: Vec<String> = vec!["session_id".into(), "visit_id".into(), "event_id".into()];
 
     let mut i = 0;
     while i < args.len() {
@@ -1137,6 +1143,10 @@ fn main() -> anyhow::Result<()> {
                 grow_visitors = args[i + 1].parse()?;
                 i += 2;
             }
+            "--cost-columns" => {
+                cost_columns = args[i + 1].split(',').map(|s| s.trim().to_string()).collect();
+                i += 2;
+            }
             "--interleave" => {
                 interleave = args[i + 1].parse()?;
                 i += 2;
@@ -1190,6 +1200,7 @@ fn main() -> anyhow::Result<()> {
             visit_stride,
             sites,
             grow_visitors,
+            cost_columns.clone(),
         )?);
     }
     // A name is either a pair (the two columns get different shapes) or a
@@ -1227,6 +1238,7 @@ fn main() -> anyhow::Result<()> {
             visit_stride,
             sites,
             grow_visitors,
+            cost_columns.clone(),
         )?;
         results.push(row);
     }
