@@ -608,6 +608,11 @@ fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()
             .map(|(new, old)| {
                 if *new == "event_id" {
                     "m.new_id".to_string()
+                } else if *new == "ver" {
+                    // **The old table has no `ver`** — the column was added
+                    // in v0.6, so an old file cannot have it ⇒ ⇒ the rows that
+                    // are carried over do not know which version served them.
+                    "NULL".to_string()
                 } else {
                     format!("e.{old}")
                 }
@@ -622,6 +627,33 @@ fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()
             ),
             [website_id],
         )?;
+
+        // The old `data` column — the properties of an event, as one JSON
+        // object — becomes the **rows of the property table** ⇒ ⇒ the
+        // properties survive the move instead of being dropped with the
+        // column.
+        if column_exists(conn, "event", "data") {
+            conn.execute(
+                &format!(
+                    "INSERT INTO {alias}.event_data \
+                     (event_id, website_id, session_id, url_path, event_name, created_at, \
+                      data_key, string_value, number_value, date_value, data_type) \
+                     SELECT m.new_id, e.website_id, e.session_id, e.url, e.event_name, e.created_at, \
+                            j.key, \
+                            CASE WHEN json_type(j.value) = 'VARCHAR' THEN j.value END, \
+                            CASE WHEN json_type(j.value) IN ('DOUBLE', 'BIGINT', 'INTEGER') \
+                                 THEN CAST(j.value AS DOUBLE) END, \
+                            NULL, \
+                            CASE WHEN json_type(j.value) IN ('DOUBLE', 'BIGINT', 'INTEGER') \
+                                 THEN 'number' ELSE 'string' END \
+                     FROM main.event e \
+                     JOIN id_map m ON e.id = m.old_id, \
+                          LATERAL json_each(e.data) j \
+                     WHERE e.website_id = ? AND e.data IS NOT NULL AND json_valid(e.data)",
+                ),
+                [website_id],
+            )?;
+        }
     }
 
     if table_exists(conn, "revenue") {
@@ -648,6 +680,22 @@ fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()
     }
 
     Ok(())
+}
+
+/// Does the table have the column?
+///
+/// **The old file's shape is not known in advance** — a column that v0.6
+/// added (`ver`) is not in a file written before it, and a column it removed
+/// (`data`) is only in one written before it ⇒ ⇒ the migration asks.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        "SELECT count(*) FROM information_schema.columns \
+         WHERE table_name = ? AND column_name = ?",
+        [table, column],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 /// **The uuid of the n-th event** — the instance's half, and the number.
@@ -799,6 +847,10 @@ pub fn versioned_backup_path(path: &Path, version: i64) -> PathBuf {
 ///
 /// The kind is a `&str` in the row, and a `&str` cannot become a trait object
 /// on its own — so the caller hands over a reference to it.
+// **The visitor's id is a `Vec<u8>`, not a slice** — the duckdb crate
+// implements `ToSql` for `Vec<u8>` and for nothing else, so a `&[u8]` would
+// have nothing to become.
+#[allow(clippy::ptr_arg)]
 pub fn event_row<'a>(
     id: &'a uuid::Uuid,
     hit: &'a crate::models::Hit,

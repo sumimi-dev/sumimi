@@ -48,6 +48,13 @@ CREATE OR REPLACE MACRO uuid_of(s) AS CAST(
 
 CREATE OR REPLACE MACRO session_of(n) AS uuid_of('session-' || n);
 
+CREATE OR REPLACE MACRO event_of(n) AS uuid_of('event-' || n);
+
+-- The visitor's id is a **blob of eight bytes** (see `crate::ua`), so the
+-- seed takes the first eight bytes of the hash — sixteen hex characters.
+CREATE OR REPLACE MACRO visitor_of(n) AS
+    unhex(substr(sha256('visitor-' || (n)::VARCHAR), 1, 16));
+
 INSERT INTO {alias}.website_event (
     event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url_path, url_query, page_title,
     referrer_domain, referrer_path, referrer_query, hostname,
@@ -56,12 +63,12 @@ INSERT INTO {alias}.website_event (
     utm_source, utm_medium, utm_campaign, utm_content, utm_term,
     gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
     lcp, inp, cls, fcp, ttfb,
-    event_type, event_name, tag, data)
+    event_type, event_name, tag, ver)
 SELECT
-  i,
+  event_of(i),
   'w1',
   session_of(1 + (i / 2)),
-  uuid_of('visitor-' || (i % 120)),
+  visitor_of(i % 120),
   '203.0.113.' || (i % 120)::VARCHAR,
   '203.0.113',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
@@ -82,11 +89,11 @@ FROM generate_series(1, 50000) t(i);
             &format!(
                 "INSERT INTO {alias}.website_event (event_id, website_id, visit_id, session_id, ip, ip_prefix, user_agent,
                     created_at, url_path, hostname,
-                    event_type, event_name, tag, data)
-             VALUES (999999, 'w1', session_of(1), uuid_of('visitor-1'), '203.0.113.7', '203.0.113',
+                    event_type, event_name, tag, ver)
+             VALUES (event_of(999999), 'w1', session_of(1), visitor_of(1), '203.0.113.7', '203.0.113',
                      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
                      now()::TIMESTAMP, '/signup',
-                     'example.com', 'event', 'signup', 'cta', '{{}}')"
+                     'example.com', 'event', 'signup', 'cta', NULL)"
             ),
             [],
         )?;

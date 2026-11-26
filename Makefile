@@ -7,7 +7,7 @@ CARGO ?= cargo
 CARGO_HTTP_TIMEOUT ?= 600
 TARGET ?= target/release
 # The version of the release: the crate version, not DuckDB's.
-VERSION ?= 0.4.1
+VERSION ?= 0.6.0
 .PHONY: all build release test lint fmt run clean package
 
 all: build

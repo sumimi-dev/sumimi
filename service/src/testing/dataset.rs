@@ -612,12 +612,23 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                         ttfb: None,
                         name: Some(name.to_string()),
                         tag: Some(format!("cta-{name}")),
-                        properties: vec![crate::models::Property {
-                            key: "plan".to_string(),
-                            value: crate::models::PropertyValue::Text(
-                                (*rng.pick(&["free", "pro"])).to_string(),
-                            ),
-                        }],
+                        properties: vec![
+                            crate::models::Property {
+                                key: "plan".to_string(),
+                                value: crate::models::PropertyValue::Text(
+                                    (*rng.pick(&["free", "pro"])).to_string(),
+                                ),
+                            },
+                            // A **number** beside a text one: the two kinds
+                            // go into different columns, and a number has to
+                            // come back as a number and not as text.
+                            crate::models::Property {
+                                key: "seats".to_string(),
+                                value: crate::models::PropertyValue::Number(
+                                    *rng.pick(&[1.0, 3.0, 10.0]),
+                                ),
+                            },
+                        ],
                         ver: None,
     user_id: None,
     });
@@ -1356,7 +1367,12 @@ fn compute_expectations(
                     (
                         (
                             crate::session::format_visit_id(hit.visit_id),
-                            hit.visitor_id.to_string(),
+                            // The visitor's id in the text form the log shows
+                            // it: the hex of its bytes — the first eight of
+                            // the hash (see `crate::ua`).
+                            crate::ua::format_visitor_id(&crate::ua::visitor_bytes(
+                                &hit.visitor_id,
+                            )),
                             hit.url.clone(),
                             hit.name.clone(),
                             hit.created_at,

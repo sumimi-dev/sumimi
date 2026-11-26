@@ -36,6 +36,14 @@ pub enum Param {
     Float(f64),
     /// A sixteen-byte id.
     Uuid(Uuid),
+    /// **The event id** — the id of an event, in the shape the engine keeps it.
+    ///
+    /// It is a variant of its own because the two engines keep it in
+    /// different shapes: DuckDB has a uuid type and takes the id as it is,
+    /// SQLite has not and takes the **sixteen bytes** the id is made of.
+    /// ⇒ ⇒ The statement says `event_id` and each engine says how it binds
+    /// it; the comparison itself is the same on both sides.
+    EventId(Uuid),
     /// A moment in time.
     Time(NaiveDateTime),
     /// Nothing at all.
@@ -81,6 +89,13 @@ pub trait Dialect {
 
     /// The **revenue table**, as this engine names it.
     fn revenue_table(&self, website_id: &str) -> String;
+
+    /// The **property table**, as this engine names it.
+    ///
+    /// The properties of an event live in a table of their own — one row per
+    /// property — so the reports that read them name the table the way the
+    /// engine names tables.
+    fn event_data_table(&self, website_id: &str) -> String;
 
     /// **The event id, as text.**
     ///
@@ -428,10 +443,14 @@ pub fn query_strings(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
 }
 
 /// The raw event log.
+///
+/// **The properties are not in the fact table** — they are rows of the table
+/// of their own ⇒ ⇒ the log reads them with a second statement and puts them
+/// into the rows they belong to (see [`crate::row::properties_json`]).
 pub fn event_log(query: &ReportQuery, dialect: &dyn Dialect) -> Statement {
     let filters = Filters::logs(query, dialect);
     let sql = format!(
-        "SELECT {event_id} AS event_id, website_id, visit_id, session_id, created_at, event_name, url_path, hostname, channel, data,
+        "SELECT {event_id} AS event_id, website_id, visit_id, session_id, created_at, event_name, url_path, hostname, channel,
                 referrer_domain, referrer_path, referrer_query, country, city, browser, os,
                 utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
          FROM {table} WHERE {where_clause}
@@ -514,6 +533,50 @@ pub fn event_rows(website_id: &str, dialect: &dyn Dialect) -> Statement {
     Statement::of(sql, vec![Param::Text(website_id.to_string())])
 }
 
+/// The property rows of a set of events — the **pivot** of the event log.
+///
+/// The properties of an event live in a table of their own, one row per
+/// property, so the log has to read them back to show them. The ids go in as
+/// parameters, one per event, and each engine binds the id its own way (see
+/// [`Param::EventId`]).
+///
+/// ⇒ ⇒ **One query for the whole page.** The log is at most a thousand rows,
+/// and a query per event would be a thousand round trips for a page the
+/// dashboard reads in one.
+pub fn event_properties(website_id: &str, event_ids: &[Uuid], dialect: &dyn Dialect) -> Statement {
+    let mut values = vec![Param::Text(website_id.to_string())];
+    let mut placeholders = Vec::with_capacity(event_ids.len());
+    for (index, id) in event_ids.iter().enumerate() {
+        placeholders.push(dialect.placeholder(index + 2));
+        values.push(Param::EventId(*id));
+    }
+    let sql = format!(
+        "SELECT event_id, data_key, string_value, number_value, date_value, data_type
+         FROM {table}
+         WHERE website_id = {website} AND event_id IN ({ids})",
+        table = dialect.event_data_table(website_id),
+        website = dialect.placeholder(1),
+        ids = placeholders.join(", "),
+    );
+    Statement::of(sql, values)
+}
+
+/// Every property row of a website — the deep read's companion.
+///
+/// The deep read hands back **every** row of a website, so the number of
+/// events is not known before the rows are read ⇒ ⇒ the properties are read
+/// for the whole website and grouped by the event they belong to.
+pub fn site_properties(website_id: &str, dialect: &dyn Dialect) -> Statement {
+    let sql = format!(
+        "SELECT event_id, data_key, string_value, number_value, date_value, data_type
+         FROM {table}
+         WHERE website_id = {website}",
+        table = dialect.event_data_table(website_id),
+        website = dialect.placeholder(1),
+    );
+    Statement::of(sql, vec![Param::Text(website_id.to_string())])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +610,9 @@ mod tests {
         }
         fn revenue_table(&self, _website_id: &str) -> String {
             "revenue".to_string()
+        }
+        fn event_data_table(&self, _website_id: &str) -> String {
+            "event_data".to_string()
         }
     }
 

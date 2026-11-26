@@ -232,19 +232,24 @@ async fn the_answer_carries_the_token() {
 
     let answer: Answer = serde_json::from_str(&body_of(response).await).unwrap();
     assert!(!answer.cache.is_empty(), "the token has to be there");
-    assert_eq!(answer.visitor_id.len(), 36, "the visitor id is a UUID");
+    // The visitor's id is the hex of its bytes — sixteen characters, eight
+    // bytes (see `crate::ua::format_visitor_id`).
+    assert_eq!(answer.visitor_id.len(), 16, "the visitor id is eight bytes");
     assert_eq!(answer.visit_id.len(), 36, "the visit id is a UUID");
 
     // The token is ours: it carries the ids it is about.
     let claims = sumimi_service::token::verify("test-secret", &answer.cache).unwrap();
     assert_eq!(claims.website_id, "website-1");
+    // The visitor is the hash of the address and the agent — the first eight
+    // bytes of it, because that is what the token carries.
+    let visitor = sumimi_service::ua::visitor_id(
+        &sumimi_service::ua::visitor_address("0.0.0.0"),
+        "",
+        "website-1",
+    );
     assert_eq!(
-        claims.visitor(),
-        Some(sumimi_service::ua::visitor_id(
-            &sumimi_service::ua::visitor_address("0.0.0.0"),
-            "",
-            "website-1",
-        )),
+        claims.visitor().map(|id| id.as_bytes()[..8].to_vec()),
+        Some(visitor.as_bytes()[..8].to_vec()),
         "the visitor is the hash of the address and the agent"
     );
     assert_eq!(claims.session().map(|id| id.to_string()), Some(answer.visit_id));

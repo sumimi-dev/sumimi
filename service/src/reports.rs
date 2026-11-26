@@ -6,6 +6,7 @@
 //!
 //! The SQLite and PostgreSQL backends live in the private `sumimi-pro` repository.
 
+use std::collections::HashMap;
 
 use anyhow::Result;
 use chrono::NaiveDateTime;
@@ -97,6 +98,14 @@ impl Dialect for Duck {
             None => "revenue".to_string(),
         }
     }
+
+    /// The property table, in the site's own file.
+    fn event_data_table(&self, website_id: &str) -> String {
+        match self.catalog(website_id) {
+            Some(catalog) => format!("{catalog}.event_data"),
+            None => "event_data".to_string(),
+        }
+    }
 }
 
 /// A row of DuckDB, read by the name of its column.
@@ -118,6 +127,10 @@ impl crate::row::Row for DuckRow<'_> {
     fn blob(&self, name: &str) -> Result<Option<Vec<u8>>> {
         Ok(self.0.get::<_, Option<Vec<u8>>>(name)?)
     }
+    /// DuckDB has a uuid type, so the event id comes back as one.
+    fn event_id(&self, name: &str) -> Result<Option<uuid::Uuid>> {
+        Ok(self.0.get::<_, Option<uuid::Uuid>>(name)?)
+    }
     fn time(&self, name: &str) -> Result<Option<NaiveDateTime>> {
         Ok(self.0.get::<_, Option<NaiveDateTime>>(name)?)
     }
@@ -136,6 +149,9 @@ fn value(param: &Param) -> Value {
         Param::Float(number) => Value::Double(*number),
         // A uuid is bound as its text — the same way the appender binds it.
         Param::Uuid(id) => Value::Text(id.to_string()),
+        // The event id is bound the same way: DuckDB has a uuid type and
+        // takes the id as its own text, which it casts to the column's type.
+        Param::EventId(id) => Value::Text(id.to_string()),
         Param::Time(moment) => timestamp(*moment),
         Param::Null => Value::Null,
     }
@@ -682,7 +698,49 @@ fn event_log(
     while let Some(row) = rows.next()? {
         out.push(crate::row::event_log_row(&DuckRow(row))?);
     }
+    drop(rows);
+    drop(stmt);
+
+    // The properties are rows of the table of their own ⇒ ⇒ they are read
+    // for the events of this page and put back into the rows they belong to.
+    let properties = read_properties(conn, query, &out, layout)?;
+    for row in &mut out {
+        let id = match uuid::Uuid::parse_str(&row.id) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        if let Some(list) = properties.get(&id) {
+            row.data = crate::row::properties_json(list);
+        }
+    }
     Ok(out)
+}
+
+/// The properties of the events of a page of the log.
+///
+/// **One query for the whole page** — the log is at most a thousand rows, and
+/// a query per event would be a thousand round trips.
+fn read_properties(
+    conn: &Connection,
+    query: &ReportQuery,
+    rows: &[EventRow],
+    layout: Layout,
+) -> Result<HashMap<uuid::Uuid, Vec<crate::models::Property>>> {
+    let ids: Vec<uuid::Uuid> = rows
+        .iter()
+        .filter_map(|row| uuid::Uuid::parse_str(&row.id).ok())
+        .collect();
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let statement = crate::query::event_properties(&query.website_id, &ids, &Duck::new(layout));
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(duckdb::params_from_iter(values(&statement)))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(crate::row::property_row(&DuckRow(row))?);
+    }
+    Ok(crate::row::group_properties(out))
 }
 
 /// The most recent events of a window, newest first.

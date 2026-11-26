@@ -15,11 +15,13 @@
 //! no number to get wrong: a column that is not there is an error, not a
 //! different value.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use uuid::Uuid;
 
-use crate::models::{EventRow, Hit, HitKind};
+use crate::models::{EventRow, Hit, HitKind, Property, PropertyValue};
 use crate::session::{format_visit_id, VisitId};
 use crate::storage::SessionEvent;
 
@@ -39,6 +41,15 @@ pub trait Row {
 
     /// **A byte string** — the visitor's id, in the width it has.
     fn blob(&self, name: &str) -> Result<Option<Vec<u8>>>;
+
+    /// **The event id** — the id of an event, in the shape the engine keeps it.
+    ///
+    /// DuckDB has a uuid type and hands the id over as one; SQLite has not,
+    /// so the id comes back as the **sixteen bytes** the column holds.
+    ///
+    /// ⇒ ⇒ Both are the same id: the property rows and the event rows are
+    /// matched by it, and a mismatch would lose a property.
+    fn event_id(&self, name: &str) -> Result<Option<Uuid>>;
 
     /// A moment in time.
     fn time(&self, name: &str) -> Result<Option<NaiveDateTime>>;
@@ -113,6 +124,78 @@ pub fn visit_id_text(id: VisitId) -> String {
     format_visit_id(id)
 }
 
+/// One row of the **property table** — a property of an event.
+pub struct PropertyRow {
+    /// The event it belongs to.
+    pub event_id: Uuid,
+    /// The property itself.
+    pub property: Property,
+}
+
+/// The row of the **property table** — one property of one event.
+///
+/// The value is in three columns — text, number, date — and the `data_type`
+/// says which one holds it ⇒ ⇒ the value is read from that column and no
+/// other, so a number stays a number and a date stays a date.
+pub fn property_row(row: &dyn Row) -> Result<PropertyRow> {
+    let key = row.text("data_key")?.unwrap_or_default();
+    let value = match row.text("data_type")?.as_deref() {
+        Some("number") => PropertyValue::Number(row.float("number_value")?.unwrap_or_default()),
+        Some("date") => match row.time("date_value")? {
+            Some(moment) => PropertyValue::Date(moment),
+            None => PropertyValue::Text(row.text("string_value")?.unwrap_or_default()),
+        },
+        _ => PropertyValue::Text(row.text("string_value")?.unwrap_or_default()),
+    };
+    Ok(PropertyRow {
+        event_id: row.event_id("event_id")?.unwrap_or_else(Uuid::nil),
+        property: Property { key, value },
+    })
+}
+
+/// The properties of the events, grouped by the event they belong to.
+///
+/// The keys are the event ids, the values are the properties **in the order
+/// they were written** — the order the write path keeps them in, so the deep
+/// read gives back what was put in.
+pub fn group_properties(rows: Vec<PropertyRow>) -> HashMap<Uuid, Vec<Property>> {
+    let mut out: HashMap<Uuid, Vec<Property>> = HashMap::new();
+    for row in rows {
+        out.entry(row.event_id).or_default().push(row.property);
+    }
+    out
+}
+
+/// The properties of an event, as the JSON the API shows.
+///
+/// **The shape is the one the old `data` column had**: a JSON **object**, the
+/// keys are the property keys and the values are the property values — a
+/// number is a number and not text.
+///
+/// ⇒ ⇒ The order of the properties does not matter: a JSON object is not
+/// ordered, and `serde_json` writes the keys in the order it keeps them
+/// (sorted, without the `preserve_order` feature) ⇒ ⇒ the two engines write
+/// the same string for the same properties.
+pub fn properties_json(properties: &[Property]) -> Option<String> {
+    if properties.is_empty() {
+        return None;
+    }
+    let mut map = serde_json::Map::new();
+    for property in properties {
+        let value = match &property.value {
+            PropertyValue::Text(text) => serde_json::Value::String(text.clone()),
+            PropertyValue::Number(number) => serde_json::Value::from(*number),
+            // A date is a **string** — the same text the API serves its
+            // timestamps in (see `chrono`'s own serialization of a moment).
+            PropertyValue::Date(moment) => {
+                serde_json::Value::String(moment.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+            }
+        };
+        map.insert(property.key.clone(), value);
+    }
+    Some(serde_json::Value::Object(map).to_string())
+}
+
 /// The columns of the **deep read** — the raw rows, field by field.
 ///
 /// The statement that reads them is the shared one (see [`crate::query`]); the
@@ -134,7 +217,11 @@ pub const EVENT_COLUMNS: &str = "event_id, website_id, visit_id, session_id, ses
 /// The mapping is here, once: an engine that hands the rows back cannot get
 /// the fields mixed up, because it does not know the field order — it only
 /// says how a column of its own is fetched.
-pub fn hit_row(row: &dyn Row) -> Result<Hit> {
+///
+/// The **properties** are not in the fact table — they are rows of the table
+/// of their own ⇒ ⇒ they are handed in, already read, because a row of the
+/// fact table cannot read a row of another table.
+pub fn hit_row(row: &dyn Row, properties: Vec<Property>) -> Result<Hit> {
     let event_type = row.text("event_type")?;
     Ok(Hit {
         website_id: row.text("website_id")?.unwrap_or_default(),
@@ -208,9 +295,9 @@ pub fn hit_row(row: &dyn Row) -> Result<Hit> {
         ttfb: row.float("ttfb")?,
         name: row.text("event_name")?,
         tag: row.text("tag")?,
-        // The properties are read from the table of their own (see
-        // `event_log_row`).
-        properties: Vec::new(),
+        // The properties are rows of the table of their own — the caller
+        // read them and handed them in.
+        properties,
         ver: row.text("ver")?,
     })
 }

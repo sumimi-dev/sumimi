@@ -50,8 +50,15 @@ pub fn diff(a: &Hit, b: &Hit) -> Vec<String> {
     );
     check!(
         "visitor_id",
-        &Some(a.visitor_id.to_string()),
-        &Some(b.visitor_id.to_string()),
+        // The column holds the **first eight bytes** of the visitor's hash
+        // (see `crate::ua::visitor_bytes`), so the id that comes back is the
+        // truncated one ⇒ ⇒ the two are compared in the form they are stored.
+        &Some(crate::ua::format_visitor_id(&crate::ua::visitor_bytes(
+            &a.visitor_id
+        ))),
+        &Some(crate::ua::format_visitor_id(&crate::ua::visitor_bytes(
+            &b.visitor_id
+        ))),
     );
     check!(
         "user_id",

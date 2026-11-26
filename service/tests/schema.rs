@@ -768,13 +768,13 @@ fn an_older_database_is_replaced_by_an_empty_one() {
         let visitor_id: i64 = conn.query_row(
             "SELECT count(*) FROM duckdb_columns()
              WHERE table_name = 'website_event' AND column_name = 'session_id'
-               AND data_type = 'UUID'",
+               AND data_type = 'BLOB'",
             [],
             |row| row.get(0),
         )?;
         assert_eq!(
             visitor_id, 1,
-            "the visitor id is stored again, as sixteen bytes, under Umami's name"
+            "the visitor id is stored as a blob of eight bytes, under Umami's name"
         );
 
         // The fact table carries no primary key — the ids are handed out.

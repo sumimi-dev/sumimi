@@ -150,7 +150,19 @@ mod tests {
         let token = sign(SECRET, &claims()).unwrap();
         let read = verify(SECRET, &token).expect("the token is ours");
         assert_eq!(read.website_id, "site-1");
-        assert_eq!(read.visitor(), Some(Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)));
+        // The visitor's id comes back **truncated**: the token carries the hex
+        // of the first eight bytes of the hash (see `crate::ua`), so the last
+        // eight bytes of the id are zero.
+        assert_eq!(
+            read.visitor(),
+            Some(crate::ua::visitor_from_text(&read.visitor_id).unwrap())
+        );
+        assert_eq!(
+            read.visitor().map(|id| id.as_bytes()[..8].to_vec()),
+            Some(
+                Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).as_bytes()[..8].to_vec()
+            )
+        );
         assert_eq!(read.session(), Some(Uuid::from_u128(42)));
         assert_eq!(read.last, 1_700_000_000);
         assert_eq!(read.start, 1_699_999_000);

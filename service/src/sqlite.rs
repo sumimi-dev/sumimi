@@ -22,7 +22,7 @@
 //! The SQL is SQLite's dialect on purpose — bucketing, distinct counting and the
 //! "the row of the newest hit" lookups all differ between engines.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -99,6 +99,7 @@ const MAIN_TABLES: &[(&str, &[crate::schema::Column])] = &[
 /// and their tools read.
 const SITE_TABLES: &[(&str, &[crate::schema::Column])] = &[
     ("website_event", crate::schema::EVENT),
+    ("event_data", crate::schema::EVENT_DATA),
     ("revenue", crate::schema::REVENUE),
 ];
 
@@ -226,6 +227,14 @@ impl Dialect for SqliteDialect {
             None => "revenue".to_string(),
         }
     }
+
+    /// The property table, in the site's own file.
+    fn event_data_table(&self, website_id: &str) -> String {
+        match self.alias(website_id) {
+            Some(alias) => format!("{alias}.event_data"),
+            None => "event_data".to_string(),
+        }
+    }
 }
 
 /// A row of SQLite, read by the name of its column.
@@ -251,6 +260,13 @@ impl crate::row::Row for SqliteRow<'_> {
     fn blob(&self, name: &str) -> Result<Option<Vec<u8>>> {
         Ok(self.0.get::<_, Option<Vec<u8>>>(name)?)
     }
+    /// SQLite has no uuid type: the event id is the **sixteen bytes** the
+    /// column holds, and they are the id.
+    fn event_id(&self, name: &str) -> Result<Option<uuid::Uuid>> {
+        Ok(self.0.get::<_, Option<Vec<u8>>>(name)?.map(|bytes| {
+            uuid::Uuid::from_bytes(<[u8; 16]>::try_from(bytes.as_slice()).unwrap_or([0; 16]))
+        }))
+    }
     /// A moment is stored as microseconds since the epoch.
     fn time(&self, name: &str) -> Result<Option<chrono::NaiveDateTime>> {
         Ok(self.0.get::<_, Option<i64>>(name)?.map(from_ts))
@@ -264,12 +280,15 @@ fn values(statement: &crate::query::Statement) -> Vec<Box<dyn rusqlite::ToSql>> 
         .iter()
         .map(|param| -> Box<dyn rusqlite::ToSql> {
             match param {
-            Param::Text(text) => Box::new(text.clone()),
-            Param::Int(number) => Box::new(*number),
-            Param::Float(number) => Box::new(*number),
-            Param::Uuid(id) => Box::new(id.to_string()),
-            Param::Time(moment) => Box::new(ts(*moment)),
-            Param::Null => Box::new(Option::<String>::None),
+                Param::Text(text) => Box::new(text.clone()),
+                Param::Int(number) => Box::new(*number),
+                Param::Float(number) => Box::new(*number),
+                Param::Uuid(id) => Box::new(id.to_string()),
+                // The event id goes in as the **sixteen bytes** it is made of —
+                // SQLite has no uuid type, and the column is a blob.
+                Param::EventId(id) => Box::new(id.as_bytes().to_vec()),
+                Param::Time(moment) => Box::new(ts(*moment)),
+                Param::Null => Box::new(Option::<String>::None),
             }
         })
         .collect()
@@ -961,22 +980,6 @@ fn remember_event_id_instance_(conn: &Connection, instance: u128) -> Result<()> 
     Ok(())
 }
 
-/// Move this instance to another field.
-///
-/// The field is what keeps two instances from handing out the same id. When a
-/// site moves here from an instance that has the same field, the target moves
-/// out of the way — **the ids of the rows that came with the site are not
-/// touched**, so the references to them stay valid.
-fn switch_event_id_instance(conn: &Connection) -> Result<u128> {
-    let mut used = used_event_id_instances(conn);
-    if let Some(current) = read_event_id_instance(conn) {
-        used.push(current);
-    }
-    let half = crate::event_id::pick_instance(&used);
-    remember_event_id_instance_(conn, half)?;
-    Ok(half)
-}
-
 /// The ids of the sites in the main file.
 fn site_ids(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT id FROM website ORDER BY created_at ASC")?;
@@ -1190,6 +1193,11 @@ fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()
             .map(|(new, old)| {
                 if *new == "event_id" {
                     "m.new_id".to_string()
+                } else if *new == "ver" {
+                    // **The old table has no `ver`** — the column was added
+                    // in v0.6, so an old file cannot have it ⇒ ⇒ the rows that
+                    // are carried over do not know which version served them.
+                    "NULL".to_string()
                 } else {
                     format!("e.{old}")
                 }
@@ -1204,6 +1212,33 @@ fn copy_site_rows(conn: &Connection, alias: &str, website_id: &str) -> Result<()
             ),
             params![website_id],
         )?;
+
+        // The old `data` column — the properties of an event, as one JSON
+        // object — becomes the **rows of the property table** ⇒ ⇒ the
+        // properties survive the move instead of being dropped with the
+        // column.
+        if column_exists(conn, "event", "data") {
+            conn.execute(
+                &format!(
+                    "INSERT INTO {alias}.event_data \
+                     (event_id, website_id, session_id, url_path, event_name, created_at, \
+                      data_key, string_value, number_value, date_value, data_type) \
+                     SELECT m.new_id, e.website_id, e.session_id, e.url, e.event_name, e.created_at, \
+                            j.key, \
+                            CASE WHEN json_type(j.value) = 'text' THEN j.value END, \
+                            CASE WHEN json_type(j.value) IN ('real', 'integer') \
+                                 THEN CAST(j.value AS REAL) END, \
+                            NULL, \
+                            CASE WHEN json_type(j.value) IN ('real', 'integer') \
+                                 THEN 'number' ELSE 'string' END \
+                     FROM main.event e \
+                     JOIN id_map m ON e.id = m.old_id, \
+                          json_each(e.data) j \
+                     WHERE e.website_id = ?1 AND e.data IS NOT NULL AND json_valid(e.data)",
+                ),
+                params![website_id],
+            )?;
+        }
     }
 
     if table_exists(conn, "revenue") {
@@ -1239,6 +1274,21 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
     conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
         params![table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// Does the table have the column?
+///
+/// **The old file's shape is not known in advance** — a column that v0.6
+/// added (`ver`) is not in a file written before it, and a column it removed
+/// (`data`) is only in one written before it ⇒ ⇒ the migration asks.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        "SELECT count(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
         |row| row.get::<_, i64>(0),
     )
     .map(|n| n > 0)
@@ -1535,6 +1585,7 @@ impl Storage for SqliteBackend {
 
             for (website_id, hits) in &by_site {
                 let table = event_table(self.layout(), website_id);
+                let data_table = event_data_table(self.layout(), website_id);
                 // Prepare once: re-preparing per row dominated the write path.
                 //
                 // **Not `prepare_cached`** — the statement names the site's own
@@ -1565,9 +1616,21 @@ INSERT INTO {table} (
     ?50, ?51
 )"#
                 ))?;
+                // The properties go into the table of their own — one row per
+                // property, in the order the properties came.
+                let mut insert_property = tx.prepare(&format!(
+                    r#"
+INSERT INTO {data_table} (
+    event_id, website_id, session_id, url_path, event_name, created_at,
+    data_key, string_value, number_value, date_value, data_type
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#
+                ))?;
                 for hit in hits {
+                    // The id is minted here and used for the event row **and**
+                    // for the rows of its properties — they belong to it.
+                    let event_id = self.event_ids.next();
                     insert.execute(params![
-                        self.event_ids.next().as_bytes().to_vec(),
+                        event_id.as_bytes().to_vec(),
                         hit.website_id,
                         hit.visit_id.to_string(),
                         // The visitor's id: the first eight bytes of the hash.
@@ -1620,8 +1683,54 @@ INSERT INTO {table} (
                         hit.tag,
                         hit.ver,
                     ])?;
+
+                    // The properties of the event — one row per property, in
+                    // the order the properties came.
+                    //
+                    // **The rows of one event are written next to each other**
+                    // — that is what makes the context columns cheap: they
+                    // are the same for every row of the event.
+                    if hit.properties.is_empty() {
+                        continue;
+                    }
+                    // The visitor's id: the first eight bytes of the hash.
+                    let session = crate::ua::visitor_bytes(&hit.visitor_id);
+                    for property in &hit.properties {
+                        let (text, number, date): (
+                            Option<String>,
+                            Option<f64>,
+                            Option<chrono::NaiveDateTime>,
+                        ) = match &property.value {
+                            crate::models::PropertyValue::Text(value) => {
+                                (Some(value.clone()), None, None)
+                            }
+                            crate::models::PropertyValue::Number(value) => {
+                                (None, Some(*value), None)
+                            }
+                            crate::models::PropertyValue::Date(value) => {
+                                (None, None, Some(*value))
+                            }
+                        };
+                        let data_type: &'static str = property.value.data_type();
+                        insert_property.execute(params![
+                            event_id.as_bytes().to_vec(),
+                            hit.website_id,
+                            session,
+                            hit.url,
+                            hit.name,
+                            ts(hit.created_at),
+                            property.key,
+                            text,
+                            number,
+                            // SQLite keeps the moments as microseconds since
+                            // the epoch — the same as every other column.
+                            date.map(ts),
+                            data_type,
+                        ])?;
+                    }
                 }
                 drop(insert);
+                drop(insert_property);
             }
 
             tx.commit()?;
@@ -1821,6 +1930,14 @@ fn revenue_table(layout: Layout, website_id: &str) -> String {
     }
 }
 
+/// The property table of a site, as the statements name it.
+fn event_data_table(layout: Layout, website_id: &str) -> String {
+    match layout {
+        Layout::PerSite => format!("{}.event_data", crate::db::site_alias(website_id)),
+        Layout::Flat => "event_data".to_string(),
+    }
+}
+
 /// Delete everything a site stored.
 ///
 /// ⇒ ⇒ The events and the revenue are in the site's own file; the site's row
@@ -2012,7 +2129,52 @@ fn event_log(
     while let Some(row) = rows.next()? {
         out.push(crate::row::event_log_row(&SqliteRow(row))?);
     }
+    drop(rows);
+    drop(stmt);
+
+    // The properties are rows of the table of their own ⇒ ⇒ they are read
+    // for the events of this page and put back into the rows they belong to.
+    let properties = read_properties(conn, query, &out, dialect)?;
+    for row in &mut out {
+        let id = match uuid::Uuid::parse_str(&row.id) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        if let Some(list) = properties.get(&id) {
+            row.data = crate::row::properties_json(list);
+        }
+    }
     Ok(out)
+}
+
+/// The properties of the events of a page of the log.
+///
+/// **One query for the whole page** — the log is at most a thousand rows, and
+/// a query per event would be a thousand round trips.
+fn read_properties(
+    conn: &Connection,
+    query: &ReportQuery,
+    rows: &[EventRow],
+    dialect: &SqliteDialect,
+) -> Result<HashMap<uuid::Uuid, Vec<crate::models::Property>>> {
+    let ids: Vec<uuid::Uuid> = rows
+        .iter()
+        .filter_map(|row| uuid::Uuid::parse_str(&row.id).ok())
+        .collect();
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let statement = crate::query::event_properties(&query.website_id, &ids, dialect);
+    let bound = values(&statement);
+    let params: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&statement.sql)?;
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(crate::row::property_row(&SqliteRow(row))?);
+    }
+    Ok(crate::row::group_properties(out))
 }
 
 /// The most recent events of a window, newest first.
@@ -2145,9 +2307,13 @@ mod tests {
         // The main file holds the sites and the bookkeeping — and nothing else.
         assert_eq!(main_tables(&path), vec!["meta", "website"]);
 
-        // The site's file holds the facts — under Umami's names.
+        // The site's file holds the facts — under Umami's names, and the
+        // properties in the table of their own.
         let site_file = crate::db::site_path(&path, &one.id, "sqlite");
-        assert_eq!(main_tables(&site_file), vec!["revenue", "website_event"]);
+        assert_eq!(
+            main_tables(&site_file),
+            vec!["event_data", "revenue", "website_event"]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
