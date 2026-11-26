@@ -1944,6 +1944,7 @@ fn event_data_table(layout: Layout, website_id: &str) -> String {
 /// is in the main file and is not touched here.
 fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u64, u64)> {
     let (events, revenue) = tables(layout, website_id);
+    let properties = event_data_table(layout, website_id);
     let events = conn.execute(
         &format!("DELETE FROM {events} WHERE website_id = ?1"),
         params![website_id],
@@ -1952,6 +1953,12 @@ fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u6
         &format!("DELETE FROM {revenue} WHERE website_id = ?1"),
         params![website_id],
     )? as u64;
+    // The properties go with their events — they are not counted: the counts
+    // are the events' and the revenue's.
+    conn.execute(
+        &format!("DELETE FROM {properties} WHERE website_id = ?1"),
+        params![website_id],
+    )?;
     Ok((events, revenue))
 }
 
@@ -1963,6 +1970,7 @@ fn delete_before_site(
     layout: Layout,
 ) -> Result<(u64, u64)> {
     let (events, revenue) = tables(layout, website_id);
+    let properties = event_data_table(layout, website_id);
     let events = conn.execute(
         &format!("DELETE FROM {events} WHERE website_id = ?1 AND created_at < ?2"),
         params![website_id, before],
@@ -1971,6 +1979,12 @@ fn delete_before_site(
         &format!("DELETE FROM {revenue} WHERE website_id = ?1 AND created_at < ?2"),
         params![website_id, before],
     )? as u64;
+    // The properties go with their events — they are not counted: the counts
+    // are the events' and the revenue's.
+    conn.execute(
+        &format!("DELETE FROM {properties} WHERE website_id = ?1 AND created_at < ?2"),
+        params![website_id, before],
+    )?;
     Ok((events, revenue))
 }
 

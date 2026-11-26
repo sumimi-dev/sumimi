@@ -563,9 +563,23 @@ impl Db {
         let escape = |value: &str| value.replace('\'', "''");
         let root = pattern.trim_end_matches("/*").trim_end_matches('/');
 
-        for (table, sub) in [("website_event", "events"), ("revenue", "revenue")] {
+        for (table, sub, columns) in [
+            ("website_event", "events", crate::schema::EVENT),
+            // The properties are a table of their own ⇒ ⇒ the archive holds
+            // them as one too, or the events would come back without what
+            // they were about.
+            ("event_data", "event_data", crate::schema::EVENT_DATA),
+            ("revenue", "revenue", crate::schema::REVENUE),
+        ] {
             let directory = format!("{root}/{sub}");
             if !has_parquet_files(std::path::Path::new(&directory)) {
+                // **The table is made anyway, empty** — a site without custom
+                // events has no property rows, and a site without revenue has
+                // no revenue rows ⇒ ⇒ the archive has no files for them ⇒ ⇒
+                // but the reports still ask for them ⇒ ⇒ and a missing table
+                // is an error, where an empty one is the answer.
+                let ddl = crate::schema::columns_ddl(columns, &crate::db::Duck);
+                conn.execute_batch(&format!("CREATE TABLE {table} ({ddl});"))?;
                 continue;
             }
             let glob = format!("{directory}/**/*.parquet");

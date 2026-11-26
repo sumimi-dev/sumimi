@@ -382,13 +382,21 @@ impl Storage for Db {
 }
 
 /// The tables of a site, as the statements name them.
-fn tables(layout: Layout, website_id: &str) -> (String, String) {
+fn tables(layout: Layout, website_id: &str) -> (String, String, String) {
     match layout {
         Layout::PerSite => {
             let alias = crate::db::site_alias(website_id);
-            (format!("{alias}.website_event"), format!("{alias}.revenue"))
+            (
+                format!("{alias}.website_event"),
+                format!("{alias}.revenue"),
+                format!("{alias}.event_data"),
+            )
         }
-        Layout::Flat => ("website_event".to_string(), "revenue".to_string()),
+        Layout::Flat => (
+            "website_event".to_string(),
+            "revenue".to_string(),
+            "event_data".to_string(),
+        ),
     }
 }
 
@@ -397,7 +405,7 @@ fn tables(layout: Layout, website_id: &str) -> (String, String) {
 /// ⇒ ⇒ The events and the revenue are in the site's own file; the site's row
 /// is in the main file and is not touched here.
 fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u64, u64)> {
-    let (events, revenue) = tables(layout, website_id);
+    let (events, revenue, properties) = tables(layout, website_id);
     let events = conn.execute(
         &format!("DELETE FROM {events} WHERE website_id = ?"),
         [website_id],
@@ -406,6 +414,12 @@ fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u6
         &format!("DELETE FROM {revenue} WHERE website_id = ?"),
         [website_id],
     )? as u64;
+    // The properties go with their events — they are not counted: the counts
+    // are the events' and the revenue's.
+    conn.execute(
+        &format!("DELETE FROM {properties} WHERE website_id = ?"),
+        [website_id],
+    )?;
     Ok((events, revenue))
 }
 
@@ -933,8 +947,7 @@ fn write_revenue(
     }
 
     for (website_id, records) in &by_site {
-        let (events_table, revenue_table) = tables(layout, website_id);
-        let _ = events_table;
+        let (_events_table, revenue_table, _properties_table) = tables(layout, website_id);
         let next_id: i64 = conn.query_row(
             &format!("SELECT COALESCE(MAX(id), 0) + 1 FROM {revenue_table}"),
             [],
@@ -983,11 +996,17 @@ fn delete_before(
     };
 
     for id in &sites {
-        let (events_table, revenue_table) = tables(layout, id);
+        let (events_table, revenue_table, properties_table) = tables(layout, id);
         revenue += conn.execute(
             &format!("DELETE FROM {revenue_table} WHERE website_id = ? AND created_at < ?"),
             duckdb::params![id, before],
         )? as u64;
+        // The properties go with their events — they are not counted: the
+        // counts are the events' and the revenue's.
+        conn.execute(
+            &format!("DELETE FROM {properties_table} WHERE website_id = ? AND created_at < ?"),
+            duckdb::params![id, before],
+        )?;
         events += conn.execute(
             &format!("DELETE FROM {events_table} WHERE website_id = ? AND created_at < ?"),
             duckdb::params![id, before],
@@ -1020,11 +1039,17 @@ fn prune(conn: &Connection, website: Option<&str>, layout: Layout) -> Result<(u6
     }
 
     for (id, cutoff) in &cutoffs {
-        let (events_table, revenue_table) = tables(layout, id);
+        let (events_table, revenue_table, properties_table) = tables(layout, id);
         revenue += conn.execute(
             &format!("DELETE FROM {revenue_table} WHERE website_id = ? AND created_at < ?"),
             duckdb::params![id, *cutoff],
         )? as u64;
+        // The properties go with their events — they are not counted: the
+        // counts are the events' and the revenue's.
+        conn.execute(
+            &format!("DELETE FROM {properties_table} WHERE website_id = ? AND created_at < ?"),
+            duckdb::params![id, *cutoff],
+        )?;
         events += conn.execute(
             &format!("DELETE FROM {events_table} WHERE website_id = ? AND created_at < ?"),
             duckdb::params![id, *cutoff],

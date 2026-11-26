@@ -41,6 +41,11 @@ pub struct BackupStats {
 const FLAT_EVENTS: &str = "sumimi_flat_events";
 /// The name of the view of the revenue.
 const FLAT_REVENUE: &str = "sumimi_flat_revenue";
+/// The name of the view of the **properties**.
+///
+/// The properties are a table of their own ⇒ ⇒ the archive holds them as one
+/// too: an event without its properties is not the same event.
+const FLAT_EVENT_DATA: &str = "sumimi_flat_event_data";
 
 /// Write the hot database to a Parquet archive, partitioned by day.
 ///
@@ -71,6 +76,7 @@ pub fn export(
 
     for (table, view, sub) in [
         ("website_event", FLAT_EVENTS, "events"),
+        ("event_data", FLAT_EVENT_DATA, "event_data"),
         ("revenue", FLAT_REVENUE, "revenue"),
     ] {
         let directory = out.join(sub);
