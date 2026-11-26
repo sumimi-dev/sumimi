@@ -152,6 +152,13 @@ fn b_visit(_hash: &str, visit: &str, inst: &str) -> String {
     uuid_text(&format!("'{inst}'||lpad(to_hex({visit}),12,'0')"))
 }
 
+/// **B's session id, as a blob**: the same sixteen bytes, but the column is
+/// a blob, so the engine may dictionary it (DICT_FSST) instead of bit
+/// packing it.
+fn b_session_blob(hash: &str, _visit: &str, _inst: &str) -> String {
+    format!("from_hex('{B_PREFIX}'||substr({hash},1,16))")
+}
+
 /// **A plain counter**: one number per visit, the way the identity line's
 /// design wants it (a per-site counter; the site's scope comes from the
 /// report's `website_id` filter, so it is not in the value).
@@ -182,6 +189,7 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "blob16selfdesc", ddl: "BLOB NOT NULL", value: blob16selfdesc, entropy_bits: 64 },
         Layout { name: "int4", ddl: "INTEGER NOT NULL", value: counter4, entropy_bits: 32 },
         Layout { name: "b8session", ddl: "UUID NOT NULL", value: b_session, entropy_bits: 64 },
+        Layout { name: "b8sessionblob", ddl: "BLOB NOT NULL", value: b_session_blob, entropy_bits: 64 },
         Layout { name: "b8visit", ddl: "UUID NOT NULL", value: b_visit, entropy_bits: 64 },
     ]
 }
@@ -217,6 +225,9 @@ fn pairs() -> Vec<Pair> {
         // the sixteen bytes are a constant prefix and only eight carry the
         // entropy — so the engine can compress them.
         Pair { name: "B", session: find("b8session"), visit: find("b8visit") },
+        // **B with the session column as a blob** — the shape that lets the
+        // engine dictionary it instead of bit packing it.
+        Pair { name: "B_blob", session: find("b8sessionblob"), visit: find("b8visit") },
     ]
 }
 
