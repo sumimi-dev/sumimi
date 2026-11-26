@@ -264,6 +264,7 @@ fn traffic(
     interleave: i64,
     days: i64,
     visit_stride: i64,
+    sites: i64,
 ) -> String {
     // **Which visit a row belongs to.**
     //
@@ -277,18 +278,49 @@ fn traffic(
     // `interleave` is how many visits are in flight at once: 1 is a quiet
     // site (the four events of a visit are neighbours), 4 is a busy one.
     let block = events_per_visit * interleave;
-    let visit_expr = format!(
-        "((i // {block}) * {interleave} + (i % {block}) % {interleave})"
+    // **Several sites, the way the service writes them.** The write path
+    // groups the hits by site (`reports.rs`), so the file holds one site's
+    // rows after another. A counter that was handed out at the tracker is
+    // therefore **not** increasing in the file: each site restarts from its
+    // own zero, and the file jumps back at every site's first row.
+    //
+    // The event id is the exception: its counter is handed out **while the
+    // rows are written** (`event_ids.next()` inside the append loop), so the
+    // file's order is the counter's order.
+    let per_site = rows / sites.max(1);
+    let row_var = if sites > 1 {
+        format!("(i % {per_site})")
+    } else {
+        "i".to_string()
+    };
+    let row_var_outer = if sites > 1 {
+        format!("(s.i % {per_site})")
+    } else {
+        "s.i".to_string()
+    };
+    let site_expr = if sites > 1 {
+        format!("(i // {per_site})")
+    } else {
+        "0".to_string()
+    };
+    let site_expr_outer = if sites > 1 {
+        format!("(s.i // {per_site})")
+    } else {
+        "0".to_string()
+    };
+    let visit_expr_tpl = format!(
+        "(({{ROW}} // {block}) * {interleave} + ({{ROW}} % {block}) % {interleave})"
     );
+    let visit_expr = visit_expr_tpl.replace("{ROW}", &row_var);
     // One visitor in five gets a fifth of the visits; the rest are spread out.
     // The same expression twice: once over the range, once over the subquery.
     let visitors_expr = format!(
         "CASE WHEN ({visit_expr}) % 5 = 0 THEN 0 ELSE (({visit_expr}) * 2654435761) % {{VISITORS}} END"
     );
-    let visitors_expr_outer = visitors_expr.replace("(i //", "(s.i //");
+    let visitors_expr_outer = visitors_expr.replace("(i //", "(s.i //").replace("(i %", "(s.i %");
     // The two hashes are computed once per row, in the subquery.
     // The visit's number, in the outer query (a counter's value).
-    let visit_expr_outer = visit_expr.replace("(i //", "(s.i //");
+    let visit_expr_outer = visit_expr_tpl.replace("{ROW}", &row_var_outer);
     // **The counter's ordinals can be spread out.** `visit_stride` puts a gap
     // between them: 1 = dense (every visit gets the next number), 7 = every
     // seventh visit gets a number. The engine's delta mode only ever sees the
@@ -301,6 +333,11 @@ fn traffic(
     };
     let session_value = (pair.session.value)("s.hs", &counter_expr, &instance_hex);
     let visit_value = (pair.visit.value)("s.hv", &counter_expr, &instance_hex);
+    let website_value = if sites > 1 {
+        format!("'w' || CAST({site_expr_outer} AS VARCHAR)")
+    } else {
+        "'w1'".to_string()
+    };
 
     format!(
         "INSERT INTO website_event
@@ -312,7 +349,7 @@ fn traffic(
           msclkid, ttclid, li_fat_id, twclid, lcp, inp, cls, fcp, ttfb, event_type,
           event_name, tag, data)
          SELECT {event_id_value} AS event_id,
-            'w1' AS website_id,
+            {website_value} AS website_id,
             {visit_value} AS visit_id,
             {session_value} AS session_id,
             '' AS ip,
@@ -349,14 +386,16 @@ fn traffic(
             0.01 AS lcp, 0.02 AS inp, 0.03 AS cls, 0.4 AS fcp, 0.8 AS ttfb,
             'pageview' AS event_type, '' AS event_name, '' AS tag, '' AS data
          FROM (SELECT i,
-                      sha256('v' || CAST({visitors_expr} AS VARCHAR)) AS hs,
-                      sha256('s' || CAST({visit_expr} AS VARCHAR)) AS hv
+                      sha256('v' || CAST({site_expr} AS VARCHAR) || ':' || CAST({visitors_expr} AS VARCHAR)) AS hs,
+                      sha256('s' || CAST({site_expr} AS VARCHAR) || ':' || CAST({visit_expr} AS VARCHAR)) AS hv
                FROM range(0, {{ROWS}}) t(i)) s",
         event_id_value = uuid_text(&format!("'{instance_hex}'||lpad(to_hex(s.i), 12, '0')")),
         visit_expr = visit_expr,
         SECONDS_PER_ROW = (days * 86_400) as f64 / rows as f64,
         visitors_expr = visitors_expr,
-        visitors_expr_outer = visitors_expr_outer
+        visitors_expr_outer = visitors_expr_outer,
+        site_expr = site_expr,
+        website_value = website_value
     )
 }
 
@@ -565,6 +604,7 @@ fn measure(
     days: i64,
     threads: i64,
     visit_stride: i64,
+    sites: i64,
 ) -> anyhow::Result<Row> {
     let path = dir.join(format!("{}.duckdb", pair.name));
     let _ = fs::remove_file(&path);
@@ -592,7 +632,7 @@ fn measure(
         ],
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
-    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride)
+    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
 
@@ -633,7 +673,10 @@ fn measure(
     // each distinct value plus the per-row index. Taking each column away
     // and comparing the files says what each one costs.
     let mut column_costs: Vec<(String, f64)> = Vec::new();
-    for column in ["session_id", "visit_id"] {
+    // The event id is the control: its counter is handed out while the rows
+    // are written, so the file's order is the counter's order — whatever the
+    // traffic looks like.
+    for column in ["session_id", "visit_id", "event_id"] {
         let file = dir.join(format!("{}-without-{column}.duckdb", pair.name));
         let _ = fs::remove_file(&file);
         let _ = conn.execute_batch("SET memory_limit='8GB'");
@@ -764,6 +807,7 @@ fn knobs(
     days: i64,
     events_per_visit: i64,
     visit_stride: i64,
+    sites: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts()
         .into_iter()
@@ -807,7 +851,7 @@ fn knobs(
         );
         conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
         let pair = Pair { name: "knobs", session: layout, visit: layout };
-        let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride)
+        let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
             .replace("{ROWS}", &rows.to_string())
             .replace("{VISITORS}", &visitors.to_string());
         conn.execute_batch(&sql)?;
@@ -856,6 +900,7 @@ fn debug_bisect(
     days: i64,
     events_per_visit: i64,
     visit_stride: i64,
+    sites: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts().into_iter().find(|l| l.name == "today").expect("today");
     let pair = Pair { name: "today", session: layout, visit: layout };
@@ -875,7 +920,7 @@ fn debug_bisect(
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
     let pair = Pair { name: "debug", session: layout, visit: layout };
-    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride)
+    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
     conn.execute_batch(&sql)?;
@@ -951,6 +996,7 @@ fn main() -> anyhow::Result<()> {
     let mut threads = 0i64;
     let mut events_per_visit = 4i64;
     let mut visit_stride = 1i64;
+    let mut sites = 1i64;
 
     let mut i = 0;
     while i < args.len() {
@@ -1012,6 +1058,10 @@ fn main() -> anyhow::Result<()> {
                 visit_stride = args[i + 1].parse()?;
                 i += 2;
             }
+            "--sites" => {
+                sites = args[i + 1].parse()?;
+                i += 2;
+            }
             "--interleave" => {
                 interleave = args[i + 1].parse()?;
                 i += 2;
@@ -1028,12 +1078,12 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&dir)?;
 
     if want_debug {
-        debug_bisect(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit, visit_stride)?;
+        debug_bisect(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit, visit_stride, sites)?;
         return Ok(());
     }
 
     if want_knobs {
-        knobs(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit, visit_stride)?;
+        knobs(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit, visit_stride, sites)?;
         return Ok(());
     }
 
@@ -1063,6 +1113,7 @@ fn main() -> anyhow::Result<()> {
             days,
             threads,
             visit_stride,
+            sites,
         )?);
     }
     // A name is either a pair (the two columns get different shapes) or a
@@ -1098,6 +1149,7 @@ fn main() -> anyhow::Result<()> {
             days,
             threads,
             visit_stride,
+            sites,
         )?;
         results.push(row);
     }
