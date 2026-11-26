@@ -197,6 +197,9 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "b8session", ddl: "UUID NOT NULL", value: b_session, entropy_bits: 64 },
         Layout { name: "b8sessionblob", ddl: "BLOB NOT NULL", value: b_session_blob, entropy_bits: 64 },
         Layout { name: "b8visitblob", ddl: "BLOB NOT NULL", value: b_visit_blob, entropy_bits: 64 },
+        // A uuid column that **asks** for the dictionary — does the engine
+        // honour it?
+        Layout { name: "uuid_dict", ddl: "UUID NOT NULL USING COMPRESSION dictionary", value: today, entropy_bits: 128 },
         Layout { name: "b8visit", ddl: "UUID NOT NULL", value: b_visit, entropy_bits: 64 },
     ]
 }
@@ -237,6 +240,9 @@ fn pairs() -> Vec<Pair> {
         Pair { name: "B_blob", session: find("b8sessionblob"), visit: find("b8visit") },
         // **Both columns as blobs** — the engine may then dictionary each.
         Pair { name: "B_blob2", session: find("b8sessionblob"), visit: find("b8visitblob") },
+        // **Can a uuid column use the dictionary?** The session column asks
+        // for it; the visit column stays as it is.
+        Pair { name: "B_dict", session: find("uuid_dict"), visit: find("b8visit") },
     ]
 }
 
