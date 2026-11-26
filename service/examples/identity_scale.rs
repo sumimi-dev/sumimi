@@ -112,6 +112,19 @@ fn blob12(hex: &str) -> String {
     format!("from_hex(substr({hex},1,24))")
 }
 
+/// The marker's layout in a **blob** carrier: sixteen bytes, the high half
+/// the marker, the low half the entropy. The value is a uuid's bytes, but
+/// the column is not a uuid — so the engine never bit packs it (⇒ no
+/// unpack) and the length is not the width (⇒ the marker still has to say).
+fn blob16marker(hex: &str) -> String {
+    format!("from_hex('ffffffffffffffff'||substr({hex},1,16))")
+}
+
+/// The same, with the self-describing marker.
+fn blob16selfdesc(hex: &str) -> String {
+    format!("from_hex('fffffffffffffffffffe'||substr({hex},1,16))")
+}
+
 /// The identity as one constant value: the file is then the row without the
 /// identity's cost, which is how the identity's share of the row is found.
 fn constant(_hex: &str) -> String {
@@ -131,6 +144,8 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "blob8", ddl: "BLOB NOT NULL", value: blob8, entropy_bits: 64 },
         Layout { name: "blob10", ddl: "BLOB NOT NULL", value: blob10, entropy_bits: 80 },
         Layout { name: "blob12", ddl: "BLOB NOT NULL", value: blob12, entropy_bits: 96 },
+        Layout { name: "blob16marker", ddl: "BLOB NOT NULL", value: blob16marker, entropy_bits: 64 },
+        Layout { name: "blob16selfdesc", ddl: "BLOB NOT NULL", value: blob16selfdesc, entropy_bits: 64 },
     ]
 }
 
