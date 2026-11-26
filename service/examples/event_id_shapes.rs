@@ -527,6 +527,8 @@ struct Row {
     name: String,
     hot_b_per_row: f64,
     id_b_per_row: f64,
+    identity_b_per_row: f64,
+    others_b_per_row: f64,
     cold_b_per_row: f64,
     write_ms: f64,
     how: String,
@@ -627,6 +629,34 @@ fn measure(
     let _ = conn.execute_batch(&format!("SET memory_limit='{memory_limit}'"));
     let id_b_per_row = hot_b_per_row - without_b_per_row;
 
+    // And the same table without the two **identity** columns as well: the
+    // difference is what those two take, and what is left is the other
+    // forty-eight columns.
+    let others = dir.join(format!("{}-others.duckdb", shape.name));
+    let _ = fs::remove_file(&others);
+    let _ = conn.execute_batch("SET memory_limit='8GB'");
+    let mut excluded = id_names.clone();
+    excluded.push("session_id".to_string());
+    excluded.push("visit_id".to_string());
+    let others_b_per_row = match (|| -> anyhow::Result<f64> {
+        conn.execute_batch(&format!("ATTACH '{}' AS others_db", others.display()))?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE others_db.website_event AS SELECT * EXCLUDE ({}) FROM website_event",
+            excluded.join(", ")
+        ))?;
+        conn.execute_batch("DETACH others_db")?;
+        Ok(fs::metadata(&others)?.len() as f64 / rows as f64)
+    })() {
+        Ok(value) => value,
+        Err(e) => {
+            println!("    (the copy without the identity columns failed: {e})");
+            f64::NAN
+        }
+    };
+    let _ = fs::remove_file(&others);
+    let _ = conn.execute_batch(&format!("SET memory_limit='{memory_limit}'"));
+    let identity_b_per_row = without_b_per_row - others_b_per_row;
+
     // The cold tier: the archive's copy.
     let mut cold_b_per_row = f64::NAN;
     if parquet {
@@ -666,6 +696,8 @@ fn measure(
         name: shape.name.to_string(),
         hot_b_per_row,
         id_b_per_row,
+        identity_b_per_row,
+        others_b_per_row,
         cold_b_per_row,
         write_ms,
         how,
@@ -781,9 +813,11 @@ fn main() -> anyhow::Result<()> {
             "-".to_string()
         };
         println!(
-            "    hot {hot:>8.2} B/row   the id {id:>7.2}   cold {cold:>8}   write {write:.0} ms",
+            "    hot {hot:>8.2} B/row   the id {id:>6.2}   the two identity columns {ident:>6.2}   the other columns {others:>6.2}   cold {cold:>8}   write {write:.0} ms",
             hot = row.hot_b_per_row,
             id = row.id_b_per_row,
+            ident = row.identity_b_per_row,
+            others = row.others_b_per_row,
             write = row.write_ms
         );
         println!("    stored as: {}", row.how);
