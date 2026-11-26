@@ -243,6 +243,12 @@ fn pairs() -> Vec<Pair> {
         // **Can a uuid column use the dictionary?** The session column asks
         // for it; the visit column stays as it is.
         Pair { name: "B_dict", session: find("uuid_dict"), visit: find("b8visit") },
+        // **The visitor column as a blob of other widths** — the visit column
+        // is `B`'s, so only the visitor's carrier changes. DuckDB inlines a
+        // string of 12 bytes or less; a longer one lives on the heap, and
+        // every row of a dictionary pays for materialising it.
+        Pair { name: "blob8_bvisit", session: find("blob8"), visit: find("b8visit") },
+        Pair { name: "blob12_bvisit", session: find("blob12"), visit: find("b8visit") },
     ]
 }
 
