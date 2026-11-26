@@ -129,6 +129,21 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
     let composed = "from_hex(substr(hex(instance_id), 1, 20) || lpad(to_hex(num), 12, '0'))";
 
     vec![
+        // auto int — a plain sequence in a `BIGINT` column: **what the id
+        // was before it was ours** (`service/examples/id_disk.rs` 的
+        // `rowid_expression` 就是 `CAST(i AS BIGINT)`). It gives up three
+        // things (the id repeats after a site moves, it is not stable
+        // against deletes, and it is not a uuid to hand out) — this measures
+        // what it buys.
+        Shape {
+            name: "autoint",
+            columns: vec![("event_id".to_string(), "BIGINT NOT NULL".to_string())],
+            select: vec!["CAST(s.i + 1 AS BIGINT)".to_string()],
+            id: "event_id".to_string(),
+            stored: "event_id".to_string(),
+            pair: "event_id".to_string(),
+            order: "event_id DESC".to_string(),
+        },
         // 乙 — today's shape: one packed 128-bit uuid.
         Shape {
             name: "uuid16",
@@ -225,16 +240,27 @@ fn traffic(shape: &Shape, rows: i64, interleave: i64, days: i64) -> String {
     let id_columns: Vec<String> = shape.columns.iter().map(|(name, _)| name.clone()).collect();
     let id_values: Vec<String> = shape.select.clone();
 
+    // The id's columns come first; with the rowid shape there are none, so
+    // the list is built rather than pasted.
+    let mut insert_columns = id_columns.clone();
+    insert_columns.extend(
+        [
+            "website_id", "visit_id", "session_id", "ip", "ip_prefix", "user_agent", "user_id",
+            "created_at", "url_path", "url_query", "page_title", "referrer_domain", "referrer_path",
+            "referrer_query", "referrer_name", "hostname", "channel", "browser", "browser_version",
+            "os", "os_version", "device", "screen", "language", "country", "region", "city",
+            "latitude", "longitude", "utm_source", "utm_medium", "utm_campaign", "utm_content",
+            "utm_term", "gclid", "fbclid", "msclkid", "ttclid", "li_fat_id", "twclid", "lcp", "inp",
+            "cls", "fcp", "ttfb", "event_type", "event_name", "tag", "data",
+        ]
+        .iter()
+        .map(|name| name.to_string()),
+    );
+
     format!(
         "INSERT INTO website_event
-         ({id_columns}, website_id, visit_id, session_id, ip, ip_prefix, user_agent, user_id,
-          created_at, url_path, url_query, page_title, referrer_domain, referrer_path,
-          referrer_query, referrer_name, hostname, channel, browser, browser_version, os,
-          os_version, device, screen, language, country, region, city, latitude, longitude,
-          utm_source, utm_medium, utm_campaign, utm_content, utm_term, gclid, fbclid,
-          msclkid, ttclid, li_fat_id, twclid, lcp, inp, cls, fcp, ttfb, event_type,
-          event_name, tag, data)
-         SELECT {id_values},
+         ({id_columns})
+         SELECT {id_values}
             'w1' AS website_id,
             {visit_value} AS visit_id,
             {session_value} AS session_id,
@@ -275,8 +301,15 @@ fn traffic(shape: &Shape, rows: i64, interleave: i64, days: i64) -> String {
                       sha256('v' || CAST({visitors_expr} AS VARCHAR)) AS hs,
                       sha256('s' || CAST({visit_expr} AS VARCHAR)) AS hv
                FROM range(0, {{ROWS}}) t(i)) s",
-        id_columns = id_columns.join(", "),
-        id_values = id_values.join(", "),
+        id_columns = insert_columns.join(", "),
+        // Each id value carries its own trailing comma, so the rowid shape
+        // (no id column at all) leaves the list empty rather than starting
+        // it with a comma.
+        id_values = id_values
+            .iter()
+            .map(|value| format!("{value}, "))
+            .collect::<Vec<String>>()
+            .join(""),
         visit_value = uuid_text("s.hv"),
         session_value = uuid_text("s.hs"),
         visit_expr = visit_expr,
