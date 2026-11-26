@@ -126,6 +126,22 @@ fn blob16selfdesc(hex: &str, _visit: &str) -> String {
     format!("from_hex('fffffffffffffffffffe'||substr({hex},1,16))")
 }
 
+/// **B's prefix**: eight constant bytes in front, so the engine's bit
+/// packing eats them and only the entropy is left. The marker is the
+/// tool's own: a run of ones with a zero in the last byte, so the position
+/// of the zero says how wide the entropy is.
+const B_PREFIX: &str = "fffffffffffffffe";
+
+/// **B's session id**: the visitor's identity in the low eight bytes.
+fn b_session(hash: &str, _visit: &str) -> String {
+    uuid_text(&format!("'{B_PREFIX}'||substr({hash},1,16)"))
+}
+
+/// **B's visit id**: the per-site counter in the low eight bytes.
+fn b_visit(_hash: &str, visit: &str) -> String {
+    uuid_text(&format!("'{B_PREFIX}'||lpad(to_hex({visit}),16,'0')"))
+}
+
 /// **A plain counter**: one number per visit, the way the identity line's
 /// design wants it (a per-site counter; the site's scope comes from the
 /// report's `website_id` filter, so it is not in the value).
@@ -155,6 +171,8 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "blob16marker", ddl: "BLOB NOT NULL", value: blob16marker, entropy_bits: 64 },
         Layout { name: "blob16selfdesc", ddl: "BLOB NOT NULL", value: blob16selfdesc, entropy_bits: 64 },
         Layout { name: "int4", ddl: "INTEGER NOT NULL", value: counter4, entropy_bits: 32 },
+        Layout { name: "b8session", ddl: "UUID NOT NULL", value: b_session, entropy_bits: 64 },
+        Layout { name: "b8visit", ddl: "UUID NOT NULL", value: b_visit, entropy_bits: 64 },
     ]
 }
 
@@ -185,6 +203,10 @@ fn pairs() -> Vec<Pair> {
         // the two halves of the target, isolated
         Pair { name: "blob12_uuid16", session: find("blob12"), visit: find("today") },
         Pair { name: "uuid16_int4", session: find("today"), visit: find("int4") },
+        // **B**: both identity columns keep the uuid shape, but eight of
+        // the sixteen bytes are a constant prefix and only eight carry the
+        // entropy — so the engine can compress them.
+        Pair { name: "B", session: find("b8session"), visit: find("b8visit") },
     ]
 }
 
