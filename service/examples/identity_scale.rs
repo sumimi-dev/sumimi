@@ -451,6 +451,7 @@ fn measure(
     repeats: usize,
     interleave: i64,
     days: i64,
+    threads: i64,
 ) -> anyhow::Result<Row> {
     let path = dir.join(format!("{}.duckdb", layout.name));
     let _ = fs::remove_file(&path);
@@ -461,6 +462,9 @@ fn measure(
 
     let conn = Connection::open(&path)?;
     conn.execute_batch(&format!("SET temp_directory='{}'", dir.display()))?;
+    if threads > 0 {
+        conn.execute_batch(&format!("SET threads={threads}"))?;
+    }
     // The load is given room: the service writes row by row through an
     // appender, so it never holds a table's worth of rows, while this
     // harness's one statement does. The queries below run under the
@@ -797,6 +801,7 @@ fn main() -> anyhow::Result<()> {
     let mut interleave = 4i64;
     let mut days = 90i64;
     let mut baseline = false;
+    let mut threads = 0i64;
 
     let mut i = 0;
     while i < args.len() {
@@ -846,6 +851,10 @@ fn main() -> anyhow::Result<()> {
                 days = args[i + 1].parse()?;
                 i += 2;
             }
+            "--threads" => {
+                threads = args[i + 1].parse()?;
+                i += 2;
+            }
             "--interleave" => {
                 interleave = args[i + 1].parse()?;
                 i += 2;
@@ -893,6 +902,7 @@ fn main() -> anyhow::Result<()> {
             repeats,
             interleave,
             days,
+            threads,
         )?);
     }
     for layout in layouts() {
@@ -911,6 +921,7 @@ fn main() -> anyhow::Result<()> {
             repeats,
             interleave,
             days,
+            threads,
         )?;
         results.push(row);
     }
