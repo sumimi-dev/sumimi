@@ -200,6 +200,7 @@ fn pairs() -> Vec<Pair> {
 fn traffic(
     pair: &Pair,
     rows: i64,
+    events_per_visit: i64,
     visitors: i64,
     instance_hex: &str,
     interleave: i64,
@@ -216,7 +217,6 @@ fn traffic(
     //
     // `interleave` is how many visits are in flight at once: 1 is a quiet
     // site (the four events of a visit are neighbours), 4 is a busy one.
-    let events_per_visit = 4i64;
     let block = events_per_visit * interleave;
     let visit_expr = format!(
         "((i // {block}) * {interleave} + (i % {block}) % {interleave})"
@@ -471,6 +471,7 @@ struct Row {
     duckdb_b_per_row: f64,
     parquet_b_per_row: f64,
     without_b_per_row: f64,
+    column_costs: Vec<(String, f64)>,
     parquet_write_ms: f64,
     parquet_timings: Vec<(String, f64)>,
     write_ms: f64,
@@ -485,6 +486,7 @@ struct Row {
 fn measure(
     pair: &Pair,
     rows: i64,
+    events_per_visit: i64,
     visitors: i64,
     memory_limit: &str,
     dir: &Path,
@@ -520,7 +522,7 @@ fn measure(
         ],
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
-    let sql = traffic(&pair, rows, visitors, &instance_hex, interleave, days)
+    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
 
@@ -541,17 +543,43 @@ fn measure(
     let without = dir.join(format!("{}-without.duckdb", pair.name));
     let _ = fs::remove_file(&without);
     let _ = conn.execute_batch("SET memory_limit='8GB'");
+    // DuckDB 2.0 has no `COPY ... (FORMAT DUCKDB)`, so the comparison copy is
+    // a database file of its own, attached.
     let without_b_per_row = (|| -> anyhow::Result<f64> {
-        conn.execute_batch(&format!(
-            "COPY (SELECT * EXCLUDE (session_id, visit_id) FROM website_event) \
-             TO '{}' (FORMAT DUCKDB);",
-            without.display()
-        ))?;
+        conn.execute_batch(&format!("ATTACH '{}' AS without_db", without.display()))?;
+        conn.execute_batch(
+            "CREATE TABLE without_db.website_event AS \
+             SELECT * EXCLUDE (session_id, visit_id) FROM website_event",
+        )?;
+        conn.execute_batch("DETACH without_db")?;
         Ok(fs::metadata(&without)?.len() as f64 / rows as f64)
     })()
     .unwrap_or(f64::NAN);
     let _ = fs::remove_file(&without);
     let _ = conn.execute_batch(&format!("SET memory_limit='{memory_limit}'"));
+
+    // **The two identity columns, one at a time.** They repeat heavily in the
+    // event table, so their cost is not a per-row cost: it is the width of
+    // each distinct value plus the per-row index. Taking each column away
+    // and comparing the files says what each one costs.
+    let mut column_costs: Vec<(String, f64)> = Vec::new();
+    for column in ["session_id", "visit_id"] {
+        let file = dir.join(format!("{}-without-{column}.duckdb", pair.name));
+        let _ = fs::remove_file(&file);
+        let _ = conn.execute_batch("SET memory_limit='8GB'");
+        let outcome = (|| -> anyhow::Result<f64> {
+            conn.execute_batch(&format!("ATTACH '{}' AS one_db", file.display()))?;
+            conn.execute_batch(&format!(
+                "CREATE TABLE one_db.website_event AS \
+                 SELECT * EXCLUDE ({column}) FROM website_event"
+            ))?;
+            conn.execute_batch("DETACH one_db")?;
+            Ok(fs::metadata(&file)?.len() as f64 / rows as f64)
+        })();
+        let _ = fs::remove_file(&file);
+        let _ = conn.execute_batch(&format!("SET memory_limit='{memory_limit}'"));
+        column_costs.push((column.to_string(), outcome.unwrap_or(f64::NAN)));
+    }
 
     // The cold tier: the backup's copy, and the queries the archive answers.
     let mut parquet_write_ms = f64::NAN;
@@ -643,6 +671,7 @@ fn measure(
         duckdb_b_per_row,
         parquet_b_per_row,
         without_b_per_row,
+        column_costs,
         parquet_write_ms,
         parquet_timings,
         write_ms,
@@ -663,6 +692,7 @@ fn knobs(
     memory_limit: &str,
     interleave: i64,
     days: i64,
+    events_per_visit: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts()
         .into_iter()
@@ -706,7 +736,7 @@ fn knobs(
         );
         conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
         let pair = Pair { name: "knobs", session: layout, visit: layout };
-        let sql = traffic(&pair, rows, visitors, &instance_hex, interleave, days)
+        let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days)
             .replace("{ROWS}", &rows.to_string())
             .replace("{VISITORS}", &visitors.to_string());
         conn.execute_batch(&sql)?;
@@ -753,6 +783,7 @@ fn debug_bisect(
     memory_limit: &str,
     interleave: i64,
     days: i64,
+    events_per_visit: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts().into_iter().find(|l| l.name == "today").expect("today");
     let pair = Pair { name: "today", session: layout, visit: layout };
@@ -772,7 +803,7 @@ fn debug_bisect(
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
     let pair = Pair { name: "debug", session: layout, visit: layout };
-    let sql = traffic(&pair, rows, visitors, &instance_hex, interleave, days)
+    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
     conn.execute_batch(&sql)?;
@@ -846,6 +877,7 @@ fn main() -> anyhow::Result<()> {
     let mut days = 90i64;
     let mut baseline = false;
     let mut threads = 0i64;
+    let mut events_per_visit = 4i64;
 
     let mut i = 0;
     while i < args.len() {
@@ -899,6 +931,10 @@ fn main() -> anyhow::Result<()> {
                 threads = args[i + 1].parse()?;
                 i += 2;
             }
+            "--events-per-visit" => {
+                events_per_visit = args[i + 1].parse()?;
+                i += 2;
+            }
             "--interleave" => {
                 interleave = args[i + 1].parse()?;
                 i += 2;
@@ -915,12 +951,12 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&dir)?;
 
     if want_debug {
-        debug_bisect(&dir, rows, visitors, &memory_limit, interleave, days)?;
+        debug_bisect(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit)?;
         return Ok(());
     }
 
     if want_knobs {
-        knobs(&dir, rows, visitors, &memory_limit, interleave, days)?;
+        knobs(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit)?;
         return Ok(());
     }
 
@@ -940,6 +976,7 @@ fn main() -> anyhow::Result<()> {
         results.push(measure(
             &pair,
             rows,
+            events_per_visit,
             visitors,
             &memory_limit,
             &dir,
@@ -973,6 +1010,7 @@ fn main() -> anyhow::Result<()> {
         let row = measure(
             &pair,
             rows,
+            events_per_visit,
             visitors,
             &memory_limit,
             &dir,
@@ -1102,6 +1140,17 @@ fn main() -> anyhow::Result<()> {
             }
         }
         if same {
+            println!(
+                "\n== the identity columns, one at a time (B/row) ==",
+            );
+            for row in &results {
+                let parts: Vec<String> = row
+                    .column_costs
+                    .iter()
+                    .map(|(column, size)| format!("{column} {size:.2}"))
+                    .collect();
+                println!("  {:<16} {}", row.layout, parts.join("  ·  "));
+            }
             println!(
                 "\n(the counts agree across every layout: {} visitors, {} visits)",
                 base.visitors, base.visits
