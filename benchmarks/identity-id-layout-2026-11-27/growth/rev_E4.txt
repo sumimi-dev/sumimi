@@ -1,0 +1,52 @@
+# 2000000 rows, 200000 visitors, memory_limit=256MB, interleave=4, 90 days
+
+  the layout   entropy  duckdb B parquet B  no-ids B  ids cost    write s
+  today           256     44.44       NaN     12.33     32.11        5.6
+  B_blob          128     17.05       NaN     12.33      4.72        4.8
+  blob16random_bvisit    192     17.83       NaN     12.33      5.51        4.8
+  blob12_bvisit    160     17.05       NaN     12.33      4.72        4.8
+  blob8_bvisit    128     16.26       NaN     12.33      3.93        4.8
+  blob6_bvisit    112     15.87       NaN     12.33      3.54        4.8
+
+  the layout        scan  scanhash  distinct    summary    summary×2      bounces summary30d
+  today              1.2       3.7       5.1       19.2          8.0         20.0        9.2
+  B_blob             3.1       4.4       5.8       26.1          8.4         26.3       12.6
+  blob16random_bvisit       1.6       3.6       5.0       24.9          7.5         26.1       12.0
+  blob12_bvisit       1.9       3.8       4.5       24.5          6.9         26.3       12.0
+  blob8_bvisit       1.7       3.7       4.7       24.5          6.8         26.6       11.7
+  blob6_bvisit       2.0       3.9       4.5       24.4          7.1         26.3       11.7
+
+  the layout    breakdown  event log    mem MiB spill MiB visitors
+  today               9.7        2.9       84.8      0.0   160001
+  B_blob             12.8        2.9       32.5      0.0   160001
+  blob16random_bvisit       11.9        3.0       34.0      0.0   160001
+  blob12_bvisit       11.0        3.0       32.5      0.0   160001
+  blob8_bvisit       10.6        3.2       31.0      0.0   160001
+  blob6_bvisit       10.9        3.0       30.2      0.0   160001
+
+== the cold tier: the export, and the archive's read path ==
+  the layout     export s    scan ms distinct ms   summary ms
+  today               NaN        oom        oom          oom
+  B_blob              NaN        oom        oom          oom
+  blob16random_bvisit        NaN        oom        oom          oom
+  blob12_bvisit        NaN        oom        oom          oom
+  blob8_bvisit        NaN        oom        oom          oom
+  blob6_bvisit        NaN        oom        oom          oom
+
+== how the engine stores the identity columns ==
+  today        session_id=Constant session_id=Uncompressed visit_id=Constant visit_id=Uncompressed
+  B_blob       session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  blob16random_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  blob12_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  blob8_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  blob6_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+
+== the identity columns, one at a time (B/row) ==
+  today            session_id 28.45  ·  visit_id 28.45  ·  event_id 44.57
+  B_blob           session_id 12.72  ·  visit_id 16.52  ·  event_id 16.91
+  blob16random_bvisit session_id 12.72  ·  visit_id 17.44  ·  event_id 17.83
+  blob12_bvisit    session_id 12.72  ·  visit_id 16.52  ·  event_id 16.91
+  blob8_bvisit     session_id 12.72  ·  visit_id 15.87  ·  event_id 16.26
+  blob6_bvisit     session_id 12.72  ·  visit_id 15.47  ·  event_id 15.73
+
+(the counts agree across every layout: 160001 visitors, 500000 visits)

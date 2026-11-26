@@ -1,0 +1,22 @@
+# 2000000 rows, 200000 visitors, memory_limit=256MB, interleave=4, 90 days
+
+  the layout   entropy  duckdb B parquet B  no-ids B  ids cost    write s
+  today           256     44.44       NaN     12.33     32.11        5.8
+
+  the layout        scan  scanhash  distinct    summary    summary×2      bounces summary30d
+  today              1.1       3.7       5.2       20.0          8.1         21.7        9.6
+
+  the layout    breakdown  event log    mem MiB spill MiB visitors
+  today              10.1        3.0       84.8      0.0   160001
+
+== the cold tier: the export, and the archive's read path ==
+  the layout     export s    scan ms distinct ms   summary ms
+  today               NaN        oom        oom          oom
+
+== how the engine stores the identity columns ==
+  today        session_id=Constant session_id=Uncompressed visit_id=Constant visit_id=Uncompressed
+
+== the identity columns, one at a time (B/row) ==
+  today            session_id 28.45  ·  visit_id 28.45  ·  event_id 44.57
+
+(the counts agree across every layout: 160001 visitors, 500000 visits)
