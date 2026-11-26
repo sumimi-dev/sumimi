@@ -64,7 +64,7 @@ fn shapes() -> Vec<(&'static str, &'static str, String)> {
         // The self-describing marker: ones down to a single zero, whose
         // position says how wide the entropy is.
         (
-            "self-describing + 8 entropy",
+            "self-describing + 8 BITS of entropy",
             "UUID",
             format!(
                 "CAST(from_hex('{}' || substr({r}, 1, 2)) AS UUID)",
@@ -72,7 +72,7 @@ fn shapes() -> Vec<(&'static str, &'static str, String)> {
             ),
         ),
         (
-            "self-describing + 16 entropy",
+            "self-describing + 16 BITS of entropy",
             "UUID",
             format!(
                 "CAST(from_hex('{}' || substr({r}, 1, 4)) AS UUID)",
@@ -80,11 +80,38 @@ fn shapes() -> Vec<(&'static str, &'static str, String)> {
             ),
         ),
         (
-            "self-describing + 32 entropy",
+            "self-describing + 32 BITS of entropy",
             "UUID",
             format!(
                 "CAST(from_hex('{}' || substr({r}, 1, 8)) AS UUID)",
                 marker(12)
+            ),
+        ),
+        // **The self-describing marker with a real id's worth of entropy**:
+        // the marker is as long as the entropy is short, and the zero that
+        // ends the marker says where the entropy starts.
+        (
+            "self-describing + 8 BYTES of entropy",
+            "UUID",
+            format!(
+                "CAST(from_hex('{}' || substr({r}, 1, 16)) AS UUID)",
+                marker(8)
+            ),
+        ),
+        (
+            "self-describing + 10 BYTES of entropy",
+            "UUID",
+            format!(
+                "CAST(from_hex('{}' || substr({r}, 1, 20)) AS UUID)",
+                marker(6)
+            ),
+        ),
+        (
+            "self-describing + 12 BYTES of entropy",
+            "UUID",
+            format!(
+                "CAST(from_hex('{}' || substr({r}, 1, 24)) AS UUID)",
+                marker(4)
             ),
         ),
         // The site's own constant in the high half (the other candidate for
@@ -348,6 +375,22 @@ fn main() -> anyhow::Result<()> {
             "marker 8B + 8 entropy each",
             "CAST(from_hex('ffffffffffffffff' || substr(md5(i::VARCHAR), 1, 16)) AS UUID)".to_string(),
             "CAST(from_hex('ffffffffffffffff' || substr(md5((i + 1)::VARCHAR), 1, 16)) AS UUID)".to_string(),
+        ),
+        (
+            "self-describing + 8 BYTES of entropy each",
+            format!("CAST(from_hex('{}' || substr(md5(i::VARCHAR), 1, 16)) AS UUID)", marker(8)),
+            format!(
+                "CAST(from_hex('{}' || substr(md5((i + 1)::VARCHAR), 1, 16)) AS UUID)",
+                marker(8)
+            ),
+        ),
+        (
+            "self-describing + 12 BYTES of entropy each",
+            format!("CAST(from_hex('{}' || substr(md5(i::VARCHAR), 1, 24)) AS UUID)", marker(4)),
+            format!(
+                "CAST(from_hex('{}' || substr(md5((i + 1)::VARCHAR), 1, 24)) AS UUID)",
+                marker(4)
+            ),
         ),
         (
             "self-describing + 8 entropy each",
