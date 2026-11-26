@@ -210,6 +210,35 @@ fn grow12to16(hash: &str, visitor: &str, _inst: &str) -> String {
     )
 }
 
+/// **The session id with a time bucket in front**: two bytes of hour, then
+/// six bytes of the visitor's hash.
+///
+/// The bucket is the hour **the row** falls in — the server keeps no state
+/// per visitor beyond the idle window, so there is no session's own hour to
+/// use. That is the point of the shape: a visitor who comes back in another
+/// hour is another id, so the id stops linking one visitor across hours.
+/// It is also what makes it dearer: the same visitor now has several ids,
+/// so the dictionary has more entries and each of them is used less often.
+fn bucket8(hash: &str, _visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(lpad(to_hex(CAST(s.i / {{BUCKET_ROWS}} AS BIGINT)), 4, '0') || substr({hash},1,12))"
+    )
+}
+
+/// The same, bucketed by the **day** — a wider bucket splits fewer visitors.
+fn bucket8day(hash: &str, _visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(lpad(to_hex(CAST(s.i / {{BUCKET_DAY_ROWS}} AS BIGINT)), 4, '0') || substr({hash},1,12))"
+    )
+}
+
+/// The bucket that splits nobody: the prefix is the same in every row. It is
+/// the best case a bucket can have — the shape's ceiling, measured against
+/// the same hash without any bucket at all.
+fn bucket8const(hash: &str, _visitor: &str, _inst: &str) -> String {
+    format!("from_hex('0000' || substr({hash},1,12))")
+}
+
 /// **A plain counter**: one number per visit, the way the identity line's
 /// design wants it (a per-site counter; the site's scope comes from the
 /// report's `website_id` filter, so it is not in the value).
@@ -237,6 +266,12 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "blob10", ddl: "BLOB NOT NULL", value: blob10, entropy_bits: 80 },
         Layout { name: "blob12", ddl: "BLOB NOT NULL", value: blob12, entropy_bits: 96 },
         Layout { name: "blob16random", ddl: "BLOB NOT NULL", value: blob16random, entropy_bits: 128 },
+        // **The time bucket in front of the hash** — the id stops linking a
+        // visitor across hours. The entropy is the hash's 48 bits; the bucket
+        // is not entropy, it is the time the row belongs to.
+        Layout { name: "bucket8", ddl: "BLOB NOT NULL", value: bucket8, entropy_bits: 48 },
+        Layout { name: "bucket8day", ddl: "BLOB NOT NULL", value: bucket8day, entropy_bits: 48 },
+        Layout { name: "bucket8const", ddl: "BLOB NOT NULL", value: bucket8const, entropy_bits: 48 },
         Layout { name: "blob16marker", ddl: "BLOB NOT NULL", value: blob16marker, entropy_bits: 64 },
         Layout { name: "blob16selfdesc", ddl: "BLOB NOT NULL", value: blob16selfdesc, entropy_bits: 64 },
         Layout { name: "int4", ddl: "INTEGER NOT NULL", value: counter4, entropy_bits: 32 },
@@ -306,6 +341,10 @@ fn pairs() -> Vec<Pair> {
         // depends on the visitor's number, so the file holds rows of
         // different widths — that is what an upgrade looks like on disk.
         Pair { name: "blob6_bvisit", session: find("blob6"), visit: find("b8visit") },
+        // **The bucketed session id**, against the same hash without a bucket.
+        Pair { name: "bucket8_bvisit", session: find("bucket8"), visit: find("b8visit") },
+        Pair { name: "bucket8day_bvisit", session: find("bucket8day"), visit: find("b8visit") },
+        Pair { name: "bucket8const_bvisit", session: find("bucket8const"), visit: find("b8visit") },
         Pair { name: "grow6to8_bvisit", session: find("grow6to8"), visit: find("b8visit") },
         Pair { name: "grow6to12_bvisit", session: find("grow6to12"), visit: find("b8visit") },
         Pair { name: "grow8to12_bvisit", session: find("grow8to12"), visit: find("b8visit") },
@@ -706,10 +745,15 @@ fn measure(
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
     // The growth split: by default half the visitors are on the narrow form.
     let grow_visitors = if grow_visitors > 0 { grow_visitors } else { visitors / 2 };
+    // **The time bucket**: how many rows make an hour of the model's
+    // timeline. The bucketed layouts divide the row's number by it.
+    let bucket_rows = (rows / (days * 24).max(1)).max(1);
     let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string())
-        .replace("{GROW_VISITORS}", &grow_visitors.to_string());
+        .replace("{GROW_VISITORS}", &grow_visitors.to_string())
+        .replace("{BUCKET_ROWS}", &bucket_rows.to_string())
+        .replace("{BUCKET_DAY_ROWS}", &(bucket_rows * 24).to_string());
 
     let started = Instant::now();
     conn.execute_batch(&sql)?;
