@@ -1,0 +1,64 @@
+# 2000000 rows, 200000 visitors, memory_limit=256MB, interleave=4, 90 days
+
+  the layout   entropy  duckdb B parquet B  no-ids B  ids cost    write s
+  blob6_bvisit    112     17.18       NaN     12.33      4.85        4.6
+  blob8_bvisit    128     18.09       NaN     12.33      5.77        4.7
+  blob12_bvisit    160     19.54       NaN     12.33      7.21        4.6
+  grow6to8_bvisit    112     17.70       NaN     12.33      5.37        4.5
+  grow6to12_bvisit    112     18.62       NaN     12.33      6.29        4.6
+  grow8to16_bvisit    128     19.54       NaN     12.33      7.21        4.7
+  grow12to16_bvisit    160     20.45       NaN     12.33      8.13        4.7
+  B_blob          128     19.14       NaN     12.33      6.82        4.7
+
+  the layout        scan  scanhash  distinct    summary    summary×2      bounces summary30d
+  blob6_bvisit       2.5       4.9      10.1       34.8         12.5         34.7       15.0
+  blob8_bvisit       2.1       4.3       8.0       34.0         10.6         35.6       14.1
+  blob12_bvisit       2.4       4.7       8.4       32.7         10.9         34.8       14.0
+  grow6to8_bvisit       2.5       4.9      10.6       34.9         12.8         35.3       15.3
+  grow6to12_bvisit       2.7       5.0       8.8       32.8         10.8         35.9       15.0
+  grow8to16_bvisit       2.2       4.6      11.1       36.7         14.6         36.4       15.8
+  grow12to16_bvisit       2.4       4.7      11.8       37.3         14.4         35.1       16.0
+  B_blob             4.3       5.8      11.0       37.5         14.2         36.6       16.0
+
+  the layout    breakdown  event log    mem MiB spill MiB visitors
+  blob6_bvisit       14.5        2.9       32.8      0.0   160001
+  blob8_bvisit       14.6        2.8       34.5      0.0   160001
+  blob12_bvisit       14.7        2.9       37.2      0.0   160001
+  grow6to8_bvisit       15.7        3.1       33.8      0.0   160001
+  grow6to12_bvisit       16.3        3.0       35.5      0.0   160001
+  grow8to16_bvisit       17.1        2.9       37.2      0.0   160001
+  grow12to16_bvisit       17.1        2.9       39.0      0.0   160001
+  B_blob             18.1        3.0       36.5      0.0   160001
+
+== the cold tier: the export, and the archive's read path ==
+  the layout     export s    scan ms distinct ms   summary ms
+  blob6_bvisit        NaN        oom        oom          oom
+  blob8_bvisit        NaN        oom        oom          oom
+  blob12_bvisit        NaN        oom        oom          oom
+  grow6to8_bvisit        NaN        oom        oom          oom
+  grow6to12_bvisit        NaN        oom        oom          oom
+  grow8to16_bvisit        NaN        oom        oom          oom
+  grow12to16_bvisit        NaN        oom        oom          oom
+  B_blob              NaN        oom        oom          oom
+
+== how the engine stores the identity columns ==
+  blob6_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  blob8_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  blob12_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  grow6to8_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  grow6to12_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  grow8to16_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  grow12to16_bvisit session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+  B_blob       session_id=Constant session_id=DICT_FSST visit_id=BitPacking visit_id=Constant
+
+== the identity columns, one at a time (B/row) ==
+  blob6_bvisit     session_id 12.72  ·  visit_id 16.78  ·  event_id 17.31
+  blob8_bvisit     session_id 12.72  ·  visit_id 17.57  ·  event_id 18.09
+  blob12_bvisit    session_id 12.72  ·  visit_id 19.14  ·  event_id 19.67
+  grow6to8_bvisit  session_id 12.72  ·  visit_id 17.31  ·  event_id 17.57
+  grow6to12_bvisit session_id 12.72  ·  visit_id 17.96  ·  event_id 18.36
+  grow8to16_bvisit session_id 12.72  ·  visit_id 19.14  ·  event_id 19.67
+  grow12to16_bvisit session_id 12.72  ·  visit_id 20.06  ·  event_id 20.45
+  B_blob           session_id 12.72  ·  visit_id 18.75  ·  event_id 19.14
+
+(the counts agree across every layout: 160001 visitors, 1000000 visits)
