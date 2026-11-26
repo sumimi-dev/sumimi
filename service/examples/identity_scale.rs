@@ -126,12 +126,25 @@ fn blob16selfdesc(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex('fffffffffffffffffffe'||substr({hex},1,16))")
 }
 
-/// **B's shape**: the same as the event id's — the instance half in front
-/// (ten bytes, constant) and six bytes of entropy behind it. The visit id
-/// carries the per-site visit counter, the session id the visitor's hash.
+/// **The session id's fill**: eight constant bytes — the tool's own marker
+/// (a run of ones with a zero in the last byte, so the position of the zero
+/// says how wide the entropy is).
+const B_PREFIX: &str = "fffffffffffffffe";
+
+/// **B's two shapes**, one per column:
+///
+/// - the **session id** (the visitor): eight constant bytes in front, eight
+///   bytes of the visitor's hash behind ⇒ 64 bits of entropy;
+/// - the **visit id** (the stretch of activity): the **instance half** in
+///   front, ten bytes, and six bytes of the per-site counter behind ⇒ the
+///   same v8 shape as the event id.
+///
+/// The two columns have different shapes on purpose: the session id must
+/// keep 64 bits of entropy (a visitor's identity), the visit id does not
+/// (its counter is dense) and takes the instance half like the event id.
 /// **B's session id**: the visitor's identity in the low eight bytes.
-fn b_session(hash: &str, _visit: &str, inst: &str) -> String {
-    uuid_text(&format!("'{inst}'||substr({hash},1,12)"))
+fn b_session(hash: &str, _visit: &str, _inst: &str) -> String {
+    uuid_text(&format!("'{B_PREFIX}'||substr({hash},1,16)"))
 }
 
 /// **B's visit id**: the per-site counter in the low eight bytes.
