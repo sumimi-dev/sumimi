@@ -61,6 +61,10 @@ struct Shape {
     /// The two columns that make the id, as one expression — what a distinct
     /// is taken over when the id is never composed.
     pair: String,
+    /// Reading **both** of the id's columns, without composing anything:
+    /// the fair comparison against the single-column shapes, which read one
+    /// column that holds the whole id.
+    both: String,
     /// The order the event log sorts by. For the composite shapes it is the
     /// two stored columns: the id's order **is** their order, so the log can
     /// sort without composing the id for every row.
@@ -142,6 +146,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             id: "event_id".to_string(),
             stored: "event_id".to_string(),
             pair: "event_id".to_string(),
+            both: "sum(hash(event_id))".to_string(),
             order: "event_id DESC".to_string(),
         },
         // 乙 — today's shape: one packed 128-bit uuid.
@@ -152,6 +157,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             id: "event_id".to_string(),
             stored: "event_id".to_string(),
             pair: "event_id".to_string(),
+            both: "sum(hash(event_id))".to_string(),
             order: "event_id DESC".to_string(),
         },
         // 丙 — the same sixteen bytes, in a blob.
@@ -162,6 +168,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             id: "event_id".to_string(),
             stored: "event_id".to_string(),
             pair: "event_id".to_string(),
+            both: "sum(hash(event_id))".to_string(),
             order: "event_id DESC".to_string(),
         },
         // 甲 — composite: the instance in a twelve-byte blob, the counter in
@@ -179,6 +186,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             id: composed.to_string(),
             stored: "num".to_string(),
             pair: "(instance_id, num)".to_string(),
+            both: "sum(hash(instance_id)) + sum(hash(num))".to_string(),
             order: "instance_id DESC, num DESC".to_string(),
         },
         // 甲二 — the same, with the counter in an integer column.
@@ -195,6 +203,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             id: composed.to_string(),
             stored: "num".to_string(),
             pair: "(instance_id, num)".to_string(),
+            both: "sum(hash(instance_id)) + sum(hash(num))".to_string(),
             order: "instance_id DESC, num DESC".to_string(),
         },
         // 丁 — the instance in a sixteen-byte blob, the counter a bigint.
@@ -211,6 +220,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             id: composed.to_string(),
             stored: "num".to_string(),
             pair: "(instance_id, num)".to_string(),
+            both: "sum(hash(instance_id)) + sum(hash(num))".to_string(),
             order: "instance_id DESC, num DESC".to_string(),
         },
     ]
@@ -372,6 +382,15 @@ fn queries(shape: &Shape, days: i64) -> Vec<(&'static str, String)> {
                  FROM website_event WHERE {window} \
                  ORDER BY created_at DESC, {id} DESC LIMIT 50",
                 id = shape.id
+            ),
+        ),
+        // Reading both of the id's columns (the single-column shapes read
+        // the one column that holds the whole id) — the fair comparison.
+        (
+            "scan_hash_both",
+            format!(
+                "SELECT {both} FROM website_event",
+                both = shape.both
             ),
         ),
         // The distinct over the **pair**, without composing an id at all:
