@@ -159,6 +159,12 @@ fn b_session_blob(hash: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex('{B_PREFIX}'||substr({hash},1,16))")
 }
 
+/// **B's visit id, as a blob**: the same sixteen bytes, so the engine may
+/// dictionary it instead of bit packing it.
+fn b_visit_blob(_hash: &str, visit: &str, inst: &str) -> String {
+    format!("from_hex('{inst}'||lpad(to_hex({visit}),12,'0'))")
+}
+
 /// **A plain counter**: one number per visit, the way the identity line's
 /// design wants it (a per-site counter; the site's scope comes from the
 /// report's `website_id` filter, so it is not in the value).
@@ -190,6 +196,7 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "int4", ddl: "INTEGER NOT NULL", value: counter4, entropy_bits: 32 },
         Layout { name: "b8session", ddl: "UUID NOT NULL", value: b_session, entropy_bits: 64 },
         Layout { name: "b8sessionblob", ddl: "BLOB NOT NULL", value: b_session_blob, entropy_bits: 64 },
+        Layout { name: "b8visitblob", ddl: "BLOB NOT NULL", value: b_visit_blob, entropy_bits: 64 },
         Layout { name: "b8visit", ddl: "UUID NOT NULL", value: b_visit, entropy_bits: 64 },
     ]
 }
@@ -228,6 +235,8 @@ fn pairs() -> Vec<Pair> {
         // **B with the session column as a blob** — the shape that lets the
         // engine dictionary it instead of bit packing it.
         Pair { name: "B_blob", session: find("b8sessionblob"), visit: find("b8visit") },
+        // **Both columns as blobs** — the engine may then dictionary each.
+        Pair { name: "B_blob2", session: find("b8sessionblob"), visit: find("b8visitblob") },
     ]
 }
 
