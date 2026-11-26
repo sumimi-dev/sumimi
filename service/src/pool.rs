@@ -170,6 +170,12 @@ pub struct Db {
     /// ones already in use — and across the sites, since the seed is the
     /// largest id **any** of them holds.
     pub(crate) event_ids: crate::event_id::Generator,
+    /// The visit ids — the counter that mints them.
+    ///
+    /// It is a **second counter**, in the visit layout (version 9): the event
+    /// ids and the visit ids are separate spaces, so the same number never
+    /// means two things.
+    pub(crate) visit_ids: crate::event_id::Generator,
     /// How the fact tables are reached.
     layout: Layout,
     /// The sites whose file is attached.
@@ -227,13 +233,23 @@ impl Db {
             memory_limit: "0B".to_string(),
             conn: Mutex::new(conn),
             event_ids: crate::event_id::Generator::new(instance),
+            visit_ids: crate::event_id::Generator::with_version(
+                crate::event_id::VISIT_VERSION,
+                instance,
+            ),
             layout,
             sites: Mutex::new(HashSet::new()),
         };
         db.attach_all_sites()?;
         let counter = db.largest_counter()?;
+        let visits = db.largest_visit_counter()?;
         Ok(Self {
             event_ids: crate::event_id::Generator::with_counter(instance, counter),
+            visit_ids: crate::event_id::Generator::with_version_counter(
+                crate::event_id::VISIT_VERSION,
+                instance,
+                visits,
+            ),
             ..db
         })
     }
@@ -373,6 +389,10 @@ impl Db {
             memory_limit: memory_limit.to_string(),
             conn: Mutex::new(conn),
             event_ids: crate::event_id::Generator::new(instance),
+            visit_ids: crate::event_id::Generator::with_version(
+                crate::event_id::VISIT_VERSION,
+                instance,
+            ),
             layout: Layout::PerSite,
             sites: Mutex::new(HashSet::new()),
         };
@@ -382,8 +402,14 @@ impl Db {
 
         // The ids start above every id that is in use, in any of the files.
         let counter = db.largest_counter()?;
+        let visits = db.largest_visit_counter()?;
         Ok(Self {
             event_ids: crate::event_id::Generator::with_counter(instance, counter),
+            visit_ids: crate::event_id::Generator::with_version_counter(
+                crate::event_id::VISIT_VERSION,
+                instance,
+                visits,
+            ),
             ..db
         })
     }
@@ -459,6 +485,22 @@ impl Db {
                 let alias = crate::db::site_alias(site);
                 largest = largest.max(
                     crate::db::largest_counter(&conn, Some(&alias), instance).unwrap_or(0),
+                );
+            }
+        }
+        Ok(largest)
+    }
+
+    /// The largest visit counter this instance has used, in any of the files.
+    fn largest_visit_counter(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let instance = self.event_ids.instance();
+        let mut largest = crate::db::largest_visit_counter(&conn, None, instance).unwrap_or(0);
+        if self.layout == Layout::PerSite {
+            for site in self.sites.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                let alias = crate::db::site_alias(site);
+                largest = largest.max(
+                    crate::db::largest_visit_counter(&conn, Some(&alias), instance).unwrap_or(0),
                 );
             }
         }
@@ -545,6 +587,10 @@ impl Db {
             conn: Mutex::new(conn),
             // An archive is read-only; nothing is ever appended to it.
             event_ids: crate::event_id::Generator::new(0),
+            visit_ids: crate::event_id::Generator::with_version(
+                crate::event_id::VISIT_VERSION,
+                0,
+            ),
             // The archive is one flat set of files — there is no file per site.
             layout: Layout::Flat,
             sites: Mutex::new(HashSet::new()),

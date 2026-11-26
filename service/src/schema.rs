@@ -41,6 +41,11 @@ pub enum Kind {
     Text,
     /// A sixteen-byte id.
     Uuid,
+    /// **A byte string** — the visitor's id, in the width it happens to have.
+    ///
+    /// It is a blob because its width is not fixed: ours is eight bytes, a
+    /// row that came from Umami is sixteen, and the width is in the value.
+    Blob,
     /// A whole number.
     Int,
     /// A small whole number — a count of days, a flag.
@@ -125,6 +130,9 @@ pub trait Types {
     /// A sixteen-byte id.
     fn uuid(&self) -> String;
 
+    /// **A byte string** — the visitor's id.
+    fn blob(&self) -> String;
+
     /// **The event id** — sixteen bytes, our own layout.
     ///
     /// DuckDB and Postgres have a uuid type; SQLite has not, so the id
@@ -157,6 +165,7 @@ pub fn column_ddl(column: &Column, types: &dyn Types) -> String {
         Kind::RowId => unreachable!("the row id is handled above"),
         Kind::Text => types.text(),
         Kind::Uuid => types.uuid(),
+        Kind::Blob => types.blob(),
         Kind::EventId => types.event_id(),
         Kind::Int => types.int(),
         Kind::Small => types.small(),
@@ -253,7 +262,7 @@ pub const EVENT: &[Column] = &[
     Column::required("event_id", Kind::EventId),
     Column::required("website_id", Kind::Text),
     Column::required("visit_id", Kind::Uuid),
-    Column::required("session_id", Kind::Uuid),
+    Column::required("session_id", Kind::Blob),
     Column::new("session_start", Kind::Time),
     Column::with_default("ip", Kind::Text, "''"),
     Column::with_default("ip_prefix", Kind::Text, "''"),
@@ -300,7 +309,43 @@ pub const EVENT: &[Column] = &[
     Column::new("event_type", Kind::Text),
     Column::new("event_name", Kind::Text),
     Column::new("tag", Kind::Text),
-    Column::new("data", Kind::Text),
+    Column::new("ver", Kind::Text),
+];
+
+/// The columns of the `event_data` table — **the** list.
+///
+/// One row per property of an event: the key, the value, and the type of the
+/// value. It is the shape Umami's property table has, minus the columns we
+/// have no use for.
+///
+/// **The first six columns are the event's context.** They are here so that
+/// the table answers a property report on its own — a report that filters by
+/// a value and groups by the page or the event must not have to reach for the
+/// fact table, because in a columnar engine without indexes that reach is a
+/// hash join over the whole thing.
+///
+/// **They are constant within an event**, so they cost one entry per event
+/// and not one per row — **as long as the rows of an event are written next
+/// to each other** (see [`crate::reports`]). That is the whole reason the
+/// write path groups them.
+///
+/// The value is in **three columns** (text, number, date) with a `data_type`
+/// beside them, so a number can be compared as a number and a date as a date.
+pub const EVENT_DATA: &[Column] = &[
+    // The event it belongs to.
+    Column::required("event_id", Kind::EventId),
+    // The context: the site, the visitor, the page, the event, the moment.
+    Column::required("website_id", Kind::Text),
+    Column::required("session_id", Kind::Blob),
+    Column::new("url_path", Kind::Text),
+    Column::new("event_name", Kind::Text),
+    Column::required("created_at", Kind::Time),
+    // The property itself.
+    Column::required("data_key", Kind::Text),
+    Column::new("string_value", Kind::Text),
+    Column::new("number_value", Kind::Real),
+    Column::new("date_value", Kind::Time),
+    Column::new("data_type", Kind::Text),
 ];
 
 /// The columns of the `revenue` table.
@@ -352,6 +397,9 @@ mod tests {
         fn text(&self) -> String {
             "VARCHAR".to_string()
         }
+        fn blob(&self) -> String {
+            "BLOB".to_string()
+        }
         fn uuid(&self) -> String {
             "UUID".to_string()
         }
@@ -381,6 +429,9 @@ mod tests {
         }
         fn text(&self) -> String {
             "TEXT".to_string()
+        }
+        fn blob(&self) -> String {
+            "BLOB".to_string()
         }
         fn uuid(&self) -> String {
             "TEXT".to_string()
@@ -414,6 +465,9 @@ mod tests {
         }
         fn uuid(&self) -> String {
             "uuid".to_string()
+        }
+        fn blob(&self) -> String {
+            "bytea".to_string()
         }
         fn event_id(&self) -> String {
             "uuid".to_string()

@@ -214,7 +214,10 @@ async fn writer_stores_custom_events() {
     let mut event = hit("website-1", "/signup");
     event.kind = HitKind::Event;
     event.name = Some("signup".to_string());
-    event.data = Some("{\"plan\":\"pro\"}".to_string());
+    event.properties = vec![sumimi_service::models::Property {
+        key: "plan".to_string(),
+        value: sumimi_service::models::PropertyValue::Text("pro".to_string()),
+    }];
     writer.push(event);
 
     let mut events = 0;

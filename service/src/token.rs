@@ -64,7 +64,9 @@ impl Claims {
     ) -> Self {
         Self {
             website_id: website_id.to_string(),
-            visitor_id: visitor_id.to_string(),
+            // The visitor's id in the form the API shows it: the hex of its
+            // bytes (see `crate::ua::format_visitor_id`).
+            visitor_id: crate::ua::format_visitor_id(&crate::ua::visitor_bytes(&visitor_id)),
             visit_id: format_visit_id(visit_id),
             start,
             last,
@@ -78,8 +80,11 @@ impl Claims {
     }
 
     /// The visitor's id, back from its text.
+    ///
+    /// **Both forms are read** — the hex the server writes now, and the UUID a
+    /// token written before v0.6 carries. They mean the same visitor.
     pub fn visitor(&self) -> Option<Uuid> {
-        Uuid::parse_str(&self.visitor_id).ok()
+        crate::ua::visitor_from_text(&self.visitor_id)
     }
 
     /// The moment the session started.

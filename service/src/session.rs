@@ -22,24 +22,26 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// The id of a session: **sixteen bytes**, a UUID.
 ///
-/// It is a pure function of the visitor and the moment the session started —
-/// so it can be worked out again by anyone holding the row, and worked out the
-/// same way every time. That is what makes it checkable: read the row, work
-/// out the id, and if it does not match the one the report used, the row was
-/// filed under the wrong session.
+/// **Ours are counters.** A visit id is minted when a stretch of activity
+/// starts, and it is the instance's counter that mints it (see
+/// [`crate::event_id`]) — so the ids of one instance are a dense sequence, and
+/// the engine's difference code eats them: **0.39 B/row**, against 15.99 for a
+/// random UUID.
 ///
-/// **Nothing depends on that property.** It is a property of the rows *we*
-/// wrote, not of the type: a session the **client** named has an id that is a
-/// hash of its token and carries no start at all, and the rows imported from
-/// another system carry that system's ids. The reports group by the id and take
-/// the anchor of a duration from the stored `session_start` — they never work
-/// the id out again. ⇒ ⇒ So an id that came from elsewhere is **as good as one
-/// we made**: nothing has to be recomputed for it to be right.
+/// **A session the client named is not ours.** Its id is a hash of the client's
+/// own id, so the same client id is always the same session — and the rows
+/// imported from another system carry that system's ids. Those are the two
+/// shapes the column holds besides ours, and they are the rows that cost the
+/// column its cheapness (they are the rows that do not compress).
+///
+/// **Nothing depends on the id being derivable.** The reports group by the id
+/// and take the anchor of a duration from the stored `session_start` — they
+/// never work the id out again. ⇒ ⇒ So an id that came from elsewhere is
+/// **as good as one we made**: nothing has to be recomputed for it to be right.
 ///
 /// The **start** itself is not in the id — sixteen bytes have no room for it —
 /// so it is **stored beside it** (`session_start`). The start is a fact: it is
@@ -69,14 +71,26 @@ struct Active {
 ///
 /// The key is the **visitor id** (see [`crate::ua::visitor_id`]): a hash of
 /// the address prefix, the user agent and the website.
-#[derive(Debug)]
 pub struct Sessions {
     active: Mutex<HashMap<Uuid, Active>>,
     /// The idle timeout, in microseconds.
     timeout: i64,
     /// How many visitors are remembered.
     capacity: usize,
+    /// Mints the id of a new visit.
+    mint: Mint,
 }
+
+/// **Mints the id of a new visit.**
+///
+/// The ids come from a counter (see [`crate::event_id`]), so the column is
+/// cheap to store: the ids of one instance are a dense sequence, and the
+/// engine's difference code eats them — 0.39 B/row, against 15.99 for a
+/// random UUID.
+///
+/// The counter belongs to the storage (it is the storage that knows which ids
+/// are already in use), so the mint is a way into it.
+pub type Mint = std::sync::Arc<dyn Fn() -> VisitId + Send + Sync>;
 
 impl Sessions {
     /// Build the state.
@@ -84,11 +98,12 @@ impl Sessions {
     /// The timeout is how long a visitor may be quiet; the capacity is how many
     /// visitors are remembered (the ones who are quiet are dropped, so this is
     /// a ceiling on the memory, not on the traffic).
-    pub fn new(timeout: Duration, capacity: usize) -> Self {
+    pub fn new(timeout: Duration, capacity: usize, mint: Mint) -> Self {
         Self {
             active: Mutex::new(HashMap::with_capacity(1024)),
             timeout: timeout.as_micros() as i64,
             capacity: capacity.max(1),
+            mint,
         }
     }
 
@@ -113,7 +128,7 @@ impl Sessions {
             Some(entry) if at < entry.last => entry.visit_id,
             // Quiet for longer than the timeout: a new session starts here.
             _ => {
-                let visit_id = session_id(visitor, at);
+                let visit_id = (self.mint)();
                 active.insert(visitor, Active { last: at, visit_id });
                 if active.len() > self.capacity {
                     self.evict(&mut active, at);
@@ -154,43 +169,6 @@ impl Sessions {
     }
 }
 
-/// The id of a session: a pure function of the visitor and the moment the
-/// session started.
-///
-/// **No secret is involved.** The visitor id is already one-way (it is a
-/// hash), and the moment is on the row — so the id can be worked out again by
-/// anyone holding the row, and worked out the same way every time. That is
-/// what makes it checkable: read the row, work out the id, and if it does not
-/// match the one the report used, the row was filed under the wrong session.
-///
-/// **The shape is sixteen bytes**, the same as the visitor's id:
-///
-/// ```text
-/// visit_id = sha256(session_id ‖ the second the session started)
-/// ```
-///
-/// (`session_id` is the visitor's id — the column carries Umami's name for
-/// it.)
-///
-/// ⇒ Two sessions can only collide if their visitors are the same and they
-/// start in the same second — which is the same session anyway.
-/// ⇒ The same visitor's two segments never start in the same second (there are
-/// thirty minutes between them), so they never collide.
-pub fn session_id(visitor_id: Uuid, window_start: i64) -> VisitId {
-    // The segment start, in seconds.
-    let seconds = window_start.div_euclid(1_000_000);
-
-    let mut hasher = Sha256::new();
-    hasher.update(visitor_id.as_bytes());
-    hasher.update(b"\x1f");
-    hasher.update(seconds.to_le_bytes());
-    let digest = hasher.finalize();
-
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    Uuid::from_bytes(bytes)
-}
-
 /// The id of a session the **client** named.
 ///
 /// The client may send its own session id (Umami compatibility). The token is
@@ -222,6 +200,8 @@ pub fn parse_visit_id(text: &str) -> Option<VisitId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     fn visitor(n: u8) -> Uuid {
         // A visitor id is a hash, so the tests make one the same way the
@@ -236,9 +216,20 @@ mod tests {
     /// The idle timeout, in microseconds (30 minutes).
     const TIMEOUT: i64 = 1800 * SECOND;
 
+    /// A mint that counts — the way the storage's counter does.
+    fn mint() -> (Mint, Arc<AtomicU64>) {
+        let counter = Arc::new(AtomicU64::new(0));
+        let mine = counter.clone();
+        let mint: Mint = Arc::new(move || {
+            let next = mine.fetch_add(1, Ordering::AcqRel) + 1;
+            crate::event_id::compose_version(crate::event_id::VISIT_VERSION, 1, next)
+        });
+        (mint, counter)
+    }
+
     #[test]
     fn an_event_joins_the_session_it_is_inside() {
-        let sessions = Sessions::new(Duration::from_secs(1800), 100);
+        let sessions = Sessions::new(Duration::from_secs(1800), 100, mint().0);
         let start = 1_700_000_000_000_000;
         let first = sessions.session(visitor(1), start);
         // A minute later: still the same session.
@@ -249,7 +240,7 @@ mod tests {
 
     #[test]
     fn a_gap_longer_than_the_timeout_starts_a_new_session() {
-        let sessions = Sessions::new(Duration::from_secs(1800), 100);
+        let sessions = Sessions::new(Duration::from_secs(1800), 100, mint().0);
         let start = 1_700_000_000_000_000;
         let first = sessions.session(visitor(1), start);
         // Exactly the timeout: still the same session (`>` cuts, not `>=`).
@@ -261,7 +252,7 @@ mod tests {
 
     #[test]
     fn a_quiet_visitor_is_forgotten() {
-        let sessions = Sessions::new(Duration::from_secs(1800), 100);
+        let sessions = Sessions::new(Duration::from_secs(1800), 100, mint().0);
         let start = 1_700_000_000_000_000;
         let first = sessions.session(visitor(1), start);
         assert_eq!(sessions.len(), 1);
@@ -271,7 +262,7 @@ mod tests {
 
     #[test]
     fn the_map_stays_within_its_capacity() {
-        let sessions = Sessions::new(Duration::from_secs(1800), 10);
+        let sessions = Sessions::new(Duration::from_secs(1800), 10, mint().0);
         let start = 1_700_000_000_000_000;
         for n in 0..100u8 {
             sessions.session(visitor(n), start + i64::from(n) * MINUTE);
@@ -280,21 +271,20 @@ mod tests {
     }
 
     #[test]
-    fn the_session_id_is_a_function_of_the_visitor_and_the_moment() {
-        let a = session_id(visitor(1), 1_700_000_000_000_000);
-        let b = session_id(visitor(1), 1_700_000_000_000_000);
-        // The same second is the same segment — the id is built out of whole
-        // seconds, so a fraction of a second does not make a new session.
-        let c = session_id(visitor(1), 1_700_000_000_000_001);
-        // A second later is a new segment.
-        let d = session_id(visitor(1), 1_700_000_001_000_000);
-        let e = session_id(visitor(2), 1_700_000_000_000_000);
-        assert_eq!(a, b);
-        assert_eq!(a, c);
-        assert_ne!(a, d);
-        assert_ne!(a, e);
-        // Sixteen bytes.
-        assert_eq!(a.as_bytes().len(), 16);
+    fn every_new_session_gets_an_id_of_its_own() {
+        let (mint, counter) = mint();
+        let sessions = Sessions::new(Duration::from_secs(1800), 100, mint);
+        let start = 1_700_000_000_000_000;
+        let first = sessions.session(visitor(1), start);
+        // The counter handed out one id.
+        assert_eq!(counter.load(Ordering::Acquire), 1);
+        // A second visitor: another id.
+        let second = sessions.session(visitor(2), start);
+        assert_ne!(first, second);
+        assert_eq!(counter.load(Ordering::Acquire), 2);
+        // Sixteen bytes, and the visit layout — not the event one.
+        assert_eq!(first.as_bytes().len(), 16);
+        assert_eq!(crate::event_id::layout_of(&first), crate::event_id::VISIT_VERSION);
     }
 
     #[test]
@@ -309,7 +299,7 @@ mod tests {
     #[test]
     fn the_id_survives_the_round_trip_through_its_text() {
         for id in [
-            session_id(visitor(1), 1_700_000_000_000_000),
+            crate::event_id::compose_version(crate::event_id::VISIT_VERSION, 1, 7),
             client_session_id("client-token"),
         ] {
             let text = format_visit_id(id);

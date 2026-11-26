@@ -115,6 +115,9 @@ impl crate::row::Row for DuckRow<'_> {
     fn uuid(&self, name: &str) -> Result<Option<uuid::Uuid>> {
         Ok(self.0.get::<_, Option<uuid::Uuid>>(name)?)
     }
+    fn blob(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.0.get::<_, Option<Vec<u8>>>(name)?)
+    }
     fn time(&self, name: &str) -> Result<Option<NaiveDateTime>> {
         Ok(self.0.get::<_, Option<NaiveDateTime>>(name)?)
     }
@@ -250,6 +253,10 @@ impl Storage for Db {
     fn recent_events(&self, query: &ReportQuery, limit: i64) -> Result<Vec<SessionEvent>> {
         self.ensure_site(&query.website_id)?;
         self.with_read(|conn| recent_events(conn, query, limit, self.layout()))
+    }
+
+    fn next_visit_id(&self) -> uuid::Uuid {
+        self.visit_ids.next()
     }
 
     fn write_batch(&self, hits: &[Hit]) -> Result<()> {
@@ -786,13 +793,62 @@ fn write_batch(
             )?,
             Layout::Flat => conn.appender("website_event")?,
         };
+        // The properties go into the table of their own.
+        //
+        // **The rows of one event are written next to each other** — that is
+        // what makes the context columns cheap: they are the same for every
+        // row of the event, so the engine's run-length code eats them.
+        let mut properties = match layout {
+            Layout::PerSite => Some(conn.appender_to_catalog_and_db(
+                "event_data",
+                &crate::db::site_alias(website_id),
+                "main",
+            )?),
+            Layout::Flat => Some(conn.appender("event_data")?),
+        };
         for hit in hits {
             let id = event_ids.next();
             let kind = hit.kind.as_str();
-            let row = crate::db::event_row(&id, hit, &kind);
+            // The visitor's id, in the width the column holds it: **the first
+            // eight bytes of the hash** (see `crate::ua::visitor_bytes`).
+            let session = crate::ua::visitor_bytes(&hit.visitor_id);
+            let row = crate::db::event_row(&id, hit, &kind, &session);
             appender.append_row(&row[..])?;
+
+            if hit.properties.is_empty() {
+                continue;
+            }
+            let properties = properties.as_mut().expect("the appender is there");
+            for property in &hit.properties {
+                let (text, number, date): (Option<String>, Option<f64>, Option<chrono::NaiveDateTime>) =
+                    match &property.value {
+                        crate::models::PropertyValue::Text(value) => {
+                            (Some(value.clone()), None, None)
+                        }
+                        crate::models::PropertyValue::Number(value) => (None, Some(*value), None),
+                        crate::models::PropertyValue::Date(value) => (None, None, Some(*value)),
+                    };
+                let data_type: &'static str = property.value.data_type();
+                let row: [&dyn duckdb::ToSql; 11] = [
+                    &id,
+                    &website_id,
+                    &session,
+                    &hit.url,
+                    &hit.name,
+                    &hit.created_at,
+                    &property.key,
+                    &text,
+                    &number,
+                    &date,
+                    &data_type,
+                ];
+                properties.append_row(&row[..])?;
+            }
         }
         appender.flush()?;
+        if let Some(mut properties) = properties {
+            properties.flush()?;
+        }
     }
     Ok(())
 }

@@ -102,7 +102,11 @@ pub fn diff(a: &Hit, b: &Hit) -> Vec<String> {
     check!("lifatid", &a.lifatid, &b.lifatid);
     check!("twclid", &a.twclid, &b.twclid);
     check!("tag", &a.tag, &b.tag);
-    check!("data", &a.data, &b.data);
+    // The properties are the rows of the table of their own — the deep read
+    // reads them back with the event.
+    if a.properties != b.properties {
+        out.push(format!("properties: {:?} != {:?}", a.properties, b.properties));
+    }
 
     if a.created_at != b.created_at {
         out.push(format!("created_at: {} != {}", a.created_at, b.created_at));

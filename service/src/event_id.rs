@@ -84,6 +84,17 @@ pub const COUNTER_BITS: u32 = 48;
 /// The version nibble: **8** = "the layout is ours" (RFC 9562 §5.8).
 pub const VERSION: u8 = 8;
 
+/// The version nibble of the **visit** ids: **9** — our second layout.
+///
+/// The event ids and the visit ids are both "the instance's half + a counter",
+/// and the two counters are separate spaces: the number 42 means a different
+/// thing in each. So the two layouts must not be able to produce the same
+/// value — and the version nibble is what tells them apart (`layout_of`).
+///
+/// Version 9 is one of the six the RFC leaves for exactly this ("reserved for
+/// future definition"), and it is ours to define.
+pub const VISIT_VERSION: u8 = 9;
+
 /// The largest instance value.
 pub const INSTANCE_MAX: u128 = (1u128 << INSTANCE_BITS) - 1;
 
@@ -98,6 +109,14 @@ pub type Id = Uuid;
 /// The instance's bits are placed around the two fixed fields; the counter
 /// goes into the last six bytes, big-endian.
 pub fn compose(instance: u128, counter: u64) -> Uuid {
+    compose_version(VERSION, instance, counter)
+}
+
+/// **Put the two halves together, in a named layout.**
+///
+/// The version nibble is the layout's name: the event ids are version 8, the
+/// visit ids are version 9, and the two can never be the same value.
+pub fn compose_version(version: u8, instance: u128, counter: u64) -> Uuid {
     let instance = instance & INSTANCE_MAX;
     let counter = counter & COUNTER_MAX;
     let mut bytes = [0u8; 16];
@@ -106,7 +125,7 @@ pub fn compose(instance: u128, counter: u64) -> Uuid {
     let low = (instance as u64).to_be_bytes();
     bytes[0..6].copy_from_slice(&low[2..8]);
     // Byte 6: the version nibble, then four bits of the instance.
-    bytes[6] = (VERSION << 4) | ((instance >> 48) & 0x0f) as u8;
+    bytes[6] = ((version & 0x0f) << 4) | ((instance >> 48) & 0x0f) as u8;
     // Byte 7: eight bits of the instance.
     bytes[7] = ((instance >> 52) & 0xff) as u8;
     // Byte 8: the variant bits, then six bits of the instance.
@@ -202,8 +221,10 @@ pub fn pick_instance(used: &[u128]) -> u128 {
 
 /// **Hands out the ids.**
 ///
-/// The state is the instance half (fixed) and the counter (grows).
+/// The state is the layout (which version nibble the ids carry), the instance
+/// half (fixed) and the counter (grows).
 pub struct Generator {
+    version: u8,
     instance: u128,
     counter: AtomicU64,
 }
@@ -211,7 +232,13 @@ pub struct Generator {
 impl Generator {
     /// A generator that starts from scratch.
     pub fn new(instance: u128) -> Self {
+        Self::with_version(VERSION, instance)
+    }
+
+    /// A generator in a named layout.
+    pub fn with_version(version: u8, instance: u128) -> Self {
         Self {
+            version: version & 0x0f,
             instance: instance & INSTANCE_MAX,
             counter: AtomicU64::new(0),
         }
@@ -219,10 +246,21 @@ impl Generator {
 
     /// A generator that starts above a counter that is already in use.
     pub fn with_counter(instance: u128, counter: u64) -> Self {
+        Self::with_version_counter(VERSION, instance, counter)
+    }
+
+    /// A generator in a named layout, starting above a counter in use.
+    pub fn with_version_counter(version: u8, instance: u128, counter: u64) -> Self {
         Self {
+            version: version & 0x0f,
             instance: instance & INSTANCE_MAX,
             counter: AtomicU64::new(counter & COUNTER_MAX),
         }
+    }
+
+    /// The layout the ids carry.
+    pub fn version(&self) -> u8 {
+        self.version
     }
 
     /// The instance half of the ids this generator hands out.
@@ -238,12 +276,12 @@ impl Generator {
     /// The next id.
     pub fn next(&self) -> Id {
         let counter = self.counter.fetch_add(1, Ordering::AcqRel) + 1;
-        compose(self.instance, counter)
+        compose_version(self.version, self.instance, counter)
     }
 
     /// The next id, at a given counter — for the tests.
     pub fn next_at(&self, counter: u64) -> Id {
-        compose(self.instance, counter)
+        compose_version(self.version, self.instance, counter)
     }
 }
 

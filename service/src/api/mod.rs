@@ -119,9 +119,11 @@ impl AppState {
         let gate = Arc::new(crate::limits::Gate::new(config.limits()));
         // The sessions, likewise: the idle timeout decides where one session
         // ends and the next begins.
+        let mint_storage = storage.clone();
         let sessions = Arc::new(crate::session::Sessions::new(
             std::time::Duration::from_secs(config.session_timeout_seconds.max(0) as u64),
             config.session_capacity,
+            Arc::new(move || mint_storage.next_visit_id()),
         ));
         Self {
             storage,

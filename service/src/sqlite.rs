@@ -56,6 +56,11 @@ impl crate::schema::Types for Sqlite {
     fn uuid(&self) -> String {
         "TEXT".to_string()
     }
+    fn blob(&self) -> String {
+        // SQLite has no uuid type either: the visitor's id goes in as raw
+        // bytes, so the column is eight bytes and not thirty-six characters.
+        "BLOB".to_string()
+    }
     fn event_id(&self) -> String {
         // SQLite has no uuid type: the event id goes in as sixteen raw
         // bytes. **Not** as text (a 36-character string costs 72 bytes a
@@ -243,6 +248,9 @@ impl crate::row::Row for SqliteRow<'_> {
             .get::<_, Option<String>>(name)?
             .and_then(|text| uuid::Uuid::parse_str(&text).ok()))
     }
+    fn blob(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.0.get::<_, Option<Vec<u8>>>(name)?)
+    }
     /// A moment is stored as microseconds since the epoch.
     fn time(&self, name: &str) -> Result<Option<chrono::NaiveDateTime>> {
         Ok(self.0.get::<_, Option<i64>>(name)?.map(from_ts))
@@ -289,6 +297,11 @@ pub struct SqliteBackend {
     /// attachment belongs to the connection, not to the database — so the set
     /// says which files exist, not which connections have them.
     sites: Mutex<HashSet<String>>,
+    /// The visit ids — the counter that mints them.
+    ///
+    /// It is a **second counter**, in the visit layout (version 9): the event
+    /// ids and the visit ids are separate spaces.
+    visit_ids: crate::event_id::Generator,
     /// The ids of the rows of the fact table.
     ///
     /// The same shape as the DuckDB backend's (`crate::event_id`) — the two
@@ -383,6 +396,10 @@ impl SqliteBackend {
             layout: Layout::PerSite,
             sites: Mutex::new(HashSet::new()),
             event_ids: crate::event_id::Generator::new(0),
+            visit_ids: crate::event_id::Generator::with_version(
+                crate::event_id::VISIT_VERSION,
+                0,
+            ),
         };
 
         // The main file holds the sites and the bookkeeping; the facts live in a
@@ -398,6 +415,12 @@ impl SqliteBackend {
         };
         let counter = backend.largest_counter()?;
         backend.event_ids = crate::event_id::Generator::with_counter(instance, counter);
+        let visits = backend.largest_visit_counter()?;
+        backend.visit_ids = crate::event_id::Generator::with_version_counter(
+            crate::event_id::VISIT_VERSION,
+            instance,
+            visits,
+        );
 
         Ok(backend)
     }
@@ -425,6 +448,10 @@ impl SqliteBackend {
             layout: Layout::Flat,
             sites: Mutex::new(HashSet::new()),
             event_ids: crate::event_id::Generator::new(0),
+            visit_ids: crate::event_id::Generator::with_version(
+                crate::event_id::VISIT_VERSION,
+                0,
+            ),
         })
     }
 
@@ -453,6 +480,50 @@ impl SqliteBackend {
             id.and_then(|bytes| uuid::Uuid::from_slice(&bytes).ok())
                 .map(|id| crate::event_id::counter_of(&id))
                 .unwrap_or(0)
+        };
+        let mut largest = largest_of("website_event");
+        if self.layout == Layout::PerSite {
+            for site in self.sites.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                let table = event_table(self.layout, site);
+                largest = largest.max(largest_of(&table));
+            }
+        }
+        Ok(largest)
+    }
+
+    /// The largest visit counter in use — in the main file or in any site's file.
+    ///
+    /// The visit ids are text here, so the range is not a range of bytes: it is
+    /// the **prefix** that says "this instance's visit ids" — the instance's
+    /// bits and the version nibble, and nothing of the counter. The biggest of
+    /// those rows is the biggest counter, because the counter is the last group
+    /// of the text and the groups are the same width.
+    fn largest_visit_counter(&self) -> Result<u64> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let instance = self.event_ids.instance();
+        let prefix: String = crate::event_id::compose_version(
+            crate::event_id::VISIT_VERSION,
+            instance,
+            0,
+        )
+        .as_hyphenated()
+        .to_string()
+        .chars()
+        .take(23)
+        .collect();
+        let largest_of = |table: &str| -> u64 {
+            let id: Option<String> = conn
+                .query_row(
+                    &format!("SELECT MAX(visit_id) FROM {table} WHERE visit_id LIKE ?1"),
+                    params![format!("{prefix}%")],
+                    |row| row.get(0),
+                )
+                .unwrap_or(None);
+            id.and_then(|text| {
+                let tail = text.rsplit('-').next()?;
+                u64::from_str_radix(tail, 16).ok()
+            })
+            .unwrap_or(0)
         };
         let mut largest = largest_of("website_event");
         if self.layout == Layout::PerSite {
@@ -1425,6 +1496,10 @@ impl Storage for SqliteBackend {
         })
     }
 
+    fn next_visit_id(&self) -> uuid::Uuid {
+        self.visit_ids.next()
+    }
+
     fn write_batch(&self, hits: &[Hit]) -> Result<()> {
         let now = crate_now();
         let kept: Vec<&Hit> = hits
@@ -1477,7 +1552,7 @@ INSERT INTO {table} (
     utm_source, utm_medium, utm_campaign, utm_content, utm_term,
     gclid, fbclid, msclkid, ttclid, li_fat_id, twclid,
     lcp, inp, cls, fcp, ttfb,
-    event_type, event_name, tag, data
+    event_type, event_name, tag, ver
 ) VALUES (
     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
     ?12, ?13, ?14,
@@ -1495,7 +1570,8 @@ INSERT INTO {table} (
                         self.event_ids.next().as_bytes().to_vec(),
                         hit.website_id,
                         hit.visit_id.to_string(),
-                        hit.visitor_id.to_string(),
+                        // The visitor's id: the first eight bytes of the hash.
+                        crate::ua::visitor_bytes(&hit.visitor_id),
                         hit.session_start.map(ts),
                         hit.ip,
                         hit.ip_prefix,
@@ -1542,7 +1618,7 @@ INSERT INTO {table} (
                         hit.kind.as_str(),
                         hit.name,
                         hit.tag,
-                        hit.data,
+                        hit.ver,
                     ])?;
                 }
                 drop(insert);

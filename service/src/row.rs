@@ -37,6 +37,9 @@ pub trait Row {
     /// A sixteen-byte id.
     fn uuid(&self, name: &str) -> Result<Option<Uuid>>;
 
+    /// **A byte string** — the visitor's id, in the width it has.
+    fn blob(&self, name: &str) -> Result<Option<Vec<u8>>>;
+
     /// A moment in time.
     fn time(&self, name: &str) -> Result<Option<NaiveDateTime>>;
 }
@@ -48,14 +51,20 @@ pub fn event_log_row(row: &dyn Row) -> Result<EventRow> {
         website_id: row.text("website_id")?.unwrap_or_default(),
         // The two ids, named the way Umami names them: the `session_id` is
         // the visitor, the `visit_id` is the stretch of activity it is in.
-        session_id: row.uuid("session_id")?.map(|id| id.to_string()),
+        // The visitor's id: the hex of its bytes, so the text says how wide
+        // the id is (sixteen characters are eight bytes).
+        session_id: row
+            .blob("session_id")?
+            .map(|bytes| crate::ua::format_visitor_id(&bytes)),
         visit_id: row.uuid("visit_id")?.map(format_visit_id),
         created_at: row.time("created_at")?.unwrap_or_default(),
         name: row.text("event_name")?,
         url: row.text("url_path")?,
         hostname: row.text("hostname")?,
         channel: row.text("channel")?,
-        data: row.text("data")?,
+        // The properties are not in the fact table any more — they are read
+        // from the table of their own and put here by the caller.
+        data: None,
         referrer: row.text("referrer_domain")?,
         referrer_path: row.text("referrer_path")?,
         referrer_query: row.text("referrer_query")?,
@@ -118,7 +127,7 @@ pub const EVENT_COLUMNS: &str = "event_id, website_id, visit_id, session_id, ses
      utm_source, utm_medium, utm_campaign, utm_content, utm_term, \
      gclid, fbclid, msclkid, ttclid, li_fat_id, twclid, \
      lcp, inp, cls, fcp, ttfb, \
-     event_type, event_name, tag, data";
+     event_type, event_name, tag, ver";
 
 /// The row of the **deep read** — a whole event.
 ///
@@ -131,7 +140,20 @@ pub fn hit_row(row: &dyn Row) -> Result<Hit> {
         website_id: row.text("website_id")?.unwrap_or_default(),
         visit_id: row.uuid("visit_id")?.unwrap_or_else(Uuid::nil),
         // The visitor — the column is `session_id`, the name Umami gives it.
-        visitor_id: row.uuid("session_id")?.unwrap_or_else(Uuid::nil),
+        //
+        // The column holds the **first eight bytes** of the visitor's hash, so
+        // the id is put back into sixteen bytes (the rest are zero) — which is
+        // enough for the reports, and the first eight bytes are what the id
+        // is made of.
+        visitor_id: row
+            .blob("session_id")?
+            .map(|bytes| {
+                let mut full = [0u8; 16];
+                let width = bytes.len().min(16);
+                full[..width].copy_from_slice(&bytes[..width]);
+                Uuid::from_bytes(full)
+            })
+            .unwrap_or_else(Uuid::nil),
         session_start: row.time("session_start")?,
         ip: row.text("ip")?.unwrap_or_default(),
         ip_prefix: row.text("ip_prefix")?.unwrap_or_default(),
@@ -186,6 +208,9 @@ pub fn hit_row(row: &dyn Row) -> Result<Hit> {
         ttfb: row.float("ttfb")?,
         name: row.text("event_name")?,
         tag: row.text("tag")?,
-        data: row.text("data")?,
+        // The properties are read from the table of their own (see
+        // `event_log_row`).
+        properties: Vec::new(),
+        ver: row.text("ver")?,
     })
 }

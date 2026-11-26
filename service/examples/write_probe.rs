@@ -204,7 +204,8 @@ fn append_row(
     // schema, so this cannot drift away from it.
     let kind = hit.kind.as_str();
     let id = sumimi_service::event_id::compose(7, counter);
-    let row = sumimi_service::db::event_row(&id, hit, &kind);
+    let session = sumimi_service::ua::visitor_bytes(&hit.visitor_id);
+    let row = sumimi_service::db::event_row(&id, hit, &kind, &session);
     appender.append_row(&row[..])?;
     Ok(())
 }

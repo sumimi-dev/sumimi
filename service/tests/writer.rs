@@ -149,6 +149,9 @@ impl Storage for FlakyStorage {
     fn backend(&self) -> &'static str {
         self.inner.backend()
     }
+    fn next_visit_id(&self) -> uuid::Uuid {
+        self.inner.next_visit_id()
+    }
     fn websites(&self) -> Result<Vec<Website>> {
         self.inner.websites()
     }

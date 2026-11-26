@@ -353,7 +353,8 @@ fn the_event_row_has_a_value_for_every_column() {
     let hit = HitBuilder::new("w1", "s1", "v1").build();
     let kind = hit.kind.as_str();
     let id = sumimi_service::event_id::compose(7, 1);
-    let row = sumimi_service::db::event_row(&id, &hit, &kind);
+    let session = sumimi_service::ua::visitor_bytes(&hit.visitor_id);
+    let row = sumimi_service::db::event_row(&id, &hit, &kind, &session);
 
     assert_eq!(row.len(), sumimi_service::db::event_columns().len());
 }

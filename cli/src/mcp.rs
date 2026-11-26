@@ -534,7 +534,20 @@ impl Server {
                     language: language.clone(),
                     country: country.clone(),
                     name: name.clone(),
-                    data: value.clone(),
+                    properties: value
+                        .as_ref()
+                        .and_then(|value| {
+                            serde_json::from_str::<serde_json::Value>(value)
+                                .ok()
+                                .and_then(|value| {
+                                    sumimi_service::models::Property::from_value(
+                                        "value".to_string(),
+                                        value,
+                                    )
+                                })
+                        })
+                        .into_iter()
+                        .collect(),
                     ..Hit::default()
                 };
 

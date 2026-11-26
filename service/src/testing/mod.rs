@@ -301,10 +301,19 @@ impl HitBuilder {
         twclid,
         name,
         tag,
-        data,
+        ver,
     );
 
     number_fields!(latitude, longitude, lcp, inp, cls, fcp, ttfb);
+
+    /// Set the event's properties.
+    pub fn properties(
+        mut self,
+        properties: impl IntoIterator<Item = crate::models::Property>,
+    ) -> Self {
+        self.hit.properties = properties.into_iter().collect();
+        self
+    }
 
     /// The hit.
     pub fn build(self) -> Hit {
@@ -379,8 +388,12 @@ pub fn traffic(views: i64) -> Vec<Hit> {
             // the visitor and the moment the session started.
             let visitor_id =
                 crate::ua::visitor_id(&crate::ua::visitor_address(&ip), &user_agent, "w1");
-            let visit_id =
-                crate::session::session_id(visitor_id, started.and_utc().timestamp_micros());
+            // The visit id is the one the **server** writes: a counter.
+            let visit_id = crate::event_id::compose_version(
+                crate::event_id::VISIT_VERSION,
+                1,
+                session as u64 + 1,
+            );
 
             HitBuilder::new("w1", &format!("session-{session:08x}"), "v")
                 .visit_id(visit_id)

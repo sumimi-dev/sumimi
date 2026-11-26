@@ -299,6 +299,76 @@ pub fn visitor_id(address: &str, user_agent: &str, website_id: &str) -> Uuid {
     uuid_from_bytes(&hasher.finalize()[..16])
 }
 
+/// The width of the visitor id we store: **eight bytes**.
+///
+/// The id is a hash of sixteen bytes, and the column keeps **the first eight**
+/// of them. Two things make that safe:
+///
+/// - it is a **truncation**, so the id a visitor had before the column became a
+///   blob is the id it has after it — the visitors are not split in two by the
+///   change;
+/// - eight bytes is 64 bits of entropy, which covers 610 million ids before a
+///   collision becomes likely (the 1% line) — and the width is a ladder (eight,
+///   then twelve), so the next step is there when a site needs it.
+///
+/// The width is what the column pays for: a UUID column cannot be
+/// dictionary-coded, a blob column can ⇒ **15.99 B/row becomes 3.41 B/row**.
+pub const VISITOR_ID_BYTES: usize = 8;
+
+/// The bytes of the visitor id that go into the column.
+///
+/// **The first eight bytes of the hash** — see [`VISITOR_ID_BYTES`].
+pub fn visitor_bytes(id: &Uuid) -> Vec<u8> {
+    id.as_bytes()[..VISITOR_ID_BYTES].to_vec()
+}
+
+/// The visitor's id, back from its text.
+///
+/// **Two forms are read**: the hex the server writes now (eight bytes, sixteen
+/// characters) and the UUID a token written before v0.6 carries (sixteen
+/// bytes). Both mean the same visitor — the hex is the first eight bytes of
+/// the hash the UUID holds — so a client that has been carrying the old token
+/// keeps its visitor.
+pub fn visitor_from_text(text: &str) -> Option<Uuid> {
+    let text = text.trim();
+    if let Ok(id) = Uuid::parse_str(text) {
+        return Some(id);
+    }
+    let bytes = hex_bytes(text)?;
+    if bytes.is_empty() || bytes.len() > 16 {
+        return None;
+    }
+    let mut full = [0u8; 16];
+    full[..bytes.len()].copy_from_slice(&bytes);
+    Some(Uuid::from_bytes(full))
+}
+
+/// The bytes of a hex string.
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    if text.is_empty() || text.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() / 2);
+    for chunk in text.as_bytes().chunks(2) {
+        let pair = std::str::from_utf8(chunk).ok()?;
+        out.push(u8::from_str_radix(pair, 16).ok()?);
+    }
+    Some(out)
+}
+
+/// The visitor id as it is shown: **the hex of its bytes**.
+///
+/// The length is the width: sixteen characters are eight bytes, twenty-four are
+/// twelve, thirty-two are a row that came from Umami. So the text says how wide
+/// the id is — which is worth more than a fixed shape.
+pub fn format_visitor_id(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 /// Turn 16 bytes into a UUID.
 pub fn uuid_from_bytes(bytes: &[u8]) -> Uuid {
     let mut out = [0u8; 16];

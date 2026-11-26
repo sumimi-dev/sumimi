@@ -156,9 +156,84 @@ pub struct Hit {
     pub name: Option<String>,
     /// The event tag.
     pub tag: Option<String>,
-    /// Free-form event data.
-    pub data: Option<String>,
+    /// The event's properties — the rows of the `event_data` table.
+    pub properties: Vec<Property>,
+    /// The version of the deployment that served the event.
+    pub ver: Option<String>,
 }
+
+/// One property of an event — **a row of the `event_data` table**.
+///
+/// The value is in three columns in the table (text, number, date) with a
+/// `data_type` beside them, so a number can be compared as a number. Here it
+/// is one value with its own type, and the split happens on the way in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Property {
+    /// The key — the name the site owner gave the property.
+    pub key: String,
+    /// The value.
+    pub value: PropertyValue,
+}
+
+/// The value of a property.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyValue {
+    /// Text.
+    Text(String),
+    /// A number.
+    Number(f64),
+    /// A moment in time — only a row that came from Umami has one.
+    Date(chrono::NaiveDateTime),
+}
+
+impl PropertyValue {
+    /// The type as it is written in the `data_type` column.
+    pub fn data_type(&self) -> &'static str {
+        match self {
+            PropertyValue::Text(_) => "string",
+            PropertyValue::Number(_) => "number",
+            PropertyValue::Date(_) => "date",
+        }
+    }
+}
+
+impl Property {
+    /// The property a value makes — **if it makes one**.
+    ///
+    /// A null is nothing (no row at all). A number is a number. Everything else
+    /// is text — the text the value prints as.
+    pub fn from_value(key: String, value: serde_json::Value) -> Option<Property> {
+        match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::Number(number) => number
+                .as_f64()
+                .map(|number| Property {
+                    key,
+                    value: PropertyValue::Number(number),
+                }),
+            serde_json::Value::String(text) => Some(Property {
+                key,
+                value: PropertyValue::Text(text),
+            }),
+            serde_json::Value::Bool(flag) => Some(Property {
+                key,
+                value: PropertyValue::Text(flag.to_string()),
+            }),
+            other => Some(Property {
+                key,
+                value: PropertyValue::Text(other.to_string()),
+            }),
+        }
+    }
+}
+
+/// The key a `data` that is **not an object** is filed under.
+///
+/// The payload's `data` is an object — that is what a property is. When it is
+/// something else (a string, a number), there is no key for it, so it gets
+/// this one. **It cannot collide**: the key is only used when the `data` is
+/// not an object, and then it is the only key there is.
+pub const RESERVED_DATA_KEY: &str = "data";
 
 /// What kind of hit this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -360,6 +435,12 @@ pub struct Payload {
     /// The custom event's data — free-form, so it stays a `Value`.
     #[serde(default)]
     pub data: Option<serde_json::Value>,
+    /// The version of the deployment that served the event.
+    ///
+    /// The client reports it as it is — it is a build artefact, not something
+    /// the server works out (see [mneme#151]).
+    #[serde(default, deserialize_with = "optional_text")]
+    pub ver: Option<String>,
     /// The kind of the hit.
     ///
     /// Not a payload field: it comes from the request's `type` ✓.
@@ -368,15 +449,22 @@ pub struct Payload {
 }
 
 impl Payload {
-    /// The `data` object (custom event properties) — **taken**, not copied.
+    /// The event's properties — **taken**, not copied.
     ///
-    /// A string is moved out of the payload ✓ ⇒ ⇒ ⇒ no copy ✓; an object is
-    /// written as JSON ✓ (that is what the event column holds ✓).
-    pub fn take_data(&mut self) -> Option<String> {
+    /// An object becomes one property per key; anything else becomes a single
+    /// property under the reserved key. The values are typed as they come: a
+    /// number is a number, a string is a string, and **a string is never
+    /// guessed to be a date**.
+    pub fn take_properties(&mut self) -> Vec<Property> {
         match self.data.take() {
-            Some(serde_json::Value::String(text)) => Some(text),
-            Some(serde_json::Value::Null) | None => None,
-            Some(other) => Some(other.to_string()),
+            Some(serde_json::Value::Object(map)) => map
+                .into_iter()
+                .filter_map(|(key, value)| Property::from_value(key, value))
+                .collect(),
+            Some(serde_json::Value::Null) | None => Vec::new(),
+            Some(other) => Property::from_value(RESERVED_DATA_KEY.to_string(), other)
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -973,12 +1061,24 @@ mod tests {
         let mut payload = serde_json::from_str::<SendRequest>(r#"{"payload":{"data":{"a":1}}}"#)
             .unwrap()
             .into_payload();
-        assert_eq!(payload.take_data().as_deref(), Some(r#"{"a":1}"#));
+        let properties = payload.take_properties();
+        assert_eq!(properties.len(), 1);
+        assert_eq!(properties[0].key, "a");
+        assert_eq!(
+            properties[0].value,
+            crate::models::PropertyValue::Number(1.0)
+        );
 
         let mut payload =
             serde_json::from_str::<SendRequest>(r#"{"payload":{"data":"plain"}}"#)
                 .unwrap()
                 .into_payload();
-        assert_eq!(payload.take_data().as_deref(), Some("plain"));
+        let properties = payload.take_properties();
+        assert_eq!(properties.len(), 1);
+        assert_eq!(properties[0].key, crate::models::RESERVED_DATA_KEY);
+        assert_eq!(
+            properties[0].value,
+            crate::models::PropertyValue::Text("plain".to_string())
+        );
     }
 }

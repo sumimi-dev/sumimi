@@ -170,6 +170,8 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
     let mut hits: Vec<Hit> = Vec::new();
     let mut views = 0u64;
     let mut events = 0u64;
+    // The visit ids are a counter — the server's own.
+    let mut visit_counter = 0u64;
 
     for day in (0..options.days).rev() {
         let day_start = now - chrono::Duration::days(day);
@@ -196,10 +198,13 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                 &user_agent,
                 &website_id,
             );
-            let session_id = sumimi_service::session::session_id(
-                visitor_id,
-                started.and_utc().timestamp_micros(),
+            // The visit id is the counter the server mints.
+            let session_id = sumimi_service::event_id::compose_version(
+                sumimi_service::event_id::VISIT_VERSION,
+                1,
+                visit_counter,
             );
+            visit_counter += 1;
 
             // A session is one to four page views.
             let page_views = match rng.below(100) {
@@ -303,7 +308,8 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                     ttfb: Some(60.0 + rng.between(0, 220) as f64),
                     name: None,
                     tag: None,
-                    data: None,
+                    properties: Vec::new(),
+                    ver: None,
                 });
                 views += 1;
             }
@@ -362,7 +368,11 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                     ttfb: None,
                     name: Some(name.to_string()),
                     tag: Some(format!("cta-{name}")),
-                    data: Some("{\"plan\":\"pro\"}".to_string()),
+                    properties: vec![sumimi_service::models::Property {
+                        key: "plan".to_string(),
+                        value: sumimi_service::models::PropertyValue::Text("pro".to_string()),
+                    }],
+                    ver: None,
                 });
                 events += 1;
             }

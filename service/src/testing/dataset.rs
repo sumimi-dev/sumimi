@@ -297,6 +297,8 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
     // Visitors that came back on a later day.
     let mut returning_visitors: Vec<Uuid> = Vec::new();
     let mut visitor_counter = 0u64;
+    // The visit ids are a counter — the server's own.
+    let mut visit_counter = 0u64;
 
     for site in &sites {
         for day in 0..DAYS {
@@ -343,9 +345,11 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                     &user_agent,
                     &site.id,
                 );
-                let session_id = crate::session::session_id(
-                    visitor_id,
-                    start.and_utc().timestamp_micros(),
+                visit_counter += 1;
+                let session_id = crate::event_id::compose_version(
+                    crate::event_id::VISIT_VERSION,
+                    1,
+                    visit_counter,
                 );
 
                 // How many pages the session looks at.
@@ -545,7 +549,8 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                         ttfb,
                         name: None,
                         tag: None,
-                        data: None,
+                        properties: Vec::new(),
+                        ver: None,
     user_id: None,
     });
                 }
@@ -607,7 +612,13 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                         ttfb: None,
                         name: Some(name.to_string()),
                         tag: Some(format!("cta-{name}")),
-                        data: Some(format!("{{\"plan\":\"{}\"}}", *rng.pick(&["free", "pro"]))),
+                        properties: vec![crate::models::Property {
+                            key: "plan".to_string(),
+                            value: crate::models::PropertyValue::Text(
+                                (*rng.pick(&["free", "pro"])).to_string(),
+                            ),
+                        }],
+                        ver: None,
     user_id: None,
     });
                 }
@@ -782,7 +793,8 @@ fn edge_cases(
         ttfb: None,
         name: None,
         tag: None,
-        data: None,
+        properties: Vec::new(),
+        ver: None,
     user_id: None,
     });
 
@@ -837,7 +849,8 @@ fn edge_cases(
         ttfb: Some(1.0),
         name: None,
         tag: None,
-        data: None,
+        properties: Vec::new(),
+        ver: None,
     user_id: None,
     });
 
@@ -893,7 +906,8 @@ fn edge_cases(
             ttfb: Some(50.0),
             name: None,
             tag: None,
-            data: None,
+            properties: Vec::new(),
+        ver: None,
     user_id: None,
     });
     }
@@ -949,7 +963,8 @@ fn edge_cases(
         ttfb: None,
         name: None,
         tag: None,
-        data: None,
+        properties: Vec::new(),
+        ver: None,
     user_id: None,
     });
 

@@ -401,17 +401,12 @@ pub fn build_hit(
         // The token is ours and the visitor is still active: the session goes
         // on — and it keeps the start it had.
         Some(claims) if now - claims.last <= crate::session::IDLE_TIMEOUT_SECONDS => (
-            claims
-                .session()
-                .unwrap_or_else(|| crate::session::session_id(visitor_id, at)),
+            claims.session().unwrap_or_else(|| state.storage.next_visit_id()),
             claims.started_at(),
         ),
         // The token is ours, but the visitor has been quiet for longer than the
         // timeout: a new session starts here.
-        Some(_) => (
-            crate::session::session_id(visitor_id, at),
-            Some(created_at),
-        ),
+        Some(_) => (state.storage.next_visit_id(), Some(created_at)),
         // The older way: the client named the session itself. There is no start
         // to remember — the duration is measured from the first event instead.
         None => match raw.session_id.as_deref() {
@@ -473,8 +468,9 @@ pub fn build_hit(
     };
 
     // The custom event's data — moved out of the payload ✓ (it is taken
-    // first, because the fields below are moved out one by one ✓).
-    let data = raw.take_data();
+    // first, because the fields below are moved out one by one ✓). It becomes
+    // the rows of the `event_data` table.
+    let data = raw.take_properties();
 
     // The page: path and query, kept apart like Umami keeps them.
     let (url, url_query, params) = match raw.url {
@@ -683,7 +679,8 @@ pub fn build_hit(
         name: raw.name,
         // The owner's own tag, unless the hit carries a marker.
         tag: tag.or(raw.tag),
-        data,
+        properties: data,
+        ver: raw.ver,
     }, claims))
 }
 

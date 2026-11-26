@@ -98,6 +98,9 @@ impl crate::schema::Types for Duck {
     fn uuid(&self) -> String {
         "UUID".to_string()
     }
+    fn blob(&self) -> String {
+        "BLOB".to_string()
+    }
     fn event_id(&self) -> String {
         "UUID".to_string()
     }
@@ -130,6 +133,7 @@ const MAIN_TABLES: &[(&str, &[crate::schema::Column])] = &[
 /// and their tools read.
 const SITE_TABLES: &[(&str, &[crate::schema::Column])] = &[
     ("website_event", crate::schema::EVENT),
+    ("event_data", crate::schema::EVENT_DATA),
     ("revenue", crate::schema::REVENUE),
 ];
 
@@ -486,6 +490,34 @@ pub fn largest_counter(conn: &Connection, catalog: Option<&str>, instance: u128)
     Ok(id.map(|id| crate::event_id::counter_of(&id)).unwrap_or(0))
 }
 
+/// The largest visit counter this instance has used.
+///
+/// **Only the rows of this instance count**, and only the ones in the visit
+/// layout: the ids of another instance (rows that came with a site that moved
+/// here) carry that instance's half, and a client's own session id is not ours
+/// at all. The version nibble tells the two layouts apart, so the range below
+/// covers the visit ids of this instance and nothing else.
+pub fn largest_visit_counter(
+    conn: &Connection,
+    catalog: Option<&str>,
+    instance: u128,
+) -> Result<u64> {
+    let low = crate::event_id::compose_version(crate::event_id::VISIT_VERSION, instance, 0);
+    let high = crate::event_id::compose_version(
+        crate::event_id::VISIT_VERSION,
+        instance,
+        crate::event_id::COUNTER_MAX,
+    );
+    let sql = format!(
+        "SELECT MAX(visit_id) FROM {} WHERE visit_id BETWEEN ? AND ?",
+        table_name(catalog, "website_event")
+    );
+    let id: Option<uuid::Uuid> = conn
+        .query_row(&sql, [&low, &high], |row| row.get(0))
+        .unwrap_or(None);
+    Ok(id.map(|id| crate::event_id::counter_of(&id)).unwrap_or(0))
+}
+
 /// Split a database of the old shape into the new one: **one file per site**.
 ///
 /// The old file holds the sites, the bookkeeping and the facts in one place.
@@ -771,12 +803,13 @@ pub fn event_row<'a>(
     id: &'a uuid::Uuid,
     hit: &'a crate::models::Hit,
     kind: &'a &'a str,
+    session_id: &'a Vec<u8>,
 ) -> Vec<&'a dyn duckdb::ToSql> {
     vec![
         id,
         &hit.website_id,
         &hit.visit_id,
-        &hit.visitor_id,
+        session_id,
         &hit.session_start,
         &hit.ip,
         &hit.ip_prefix,
@@ -823,7 +856,7 @@ pub fn event_row<'a>(
         kind,
         &hit.name,
         &hit.tag,
-        &hit.data,
+        &hit.ver,
     ]
 }
 
