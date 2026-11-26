@@ -64,42 +64,52 @@ fn uuid_text(hex: &str) -> String {
     )
 }
 
+/// The self-describing marker: ones down to a single zero, whose position
+/// says how wide the entropy is. The marker is (16 − entropy) bytes long and
+/// the entropy follows it.
+///
+/// The zero is the lowest bit of the marker's last byte, so the width can be
+/// read off the value without a side column.
+fn marker_hex(entropy_bytes: usize) -> String {
+    let marker_bytes = 16 - entropy_bytes;
+    let mut hex = "f".repeat((marker_bytes - 1) * 2);
+    hex.push_str("fe");
+    hex
+}
+
 /// Sixteen bytes of entropy — the shape the service writes today.
 fn today(hex: &str) -> String {
     uuid_text(hex)
 }
 
-/// A fixed marker of eight bytes, then the entropy.
-fn marker8(hex: &str) -> String {
-    uuid_text(&format!("'ffffffffffffffff'||substr({hex},1,16)"))
+/// The marker layout, one function per entropy width.
+fn selfdesc6(hex: &str) -> String {
+    uuid_text(&format!("'{}'||substr({hex},1,12)", marker_hex(6)))
 }
-fn marker10(hex: &str) -> String {
-    uuid_text(&format!("'ffffffffffff'||substr({hex},1,20)"))
-}
-fn marker12(hex: &str) -> String {
-    uuid_text(&format!("'ffffffff'||substr({hex},1,24)"))
-}
-
-/// The self-describing marker: ones down to a single zero, whose position
-/// says how wide the entropy is. The zero is in the byte just before the
-/// entropy starts.
 fn selfdesc8(hex: &str) -> String {
-    uuid_text(&format!("'fffffffffffffffffffe'||substr({hex},1,16)"))
+    uuid_text(&format!("'{}'||substr({hex},1,16)", marker_hex(8)))
 }
 fn selfdesc10(hex: &str) -> String {
-    uuid_text(&format!("'fffffffffffe'||substr({hex},1,20)"))
+    uuid_text(&format!("'{}'||substr({hex},1,20)", marker_hex(10)))
 }
 fn selfdesc12(hex: &str) -> String {
-    uuid_text(&format!("'fffffffe'||substr({hex},1,24)"))
+    uuid_text(&format!("'{}'||substr({hex},1,24)", marker_hex(12)))
 }
 
 /// The same bytes, in a blob — a carrier that is not a uuid, so it is never
-/// bit packed, but whose width is not in its type either.
+/// bit packed, but whose width is not in its type either: **the length of a
+/// blob says how wide it is** ⇒ the marker is not needed.
+fn blob6(hex: &str) -> String {
+    format!("from_hex(substr({hex},1,12))")
+}
 fn blob8(hex: &str) -> String {
     format!("from_hex(substr({hex},1,16))")
 }
+fn blob10(hex: &str) -> String {
+    format!("from_hex(substr({hex},1,20))")
+}
 fn blob12(hex: &str) -> String {
-    format!("from_hex('ffffffff'||substr({hex},1,24))")
+    format!("from_hex(substr({hex},1,24))")
 }
 
 /// The identity as one constant value: the file is then the row without the
@@ -108,16 +118,18 @@ fn constant(_hex: &str) -> String {
     "CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID)".to_string()
 }
 
+/// The competitors: the marker layout and the blob, each at the four entropy
+/// widths, plus today's uuid as the baseline to measure against.
 fn layouts() -> Vec<Layout> {
     vec![
         Layout { name: "today", ddl: "UUID NOT NULL", value: today, entropy_bits: 128 },
-        Layout { name: "marker8", ddl: "UUID NOT NULL", value: marker8, entropy_bits: 64 },
-        Layout { name: "marker10", ddl: "UUID NOT NULL", value: marker10, entropy_bits: 80 },
-        Layout { name: "marker12", ddl: "UUID NOT NULL", value: marker12, entropy_bits: 96 },
+        Layout { name: "selfdesc6", ddl: "UUID NOT NULL", value: selfdesc6, entropy_bits: 48 },
         Layout { name: "selfdesc8", ddl: "UUID NOT NULL", value: selfdesc8, entropy_bits: 64 },
         Layout { name: "selfdesc10", ddl: "UUID NOT NULL", value: selfdesc10, entropy_bits: 80 },
         Layout { name: "selfdesc12", ddl: "UUID NOT NULL", value: selfdesc12, entropy_bits: 96 },
+        Layout { name: "blob6", ddl: "BLOB NOT NULL", value: blob6, entropy_bits: 48 },
         Layout { name: "blob8", ddl: "BLOB NOT NULL", value: blob8, entropy_bits: 64 },
+        Layout { name: "blob10", ddl: "BLOB NOT NULL", value: blob10, entropy_bits: 80 },
         Layout { name: "blob12", ddl: "BLOB NOT NULL", value: blob12, entropy_bits: 96 },
     ]
 }
@@ -226,39 +238,40 @@ fn traffic(
 /// The report's queries, verbatim from `query.rs` (`summary`,
 /// `summary_sessions`, `breakdown`, `event_log`), plus the two that split
 /// the cost apart: a bare scan, and a scan with only the distinct count.
-fn queries(days: i64) -> Vec<(&'static str, String)> {
+fn queries(days: i64, table: &str) -> Vec<(&'static str, String)> {
     let window = format!(
         "created_at >= TIMESTAMP '2026-01-01' AND created_at < TIMESTAMP '2026-01-01' + INTERVAL {days} DAY"
     );
     let month = "created_at >= TIMESTAMP '2026-01-01' AND created_at < TIMESTAMP '2026-01-01' + INTERVAL 30 DAY";
+    let t = table;
     vec![
-        ("scan", "SELECT count(*) FROM website_event".to_string()),
+        ("scan", format!("SELECT count(*) FROM {t}")),
         (
             // The scan alone: the biggest value, no hashing, no grouping.
             // What it costs beyond the metadata is the **unpack** — the
             // engine widening the packed 64 bits back to 128.
             "scan_max",
-            "SELECT max(session_id) FROM website_event".to_string(),
+            format!("SELECT max(session_id) FROM {t}"),
         ),
         (
             // The scan plus the hash the aggregate would pay anyway.
             "scan_hash",
-            "SELECT sum(hash(session_id)) FROM website_event".to_string(),
+            format!("SELECT sum(hash(session_id)) FROM {t}"),
         ),
         (
             "distinct_only",
-            format!("SELECT count(DISTINCT session_id) FROM website_event WHERE {window}"),
+            format!("SELECT count(DISTINCT session_id) FROM {t} WHERE {window}"),
         ),
         (
             "summary_split",
             format!(
-                "SELECT COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN session_id END) FROM website_event WHERE {window}"
+                "SELECT COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN session_id END) FROM {t} WHERE {window}"
             ),
         ),
         (
             "summary_split_2",
             format!(
-                "SELECT COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN visit_id END) FROM website_event WHERE {window}"
+                "SELECT COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN visit_id END) FROM {t} WHERE {window}"
             ),
         ),
         (
@@ -267,7 +280,7 @@ fn queries(days: i64) -> Vec<(&'static str, String)> {
                 "SELECT COUNT(*) FILTER (WHERE {PAGEVIEWS}),
                         COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN session_id END),
                         COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN visit_id END)
-                 FROM website_event WHERE {month}"
+                 FROM {t} WHERE {month}"
             ),
         ),
         (
@@ -276,7 +289,7 @@ fn queries(days: i64) -> Vec<(&'static str, String)> {
                 "SELECT COUNT(*) FILTER (WHERE {PAGEVIEWS}),
                         COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN session_id END),
                         COUNT(DISTINCT CASE WHEN {PAGEVIEWS} THEN visit_id END)
-                 FROM website_event WHERE {window}"
+                 FROM {t} WHERE {window}"
             ),
         ),
         (
@@ -294,7 +307,7 @@ fn queries(days: i64) -> Vec<(&'static str, String)> {
                                             THEN epoch_us(MIN(created_at) FILTER (WHERE {PAGEVIEWS}))
                                             ELSE epoch_us(MIN(session_start)) END, 0) / 1000000.0
                             END AS d
-                     FROM website_event WHERE {window}
+                     FROM {t} WHERE {window}
                      GROUP BY visit_id
                  )"
             ),
@@ -303,7 +316,7 @@ fn queries(days: i64) -> Vec<(&'static str, String)> {
             "breakdown",
             format!(
                 "SELECT COALESCE(browser, 'unknown') AS name, COUNT(DISTINCT session_id) AS value
-                 FROM website_event WHERE {window} AND {PAGEVIEWS}
+                 FROM {t} WHERE {window} AND {PAGEVIEWS}
                  GROUP BY name ORDER BY value DESC, name ASC LIMIT 50"
             ),
         ),
@@ -313,7 +326,7 @@ fn queries(days: i64) -> Vec<(&'static str, String)> {
                 "SELECT event_id AS event_id, website_id, visit_id, session_id, created_at, event_name, url_path, hostname, channel, data,
                         referrer_domain, referrer_path, referrer_query, country, city, browser, os,
                         utm_source, utm_medium, utm_campaign, lcp, inp, cls, device
-                 FROM website_event WHERE {window}
+                 FROM {t} WHERE {window}
                  ORDER BY created_at DESC, event_id DESC LIMIT 50 OFFSET 0"
             ),
         ),
@@ -402,6 +415,8 @@ struct Row {
     duckdb_b_per_row: f64,
     parquet_b_per_row: f64,
     without_b_per_row: f64,
+    parquet_write_ms: f64,
+    parquet_timings: Vec<(String, f64)>,
     write_ms: f64,
     visitors: i64,
     visits: i64,
@@ -478,20 +493,37 @@ fn measure(
     let _ = fs::remove_file(&without);
     let _ = conn.execute_batch(&format!("SET memory_limit='{memory_limit}'"));
 
+    // The cold tier: the backup's copy, and the queries the archive answers.
+    let mut parquet_write_ms = f64::NAN;
+    let mut parquet_timings: Vec<(String, f64)> = Vec::new();
     let parquet_b_per_row = if parquet {
         let out = dir.join(format!("{}.parquet", layout.name));
         let _ = fs::remove_file(&out);
         // The export is a cold-tier copy, not the thing being measured: it
         // gets the room, and a failure is reported, not fatal.
         let _ = conn.execute_batch("SET memory_limit='8GB'");
+        let started = Instant::now();
         let outcome = conn.execute_batch(&format!(
             "COPY (SELECT * FROM website_event) TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD);",
             out.display()
         ));
+        parquet_write_ms = started.elapsed().as_secs_f64() * 1000.0;
         let _ = conn.execute_batch(&format!("SET memory_limit='{memory_limit}'"));
         match outcome {
             Ok(()) => {
                 let bytes = fs::metadata(&out)?.len() as f64 / rows as f64;
+                // The archive's own read path: a view over the parquet.
+                let _ = conn.execute_batch(&format!(
+                    "CREATE OR REPLACE VIEW pq AS SELECT * FROM read_parquet('{}');",
+                    out.display()
+                ));
+                for (name, sql) in queries(days, "pq") {
+                    if matches!(name, "scan_max" | "scan_hash" | "summary_split_2" | "bounces" | "breakdown" | "event_log") {
+                        continue;
+                    }
+                    let (ms, _, _) = timed(&conn, &sql, repeats)?;
+                    parquet_timings.push((name.to_string(), ms));
+                }
                 let _ = fs::remove_file(&out);
                 bytes
             }
@@ -518,7 +550,7 @@ fn measure(
     let mut timings = Vec::new();
     let mut mem_bytes = 0i64;
     let mut spill_bytes = 0i64;
-    for (name, sql) in queries(days) {
+    for (name, sql) in queries(days, "website_event") {
         let (ms, mem, spill) = timed(&conn, &sql, repeats)?;
         timings.push((name.to_string(), ms));
         mem_bytes = mem_bytes.max(mem);
@@ -529,7 +561,7 @@ fn measure(
     let mut split = 0.0;
     let mut split_ok = true;
     for half in halves {
-        let sql = queries(days)
+        let sql = queries(days, "website_event")
             .into_iter()
             .find(|(n, _)| *n == half)
             .map(|(_, s)| s)
@@ -551,6 +583,8 @@ fn measure(
         duckdb_b_per_row,
         parquet_b_per_row,
         without_b_per_row,
+        parquet_write_ms,
+        parquet_timings,
         write_ms,
         visitors: visitors_seen,
         visits: visits_seen,
@@ -851,9 +885,6 @@ fn main() -> anyhow::Result<()> {
             if !only.iter().any(|n| n == layout.name) {
                 continue;
             }
-        } else {
-            // The constant layout is the baseline, not a shape to compare.
-            continue;
         }
         let row = measure(
             &layout,
@@ -939,6 +970,30 @@ fn main() -> anyhow::Result<()> {
             r.mem_bytes as f64 / 1_048_576.0,
             r.spill_bytes as f64 / 1_048_576.0,
             r.visitors
+        );
+    }
+
+    println!();
+    println!("== the cold tier: the export, and the archive's read path ==");
+    println!(
+        "  {:<12} {:>10} {:>10} {:>10} {:>12}",
+        "the layout", "export s", "scan ms", "distinct ms", "summary ms"
+    );
+    for r in &results {
+        let get = |n: &str| {
+            r.parquet_timings
+                .iter()
+                .find(|(k, _)| k == n)
+                .map(|(_, v)| *v)
+                .unwrap_or(f64::NAN)
+        };
+        println!(
+            "  {:<12} {:>10.1} {:>10} {:>10} {:>12}",
+            r.layout,
+            r.parquet_write_ms / 1000.0,
+            show(get("scan_max")),
+            show(get("distinct_only")),
+            show(get("summary"))
         );
     }
 
