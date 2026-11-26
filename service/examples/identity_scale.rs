@@ -263,6 +263,7 @@ fn traffic(
     instance_hex: &str,
     interleave: i64,
     days: i64,
+    visit_stride: i64,
 ) -> String {
     // **Which visit a row belongs to.**
     //
@@ -288,8 +289,18 @@ fn traffic(
     // The two hashes are computed once per row, in the subquery.
     // The visit's number, in the outer query (a counter's value).
     let visit_expr_outer = visit_expr.replace("(i //", "(s.i //");
-    let session_value = (pair.session.value)("s.hs", &visit_expr_outer, &instance_hex);
-    let visit_value = (pair.visit.value)("s.hv", &visit_expr_outer, &instance_hex);
+    // **The counter's ordinals can be spread out.** `visit_stride` puts a gap
+    // between them: 1 = dense (every visit gets the next number), 7 = every
+    // seventh visit gets a number. The engine's delta mode only ever sees the
+    // difference between neighbouring values, so a constant gap is still a
+    // constant difference.
+    let counter_expr = if visit_stride == 1 {
+        visit_expr_outer.clone()
+    } else {
+        format!("({visit_expr_outer}) * {visit_stride}")
+    };
+    let session_value = (pair.session.value)("s.hs", &counter_expr, &instance_hex);
+    let visit_value = (pair.visit.value)("s.hv", &counter_expr, &instance_hex);
 
     format!(
         "INSERT INTO website_event
@@ -553,6 +564,7 @@ fn measure(
     interleave: i64,
     days: i64,
     threads: i64,
+    visit_stride: i64,
 ) -> anyhow::Result<Row> {
     let path = dir.join(format!("{}.duckdb", pair.name));
     let _ = fs::remove_file(&path);
@@ -580,7 +592,7 @@ fn measure(
         ],
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
-    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days)
+    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
 
@@ -751,6 +763,7 @@ fn knobs(
     interleave: i64,
     days: i64,
     events_per_visit: i64,
+    visit_stride: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts()
         .into_iter()
@@ -794,7 +807,7 @@ fn knobs(
         );
         conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
         let pair = Pair { name: "knobs", session: layout, visit: layout };
-        let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days)
+        let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride)
             .replace("{ROWS}", &rows.to_string())
             .replace("{VISITORS}", &visitors.to_string());
         conn.execute_batch(&sql)?;
@@ -842,6 +855,7 @@ fn debug_bisect(
     interleave: i64,
     days: i64,
     events_per_visit: i64,
+    visit_stride: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts().into_iter().find(|l| l.name == "today").expect("today");
     let pair = Pair { name: "today", session: layout, visit: layout };
@@ -861,7 +875,7 @@ fn debug_bisect(
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
     let pair = Pair { name: "debug", session: layout, visit: layout };
-    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days)
+    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
     conn.execute_batch(&sql)?;
@@ -936,6 +950,7 @@ fn main() -> anyhow::Result<()> {
     let mut baseline = false;
     let mut threads = 0i64;
     let mut events_per_visit = 4i64;
+    let mut visit_stride = 1i64;
 
     let mut i = 0;
     while i < args.len() {
@@ -993,6 +1008,10 @@ fn main() -> anyhow::Result<()> {
                 events_per_visit = args[i + 1].parse()?;
                 i += 2;
             }
+            "--visit-stride" => {
+                visit_stride = args[i + 1].parse()?;
+                i += 2;
+            }
             "--interleave" => {
                 interleave = args[i + 1].parse()?;
                 i += 2;
@@ -1009,12 +1028,12 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&dir)?;
 
     if want_debug {
-        debug_bisect(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit)?;
+        debug_bisect(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit, visit_stride)?;
         return Ok(());
     }
 
     if want_knobs {
-        knobs(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit)?;
+        knobs(&dir, rows, visitors, &memory_limit, interleave, days, events_per_visit, visit_stride)?;
         return Ok(());
     }
 
@@ -1043,6 +1062,7 @@ fn main() -> anyhow::Result<()> {
             interleave,
             days,
             threads,
+            visit_stride,
         )?);
     }
     // A name is either a pair (the two columns get different shapes) or a
@@ -1077,6 +1097,7 @@ fn main() -> anyhow::Result<()> {
             interleave,
             days,
             threads,
+            visit_stride,
         )?;
         results.push(row);
     }
