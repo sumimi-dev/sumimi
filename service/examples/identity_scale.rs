@@ -165,6 +165,40 @@ fn b_visit_blob(_hash: &str, visit: &str, inst: &str) -> String {
     format!("from_hex('{inst}'||lpad(to_hex({visit}),12,'0'))")
 }
 
+
+/// **The growth case**: the visitor id's width depends on **the visitor's
+/// number** — the ids minted early keep the narrow form, the later ones are
+/// wider. The width is the value's own length, so every value says what it is
+/// and the old rows never need rewriting.
+///
+/// The visitor number is the second argument on the **session** side (the
+/// visit side uses it for the counter).
+fn grow6to8(hash: &str, visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(CASE WHEN ({visitor}) < {{GROW_VISITORS}} THEN substr({hash},1,12) ELSE substr({hash},1,16) END)"
+    )
+}
+fn grow6to12(hash: &str, visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(CASE WHEN ({visitor}) < {{GROW_VISITORS}} THEN substr({hash},1,12) ELSE substr({hash},1,24) END)"
+    )
+}
+fn grow8to12(hash: &str, visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(CASE WHEN ({visitor}) < {{GROW_VISITORS}} THEN substr({hash},1,16) ELSE substr({hash},1,24) END)"
+    )
+}
+fn grow8to16(hash: &str, visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(CASE WHEN ({visitor}) < {{GROW_VISITORS}} THEN substr({hash},1,16) ELSE substr({hash},1,32) END)"
+    )
+}
+fn grow12to16(hash: &str, visitor: &str, _inst: &str) -> String {
+    format!(
+        "from_hex(CASE WHEN ({visitor}) < {{GROW_VISITORS}} THEN substr({hash},1,24) ELSE substr({hash},1,32) END)"
+    )
+}
+
 /// **A plain counter**: one number per visit, the way the identity line's
 /// design wants it (a per-site counter; the site's scope comes from the
 /// report's `website_id` filter, so it is not in the value).
@@ -201,6 +235,12 @@ fn layouts() -> Vec<Layout> {
         // honour it?
         Layout { name: "uuid_dict", ddl: "UUID NOT NULL USING COMPRESSION dictionary", value: today, entropy_bits: 128 },
         Layout { name: "b8visit", ddl: "UUID NOT NULL", value: b_visit, entropy_bits: 64 },
+        // **The visitor id's width growing with the visitor count.**
+        Layout { name: "grow6to8", ddl: "BLOB NOT NULL", value: grow6to8, entropy_bits: 48 },
+        Layout { name: "grow6to12", ddl: "BLOB NOT NULL", value: grow6to12, entropy_bits: 48 },
+        Layout { name: "grow8to12", ddl: "BLOB NOT NULL", value: grow8to12, entropy_bits: 64 },
+        Layout { name: "grow8to16", ddl: "BLOB NOT NULL", value: grow8to16, entropy_bits: 64 },
+        Layout { name: "grow12to16", ddl: "BLOB NOT NULL", value: grow12to16, entropy_bits: 96 },
     ]
 }
 
@@ -249,6 +289,15 @@ fn pairs() -> Vec<Pair> {
         // every row of a dictionary pays for materialising it.
         Pair { name: "blob8_bvisit", session: find("blob8"), visit: find("b8visit") },
         Pair { name: "blob12_bvisit", session: find("blob12"), visit: find("b8visit") },
+        // **The six-byte visitor id**, and the growth cases: the width
+        // depends on the visitor's number, so the file holds rows of
+        // different widths — that is what an upgrade looks like on disk.
+        Pair { name: "blob6_bvisit", session: find("blob6"), visit: find("b8visit") },
+        Pair { name: "grow6to8_bvisit", session: find("grow6to8"), visit: find("b8visit") },
+        Pair { name: "grow6to12_bvisit", session: find("grow6to12"), visit: find("b8visit") },
+        Pair { name: "grow8to12_bvisit", session: find("grow8to12"), visit: find("b8visit") },
+        Pair { name: "grow8to16_bvisit", session: find("grow8to16"), visit: find("b8visit") },
+        Pair { name: "grow12to16_bvisit", session: find("grow12to16"), visit: find("b8visit") },
     ]
 }
 
@@ -337,7 +386,9 @@ fn traffic(
     } else {
         format!("({visit_expr_outer}) * {visit_stride}")
     };
-    let session_value = (pair.session.value)("s.hs", &counter_expr, &instance_hex);
+    // **The session side gets the visitor's number** (the visit side gets the
+    // counter) — the growth layouts need to know which era a visitor is from.
+    let session_value = (pair.session.value)("s.hs", &visitors_expr_outer, &instance_hex);
     let visit_value = (pair.visit.value)("s.hv", &counter_expr, &instance_hex);
     let website_value = if sites > 1 {
         format!("'w' || CAST({site_expr_outer} AS VARCHAR)")
@@ -611,6 +662,7 @@ fn measure(
     threads: i64,
     visit_stride: i64,
     sites: i64,
+    grow_visitors: i64,
 ) -> anyhow::Result<Row> {
     let path = dir.join(format!("{}.duckdb", pair.name));
     let _ = fs::remove_file(&path);
@@ -638,9 +690,12 @@ fn measure(
         ],
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
+    // The growth split: by default half the visitors are on the narrow form.
+    let grow_visitors = if grow_visitors > 0 { grow_visitors } else { visitors / 2 };
     let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
         .replace("{ROWS}", &rows.to_string())
-        .replace("{VISITORS}", &visitors.to_string());
+        .replace("{VISITORS}", &visitors.to_string())
+        .replace("{GROW_VISITORS}", &grow_visitors.to_string());
 
     let started = Instant::now();
     conn.execute_batch(&sql)?;
@@ -1003,6 +1058,7 @@ fn main() -> anyhow::Result<()> {
     let mut events_per_visit = 4i64;
     let mut visit_stride = 1i64;
     let mut sites = 1i64;
+    let mut grow_visitors = 0i64;
 
     let mut i = 0;
     while i < args.len() {
@@ -1068,6 +1124,10 @@ fn main() -> anyhow::Result<()> {
                 sites = args[i + 1].parse()?;
                 i += 2;
             }
+            "--grow-visitors" => {
+                grow_visitors = args[i + 1].parse()?;
+                i += 2;
+            }
             "--interleave" => {
                 interleave = args[i + 1].parse()?;
                 i += 2;
@@ -1120,6 +1180,7 @@ fn main() -> anyhow::Result<()> {
             threads,
             visit_stride,
             sites,
+            grow_visitors,
         )?);
     }
     // A name is either a pair (the two columns get different shapes) or a
@@ -1156,6 +1217,7 @@ fn main() -> anyhow::Result<()> {
             threads,
             visit_stride,
             sites,
+            grow_visitors,
         )?;
         results.push(row);
     }
