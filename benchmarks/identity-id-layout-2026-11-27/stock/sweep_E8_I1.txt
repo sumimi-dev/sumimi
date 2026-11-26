@@ -1,0 +1,40 @@
+# 2000000 rows, 200000 visitors, memory_limit=256MB, interleave=1, 90 days
+
+  the layout   entropy  duckdb B parquet B  no-ids B  ids cost    write s
+  today           256     16.78       NaN     12.33      4.46        5.3
+  blob16marker    128     18.62       NaN     12.33      6.29        4.7
+  B               128     14.69       NaN     12.33      2.36        5.0
+  B_blob2         128     17.83       NaN     12.33      5.51        4.2
+
+  the layout        scan  scanhash  distinct    summary    summary×2      bounces summary30d
+  today              1.5       4.4       4.2       17.4          7.4         16.6        8.3
+  blob16marker       2.7       3.8       3.8       16.2          6.4         17.0        7.3
+  B                  1.4       4.0       3.9       21.8          6.7         21.3       10.3
+  B_blob2            2.6       4.0       3.8       16.3          6.5         17.9        7.4
+
+  the layout    breakdown  event log    mem MiB spill MiB visitors
+  today               9.3        3.2       32.0      0.0   160001
+  blob16marker       11.6        3.2       35.5      0.0   160001
+  B                   9.1        3.1       28.0      0.0   160001
+  B_blob2            11.6        3.2       34.0      0.0   160001
+
+== the cold tier: the export, and the archive's read path ==
+  the layout     export s    scan ms distinct ms   summary ms
+  today               NaN        oom        oom          oom
+  blob16marker        NaN        oom        oom          oom
+  B                   NaN        oom        oom          oom
+  B_blob2             NaN        oom        oom          oom
+
+== how the engine stores the identity columns ==
+  today        session_id=Constant session_id=RLE visit_id=Constant visit_id=RLE
+  blob16marker session_id=Constant session_id=DICT_FSST visit_id=Constant visit_id=DICT_FSST
+  B            session_id=Constant session_id=RLE visit_id=BitPacking visit_id=Constant
+  B_blob2      session_id=Constant session_id=DICT_FSST visit_id=Constant visit_id=DICT_FSST
+
+== the identity columns, one at a time (B/row) ==
+  today            session_id 14.69  ·  visit_id 14.69
+  blob16marker     session_id 15.87  ·  visit_id 15.34
+  B                session_id 12.46  ·  visit_id 14.69
+  B_blob2          session_id 14.82  ·  visit_id 15.34
+
+(the counts agree across every layout: 160001 visitors, 250000 visits)
