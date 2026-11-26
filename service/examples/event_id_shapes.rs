@@ -58,6 +58,9 @@ struct Shape {
     id: String,
     /// The stored column a distinct is taken over when the id is composed.
     stored: String,
+    /// The two columns that make the id, as one expression — what a distinct
+    /// is taken over when the id is never composed.
+    pair: String,
     /// The order the event log sorts by. For the composite shapes it is the
     /// two stored columns: the id's order **is** their order, so the log can
     /// sort without composing the id for every row.
@@ -133,6 +136,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             select: vec![uuid_text(&format!("{inst}||lpad(to_hex(s.i), 12, '0')"))],
             id: "event_id".to_string(),
             stored: "event_id".to_string(),
+            pair: "event_id".to_string(),
             order: "event_id DESC".to_string(),
         },
         // 丙 — the same sixteen bytes, in a blob.
@@ -142,6 +146,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             select: vec![format!("from_hex({inst}||lpad(to_hex(s.i), 12, '0'))")],
             id: "event_id".to_string(),
             stored: "event_id".to_string(),
+            pair: "event_id".to_string(),
             order: "event_id DESC".to_string(),
         },
         // 甲 — composite: the instance in a twelve-byte blob, the counter in
@@ -158,6 +163,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             ],
             id: composed.to_string(),
             stored: "num".to_string(),
+            pair: "(instance_id, num)".to_string(),
             order: "instance_id DESC, num DESC".to_string(),
         },
         // 甲二 — the same, with the counter in an integer column.
@@ -173,6 +179,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             ],
             id: composed.to_string(),
             stored: "num".to_string(),
+            pair: "(instance_id, num)".to_string(),
             order: "instance_id DESC, num DESC".to_string(),
         },
         // 丁 — the instance in a sixteen-byte blob, the counter a bigint.
@@ -188,6 +195,7 @@ fn shapes(instances: i64, rows: i64) -> Vec<Shape> {
             ],
             id: composed.to_string(),
             stored: "num".to_string(),
+            pair: "(instance_id, num)".to_string(),
             order: "instance_id DESC, num DESC".to_string(),
         },
     ]
@@ -331,6 +339,15 @@ fn queries(shape: &Shape, days: i64) -> Vec<(&'static str, String)> {
                  FROM website_event WHERE {window} \
                  ORDER BY created_at DESC, {id} DESC LIMIT 50",
                 id = shape.id
+            ),
+        ),
+        // The distinct over the **pair**, without composing an id at all:
+        // the pair is what makes the id unique.
+        (
+            "distinct_pair",
+            format!(
+                "SELECT count(DISTINCT ({pair})) FROM website_event",
+                pair = shape.pair
             ),
         ),
         // The same log, sorted by the stored columns instead of by the
@@ -477,6 +494,7 @@ fn measure(
     repeats: usize,
     interleave: i64,
     days: i64,
+    threads: i64,
 ) -> anyhow::Result<Row> {
     let path = dir.join(format!("{}.duckdb", shape.name));
     let _ = fs::remove_file(&path);
@@ -489,6 +507,9 @@ fn measure(
     // harness's one statement does. The queries below run under the
     // product's own ceiling — that is the one being measured.
     conn.execute_batch("SET memory_limit='8GB'")?;
+    if threads > 0 {
+        conn.execute_batch(&format!("SET threads={threads}"))?;
+    }
 
     // The real schema, with the event id's columns in the shape's place.
     // The id's columns come first, the way the schema's own first column
@@ -614,6 +635,7 @@ fn main() -> anyhow::Result<()> {
     let mut interleave = 4i64;
     let mut days = 90i64;
     let mut instances = 1i64;
+    let mut threads = 0i64;
 
     let mut i = 0;
     while i < args.len() {
@@ -659,6 +681,10 @@ fn main() -> anyhow::Result<()> {
                 instances = args[i + 1].parse()?;
                 i += 2;
             }
+            "--threads" => {
+                threads = args[i + 1].parse()?;
+                i += 2;
+            }
             other => anyhow::bail!("unknown argument: {other}"),
         }
     }
@@ -678,7 +704,9 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("no shape matched");
     }
 
-    println!("rows {rows}, visitors {visitors}, instances {instances}, ceiling {memory_limit}");
+    println!(
+        "rows {rows}, visitors {visitors}, instances {instances}, ceiling {memory_limit}, threads {threads}"
+    );
     println!();
 
     for shape in &wanted {
@@ -692,6 +720,7 @@ fn main() -> anyhow::Result<()> {
             repeats,
             interleave,
             days,
+            threads,
         )?;
         println!("  {}", row.name);
         let cold = if row.cold_b_per_row.is_finite() {
