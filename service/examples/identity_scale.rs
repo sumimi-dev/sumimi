@@ -47,7 +47,7 @@ struct Layout {
     ddl: &'static str,
     /// the SQL that makes the value: given an expression for the entropy's
     /// thirty-two hex characters and the visit's number
-    value: fn(&str, &str) -> String,
+    value: fn(&str, &str, &str) -> String,
     /// how many bits of entropy the value carries
     entropy_bits: usize,
 }
@@ -79,37 +79,37 @@ fn marker_hex(entropy_bytes: usize) -> String {
 }
 
 /// Sixteen bytes of entropy — the shape the service writes today.
-fn today(hex: &str, _visit: &str) -> String {
+fn today(hex: &str, _visit: &str, _inst: &str) -> String {
     uuid_text(hex)
 }
 
 /// The marker layout, one function per entropy width.
-fn selfdesc6(hex: &str, _visit: &str) -> String {
+fn selfdesc6(hex: &str, _visit: &str, _inst: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,12)", marker_hex(6)))
 }
-fn selfdesc8(hex: &str, _visit: &str) -> String {
+fn selfdesc8(hex: &str, _visit: &str, _inst: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,16)", marker_hex(8)))
 }
-fn selfdesc10(hex: &str, _visit: &str) -> String {
+fn selfdesc10(hex: &str, _visit: &str, _inst: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,20)", marker_hex(10)))
 }
-fn selfdesc12(hex: &str, _visit: &str) -> String {
+fn selfdesc12(hex: &str, _visit: &str, _inst: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,24)", marker_hex(12)))
 }
 
 /// The same bytes, in a blob — a carrier that is not a uuid, so it is never
 /// bit packed, but whose width is not in its type either: **the length of a
 /// blob says how wide it is** ⇒ the marker is not needed.
-fn blob6(hex: &str, _visit: &str) -> String {
+fn blob6(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex(substr({hex},1,12))")
 }
-fn blob8(hex: &str, _visit: &str) -> String {
+fn blob8(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex(substr({hex},1,16))")
 }
-fn blob10(hex: &str, _visit: &str) -> String {
+fn blob10(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex(substr({hex},1,20))")
 }
-fn blob12(hex: &str, _visit: &str) -> String {
+fn blob12(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex(substr({hex},1,24))")
 }
 
@@ -117,41 +117,38 @@ fn blob12(hex: &str, _visit: &str) -> String {
 /// the marker, the low half the entropy. The value is a uuid's bytes, but
 /// the column is not a uuid — so the engine never bit packs it (⇒ no
 /// unpack) and the length is not the width (⇒ the marker still has to say).
-fn blob16marker(hex: &str, _visit: &str) -> String {
+fn blob16marker(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex('ffffffffffffffff'||substr({hex},1,16))")
 }
 
 /// The same, with the self-describing marker.
-fn blob16selfdesc(hex: &str, _visit: &str) -> String {
+fn blob16selfdesc(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex('fffffffffffffffffffe'||substr({hex},1,16))")
 }
 
-/// **B's prefix**: eight constant bytes in front, so the engine's bit
-/// packing eats them and only the entropy is left. The marker is the
-/// tool's own: a run of ones with a zero in the last byte, so the position
-/// of the zero says how wide the entropy is.
-const B_PREFIX: &str = "fffffffffffffffe";
-
+/// **B's shape**: the same as the event id's — the instance half in front
+/// (ten bytes, constant) and six bytes of entropy behind it. The visit id
+/// carries the per-site visit counter, the session id the visitor's hash.
 /// **B's session id**: the visitor's identity in the low eight bytes.
-fn b_session(hash: &str, _visit: &str) -> String {
-    uuid_text(&format!("'{B_PREFIX}'||substr({hash},1,16)"))
+fn b_session(hash: &str, _visit: &str, inst: &str) -> String {
+    uuid_text(&format!("'{inst}'||substr({hash},1,12)"))
 }
 
 /// **B's visit id**: the per-site counter in the low eight bytes.
-fn b_visit(_hash: &str, visit: &str) -> String {
-    uuid_text(&format!("'{B_PREFIX}'||lpad(to_hex({visit}),16,'0')"))
+fn b_visit(_hash: &str, visit: &str, inst: &str) -> String {
+    uuid_text(&format!("'{inst}'||lpad(to_hex({visit}),12,'0')"))
 }
 
 /// **A plain counter**: one number per visit, the way the identity line's
 /// design wants it (a per-site counter; the site's scope comes from the
 /// report's `website_id` filter, so it is not in the value).
-fn counter4(_hex: &str, visit: &str) -> String {
+fn counter4(_hex: &str, visit: &str, _inst: &str) -> String {
     format!("CAST({visit} AS INTEGER)")
 }
 
 /// The identity as one constant value: the file is then the row without the
 /// identity's cost, which is how the identity's share of the row is found.
-fn constant(_hex: &str, _visit: &str) -> String {
+fn constant(_hex: &str, _visit: &str, _inst: &str) -> String {
     "CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID)".to_string()
 }
 
@@ -252,8 +249,8 @@ fn traffic(
     // The two hashes are computed once per row, in the subquery.
     // The visit's number, in the outer query (a counter's value).
     let visit_expr_outer = visit_expr.replace("(i //", "(s.i //");
-    let session_value = (pair.session.value)("s.hs", &visit_expr_outer);
-    let visit_value = (pair.visit.value)("s.hv", &visit_expr_outer);
+    let session_value = (pair.session.value)("s.hs", &visit_expr_outer, &instance_hex);
+    let visit_value = (pair.visit.value)("s.hv", &visit_expr_outer, &instance_hex);
 
     format!(
         "INSERT INTO website_event
