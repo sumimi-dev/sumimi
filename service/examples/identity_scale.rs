@@ -234,6 +234,18 @@ fn queries(days: i64) -> Vec<(&'static str, String)> {
     vec![
         ("scan", "SELECT count(*) FROM website_event".to_string()),
         (
+            // The scan alone: the biggest value, no hashing, no grouping.
+            // What it costs beyond the metadata is the **unpack** — the
+            // engine widening the packed 64 bits back to 128.
+            "scan_max",
+            "SELECT max(session_id) FROM website_event".to_string(),
+        ),
+        (
+            // The scan plus the hash the aggregate would pay anyway.
+            "scan_hash",
+            "SELECT sum(hash(session_id)) FROM website_event".to_string(),
+        ),
+        (
             "distinct_only",
             format!("SELECT count(DISTINCT session_id) FROM website_event WHERE {window}"),
         ),
@@ -882,8 +894,8 @@ fn main() -> anyhow::Result<()> {
 
     println!();
     println!(
-        "  {:<12} {:>10} {:>10} {:>12} {:>12} {:>10} {:>12}",
-        "the layout", "scan ms", "distinct ms", "summary ms", "summary×2 ms", "bounces ms", "summary30d ms"
+        "  {:<12} {:>9} {:>9} {:>9} {:>10} {:>12} {:>12} {:>10}",
+        "the layout", "scan", "scanhash", "distinct", "summary", "summary×2", "bounces", "summary30d"
     );
     for r in &results {
         let get = |n: &str| {
@@ -894,9 +906,10 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or(f64::NAN)
         };
         println!(
-            "  {:<12} {:>10} {:>10} {:>12} {:>12} {:>10} {:>12}",
+            "  {:<12} {:>9} {:>9} {:>9} {:>10} {:>12} {:>12} {:>10}",
             r.layout,
-            show(get("scan")),
+            show(get("scan_max")),
+            show(get("scan_hash")),
             show(get("distinct_only")),
             show(get("summary")),
             show(get("summary_split")),
