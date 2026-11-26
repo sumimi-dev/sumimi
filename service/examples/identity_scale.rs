@@ -113,6 +113,13 @@ fn blob12(hex: &str, _visit: &str, _inst: &str) -> String {
     format!("from_hex(substr({hex},1,24))")
 }
 
+/// **Sixteen bytes, all of them random** — no marker, no constant prefix.
+/// The same width as the marker shape, but the dictionary cannot squeeze the
+/// constant half away, so it is the honest last point of the width curve.
+fn blob16random(hex: &str, _visit: &str, _inst: &str) -> String {
+    format!("from_hex(substr({hex},1,32))")
+}
+
 /// The marker's layout in a **blob** carrier: sixteen bytes, the high half
 /// the marker, the low half the entropy. The value is a uuid's bytes, but
 /// the column is not a uuid — so the engine never bit packs it (⇒ no
@@ -225,6 +232,7 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "blob8", ddl: "BLOB NOT NULL", value: blob8, entropy_bits: 64 },
         Layout { name: "blob10", ddl: "BLOB NOT NULL", value: blob10, entropy_bits: 80 },
         Layout { name: "blob12", ddl: "BLOB NOT NULL", value: blob12, entropy_bits: 96 },
+        Layout { name: "blob16random", ddl: "BLOB NOT NULL", value: blob16random, entropy_bits: 128 },
         Layout { name: "blob16marker", ddl: "BLOB NOT NULL", value: blob16marker, entropy_bits: 64 },
         Layout { name: "blob16selfdesc", ddl: "BLOB NOT NULL", value: blob16selfdesc, entropy_bits: 64 },
         Layout { name: "int4", ddl: "INTEGER NOT NULL", value: counter4, entropy_bits: 32 },
@@ -289,6 +297,7 @@ fn pairs() -> Vec<Pair> {
         // every row of a dictionary pays for materialising it.
         Pair { name: "blob8_bvisit", session: find("blob8"), visit: find("b8visit") },
         Pair { name: "blob12_bvisit", session: find("blob12"), visit: find("b8visit") },
+        Pair { name: "blob16random_bvisit", session: find("blob16random"), visit: find("b8visit") },
         // **The six-byte visitor id**, and the growth cases: the width
         // depends on the visitor's number, so the file holds rows of
         // different widths — that is what an upgrade looks like on disk.
