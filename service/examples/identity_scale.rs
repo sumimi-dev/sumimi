@@ -40,13 +40,14 @@ const PAGEVIEWS: &str = "event_type NOT IN ('event', 'identify', 'performance')"
 const PRODUCT_MEMORY_LIMIT: &str = "256MB";
 
 /// One shape of the two identity columns.
+#[derive(Clone, Copy)]
 struct Layout {
     name: &'static str,
     /// the column's declaration — the type is part of the shape
     ddl: &'static str,
-    /// the SQL that makes the value, given an expression for the entropy's
-    /// thirty-two hex characters
-    value: fn(&str) -> String,
+    /// the SQL that makes the value: given an expression for the entropy's
+    /// thirty-two hex characters and the visit's number
+    value: fn(&str, &str) -> String,
     /// how many bits of entropy the value carries
     entropy_bits: usize,
 }
@@ -78,37 +79,37 @@ fn marker_hex(entropy_bytes: usize) -> String {
 }
 
 /// Sixteen bytes of entropy — the shape the service writes today.
-fn today(hex: &str) -> String {
+fn today(hex: &str, _visit: &str) -> String {
     uuid_text(hex)
 }
 
 /// The marker layout, one function per entropy width.
-fn selfdesc6(hex: &str) -> String {
+fn selfdesc6(hex: &str, _visit: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,12)", marker_hex(6)))
 }
-fn selfdesc8(hex: &str) -> String {
+fn selfdesc8(hex: &str, _visit: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,16)", marker_hex(8)))
 }
-fn selfdesc10(hex: &str) -> String {
+fn selfdesc10(hex: &str, _visit: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,20)", marker_hex(10)))
 }
-fn selfdesc12(hex: &str) -> String {
+fn selfdesc12(hex: &str, _visit: &str) -> String {
     uuid_text(&format!("'{}'||substr({hex},1,24)", marker_hex(12)))
 }
 
 /// The same bytes, in a blob — a carrier that is not a uuid, so it is never
 /// bit packed, but whose width is not in its type either: **the length of a
 /// blob says how wide it is** ⇒ the marker is not needed.
-fn blob6(hex: &str) -> String {
+fn blob6(hex: &str, _visit: &str) -> String {
     format!("from_hex(substr({hex},1,12))")
 }
-fn blob8(hex: &str) -> String {
+fn blob8(hex: &str, _visit: &str) -> String {
     format!("from_hex(substr({hex},1,16))")
 }
-fn blob10(hex: &str) -> String {
+fn blob10(hex: &str, _visit: &str) -> String {
     format!("from_hex(substr({hex},1,20))")
 }
-fn blob12(hex: &str) -> String {
+fn blob12(hex: &str, _visit: &str) -> String {
     format!("from_hex(substr({hex},1,24))")
 }
 
@@ -116,18 +117,25 @@ fn blob12(hex: &str) -> String {
 /// the marker, the low half the entropy. The value is a uuid's bytes, but
 /// the column is not a uuid — so the engine never bit packs it (⇒ no
 /// unpack) and the length is not the width (⇒ the marker still has to say).
-fn blob16marker(hex: &str) -> String {
+fn blob16marker(hex: &str, _visit: &str) -> String {
     format!("from_hex('ffffffffffffffff'||substr({hex},1,16))")
 }
 
 /// The same, with the self-describing marker.
-fn blob16selfdesc(hex: &str) -> String {
+fn blob16selfdesc(hex: &str, _visit: &str) -> String {
     format!("from_hex('fffffffffffffffffffe'||substr({hex},1,16))")
+}
+
+/// **A plain counter**: one number per visit, the way the identity line's
+/// design wants it (a per-site counter; the site's scope comes from the
+/// report's `website_id` filter, so it is not in the value).
+fn counter4(_hex: &str, visit: &str) -> String {
+    format!("CAST({visit} AS INTEGER)")
 }
 
 /// The identity as one constant value: the file is then the row without the
 /// identity's cost, which is how the identity's share of the row is found.
-fn constant(_hex: &str) -> String {
+fn constant(_hex: &str, _visit: &str) -> String {
     "CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID)".to_string()
 }
 
@@ -146,6 +154,37 @@ fn layouts() -> Vec<Layout> {
         Layout { name: "blob12", ddl: "BLOB NOT NULL", value: blob12, entropy_bits: 96 },
         Layout { name: "blob16marker", ddl: "BLOB NOT NULL", value: blob16marker, entropy_bits: 64 },
         Layout { name: "blob16selfdesc", ddl: "BLOB NOT NULL", value: blob16selfdesc, entropy_bits: 64 },
+        Layout { name: "int4", ddl: "INTEGER NOT NULL", value: counter4, entropy_bits: 32 },
+    ]
+}
+
+/// **A pair of layouts** — the identity line's design gives the two columns
+/// different shapes, so the harness has to be able to say that.
+#[derive(Clone, Copy)]
+struct Pair {
+    name: &'static str,
+    session: Layout,
+    visit: Layout,
+}
+
+fn pairs() -> Vec<Pair> {
+    let find = |name: &str| -> Layout {
+        layouts()
+            .into_iter()
+            .find(|layout| layout.name == name)
+            .unwrap_or_else(|| panic!("no layout {name}"))
+    };
+    vec![
+        // today's shape: both columns are sixteen-byte uuids
+        Pair { name: "uuid16_uuid16", session: find("today"), visit: find("today") },
+        // the carrier discussion: both columns are twelve-byte blobs
+        Pair { name: "blob12_blob12", session: find("blob12"), visit: find("blob12") },
+        // **the identity line's target shape**: the visitor is a twelve-byte
+        // blob, the visit is a per-site counter
+        Pair { name: "blob12_int4", session: find("blob12"), visit: find("int4") },
+        // the two halves of the target, isolated
+        Pair { name: "blob12_uuid16", session: find("blob12"), visit: find("today") },
+        Pair { name: "uuid16_int4", session: find("today"), visit: find("int4") },
     ]
 }
 
@@ -159,7 +198,7 @@ fn layouts() -> Vec<Layout> {
 ///   one visitor in five is a heavy one (a fifth of the visits);
 /// - the visitor's browser, os and device do not change between their visits.
 fn traffic(
-    layout: &Layout,
+    pair: &Pair,
     rows: i64,
     visitors: i64,
     instance_hex: &str,
@@ -189,8 +228,10 @@ fn traffic(
     );
     let visitors_expr_outer = visitors_expr.replace("(i //", "(s.i //");
     // The two hashes are computed once per row, in the subquery.
-    let session_value = (layout.value)("s.hs");
-    let visit_value = (layout.value)("s.hv");
+    // The visit's number, in the outer query (a counter's value).
+    let visit_expr_outer = visit_expr.replace("(i //", "(s.i //");
+    let session_value = (pair.session.value)("s.hs", &visit_expr_outer);
+    let visit_value = (pair.visit.value)("s.hv", &visit_expr_outer);
 
     format!(
         "INSERT INTO website_event
@@ -442,7 +483,7 @@ struct Row {
 }
 
 fn measure(
-    layout: &Layout,
+    pair: &Pair,
     rows: i64,
     visitors: i64,
     memory_limit: &str,
@@ -453,9 +494,9 @@ fn measure(
     days: i64,
     threads: i64,
 ) -> anyhow::Result<Row> {
-    let path = dir.join(format!("{}.duckdb", layout.name));
+    let path = dir.join(format!("{}.duckdb", pair.name));
     let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(dir.join(format!("{}.duckdb.wal", layout.name)));
+    let _ = fs::remove_file(dir.join(format!("{}.duckdb.wal", pair.name)));
 
     let instance = 0x0f1e2d3c4b5a69788796u128 & event_id::INSTANCE_MAX;
     let instance_hex = event_id::instance_hex(instance);
@@ -474,12 +515,12 @@ fn measure(
         schema::EVENT,
         &Duck,
         &[
-            ("session_id", &format!("session_id {}", layout.ddl)),
-            ("visit_id", &format!("visit_id {}", layout.ddl)),
+            ("session_id", &format!("session_id {}", pair.session.ddl)),
+            ("visit_id", &format!("visit_id {}", pair.visit.ddl)),
         ],
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
-    let sql = traffic(layout, rows, visitors, &instance_hex, interleave, days)
+    let sql = traffic(&pair, rows, visitors, &instance_hex, interleave, days)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
 
@@ -497,7 +538,7 @@ fn measure(
     // of its own: the difference is what the identity costs (the way #145
     // measured it — and it has to be the same engine, or the difference is
     // the difference between two formats).
-    let without = dir.join(format!("{}-without.duckdb", layout.name));
+    let without = dir.join(format!("{}-without.duckdb", pair.name));
     let _ = fs::remove_file(&without);
     let _ = conn.execute_batch("SET memory_limit='8GB'");
     let without_b_per_row = (|| -> anyhow::Result<f64> {
@@ -516,7 +557,7 @@ fn measure(
     let mut parquet_write_ms = f64::NAN;
     let mut parquet_timings: Vec<(String, f64)> = Vec::new();
     let parquet_b_per_row = if parquet {
-        let out = dir.join(format!("{}.parquet", layout.name));
+        let out = dir.join(format!("{}.parquet", pair.name));
         let _ = fs::remove_file(&out);
         // The export is a cold-tier copy, not the thing being measured: it
         // gets the room, and a failure is reported, not fatal.
@@ -597,8 +638,8 @@ fn measure(
     let _ = fs::remove_file(&path);
 
     Ok(Row {
-        layout: layout.name.to_string(),
-        entropy_bits: layout.entropy_bits,
+        layout: pair.name.to_string(),
+        entropy_bits: pair.session.entropy_bits + pair.visit.entropy_bits,
         duckdb_b_per_row,
         parquet_b_per_row,
         without_b_per_row,
@@ -664,7 +705,8 @@ fn knobs(
             ],
         );
         conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
-        let sql = traffic(&layout, rows, visitors, &instance_hex, interleave, days)
+        let pair = Pair { name: "knobs", session: layout, visit: layout };
+        let sql = traffic(&pair, rows, visitors, &instance_hex, interleave, days)
             .replace("{ROWS}", &rows.to_string())
             .replace("{VISITORS}", &visitors.to_string());
         conn.execute_batch(&sql)?;
@@ -713,6 +755,7 @@ fn debug_bisect(
     days: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts().into_iter().find(|l| l.name == "today").expect("today");
+    let pair = Pair { name: "today", session: layout, visit: layout };
     let instance = 0x0f1e2d3c4b5a69788796u128 & event_id::INSTANCE_MAX;
     let instance_hex = event_id::instance_hex(instance);
     let path = dir.join("debug.duckdb");
@@ -728,7 +771,8 @@ fn debug_bisect(
         ],
     );
     conn.execute_batch(&format!("CREATE TABLE website_event ({columns});"))?;
-    let sql = traffic(&layout, rows, visitors, &instance_hex, interleave, days)
+    let pair = Pair { name: "debug", session: layout, visit: layout };
+    let sql = traffic(&pair, rows, visitors, &instance_hex, interleave, days)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string());
     conn.execute_batch(&sql)?;
@@ -892,8 +936,9 @@ fn main() -> anyhow::Result<()> {
             value: constant,
             entropy_bits: 0,
         };
+        let pair = Pair { name: "baseline", session: layout, visit: layout };
         results.push(measure(
-            &layout,
+            &pair,
             rows,
             visitors,
             &memory_limit,
@@ -905,14 +950,28 @@ fn main() -> anyhow::Result<()> {
             threads,
         )?);
     }
-    for layout in layouts() {
-        if let Some(only) = &only {
-            if !only.iter().any(|n| n == layout.name) {
-                continue;
-            }
-        }
+    // A name is either a pair (the two columns get different shapes) or a
+    // single layout (both columns get it).
+    let wanted: Vec<Pair> = match &only {
+        Some(names) => names
+            .iter()
+            .filter_map(|name| {
+                pairs()
+                    .into_iter()
+                    .find(|pair| pair.name == *name)
+                    .or_else(|| {
+                        layouts()
+                            .into_iter()
+                            .find(|layout| layout.name == *name)
+                            .map(|layout| Pair { name: layout.name, session: layout, visit: layout })
+                    })
+            })
+            .collect(),
+        None => pairs(),
+    };
+    for pair in wanted {
         let row = measure(
-            &layout,
+            &pair,
             rows,
             visitors,
             &memory_limit,
