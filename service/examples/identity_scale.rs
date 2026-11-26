@@ -1276,21 +1276,26 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        println!(
+            "\n== the identity columns, one at a time (B/row) ==",
+        );
+        for row in &results {
+            let parts: Vec<String> = row
+                .column_costs
+                .iter()
+                .map(|(column, size)| format!("{column} {size:.2}"))
+                .collect();
+            println!("  {:<16} {}", row.layout, parts.join("  ·  "));
+        }
         if same {
-            println!(
-                "\n== the identity columns, one at a time (B/row) ==",
-            );
-            for row in &results {
-                let parts: Vec<String> = row
-                    .column_costs
-                    .iter()
-                    .map(|(column, size)| format!("{column} {size:.2}"))
-                    .collect();
-                println!("  {:<16} {}", row.layout, parts.join("  ·  "));
-            }
             println!(
                 "\n(the counts agree across every layout: {} visitors, {} visits)",
                 base.visitors, base.visits
+            );
+        } else {
+            println!(
+                "\n!! the counts do NOT agree — the per-column costs above are still comparable \
+                 (same rows, same data), but one layout sees one fewer distinct value."
             );
         }
     }
