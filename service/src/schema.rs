@@ -150,6 +150,16 @@ pub trait Types {
 
     /// A moment in time.
     fn time(&self) -> String;
+
+    /// **The engine's spelling of a column that may be missing.**
+    ///
+    /// The default is the same as a required column's type — the engines that
+    /// have no other way say it. **ClickHouse has to be told**: its columns
+    /// are not nullable unless the type says so, and a missing value would
+    /// arrive as an empty string.
+    fn nullable(&self, type_name: &str) -> String {
+        type_name.to_string()
+    }
 }
 
 /// One column, in the engine's spelling.
@@ -161,7 +171,7 @@ pub fn column_ddl(column: &Column, types: &dyn Types) -> String {
 
     let mut out = String::new();
     let _ = write!(out, "{} ", column.name);
-    out.push_str(&match column.kind {
+    let type_name = match column.kind {
         Kind::RowId => unreachable!("the row id is handled above"),
         Kind::Text => types.text(),
         Kind::Uuid => types.uuid(),
@@ -171,6 +181,12 @@ pub fn column_ddl(column: &Column, types: &dyn Types) -> String {
         Kind::Small => types.small(),
         Kind::Real => types.real(),
         Kind::Time => types.time(),
+    };
+    // **A column that may be missing** says so in the engine's own way.
+    out.push_str(&if column.nullable {
+        types.nullable(&type_name)
+    } else {
+        type_name
     });
 
     if column.key {
