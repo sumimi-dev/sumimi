@@ -116,6 +116,13 @@ pub fn compose(instance: u128, counter: u64) -> Uuid {
 ///
 /// The version nibble is the layout's name: the event ids are version 8, the
 /// visit ids are version 9, and the two can never be the same value.
+///
+/// **The counter is in the last six bytes, not the first.** The first ten
+/// bytes are the instance, and the instance is the same for every id of one
+/// deployment ⇒ ⇒ **cutting the id down to its first eight bytes gives the
+/// instance, not the id** — every visit of a site collapses into one value.
+/// (The visitor's id is a hash, so cutting *it* down is fine — see
+/// [`crate::ua`].)
 pub fn compose_version(version: u8, instance: u128, counter: u64) -> Uuid {
     let instance = instance & INSTANCE_MAX;
     let counter = counter & COUNTER_MAX;
