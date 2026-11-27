@@ -4,6 +4,7 @@
 //! plus a small `EnvironmentFile`, never a config file in the repository.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 
@@ -301,6 +302,18 @@ pub struct Config {
     /// On by default: it is what the visit's length is measured from, and
     /// working it out from the rows costs a pass over the visit.
     pub store_session_start: bool,
+    /// The instance's **secret** — the value that makes a visitor id
+    /// un-recomputable (D-051, mneme#196).
+    ///
+    /// **The formula is public; the value is not.** It lives in a file, never
+    /// in the database, so a backup of the events does not carry it.
+    ///
+    /// It is behind a lock because it is **replaced** on a schedule — the
+    /// rotation changes the key every visitor id is derived with.
+    pub session_key: Arc<std::sync::RwLock<crate::session_key::SessionKey>>,
+    /// The scope a visitor id is derived in, when the site says nothing:
+    /// `site` (the default) · `instance` · a word of the owner's own.
+    pub session_scope: String,
     /// Directory holding the frontend files served at `/app/*` (and the tracker source).
     pub js_dir: PathBuf,
     /// Base URL of the frontend JavaScript. Point this at a CDN to serve the dashboard
@@ -490,6 +503,48 @@ impl Config {
         let store_language = env_flag("SUMIMI_STORE_LANGUAGE", true);
         let store_screen = env_flag("SUMIMI_STORE_SCREEN", true);
 
+        // The instance's **secret** (D-051, mneme#196).
+        //
+        // **The formula is public; the value is not.** Where the value comes
+        // from: nowhere (the pure derivation), a key the instance makes on
+        // first run (**the default**), or a key the owner brings.
+        let session_source = crate::session_key::Source::parse(
+            &env_any("SUMIMI_SESSION_KEY").unwrap_or_else(|| "generated".to_string()),
+        )
+        .unwrap_or(crate::session_key::Source::Generated);
+        // When the key is replaced: `never` (the default) · `day` · `7d` · `30d`.
+        let session_rotation = crate::session_key::Rotation::parse(
+            &env_any("SUMIMI_SESSION_ROTATION").unwrap_or_else(|| "never".to_string()),
+        )
+        .unwrap_or(crate::session_key::Rotation::Never);
+        // The owner's own key. **A file is the safer form** — the value does
+        // not sit in the environment, where anybody can read it.
+        let session_value = match env_path_any("SUMIMI_SESSION_KEY_FILE") {
+            Some(path) => Some(
+                std::fs::read(&path)
+                    .with_context(|| format!("reading the session key file {}", path.display()))?,
+            ),
+            None => env_any("SUMIMI_SESSION_KEY_VALUE").map(String::into_bytes),
+        };
+        // The scope a visitor id is derived in, when a site says nothing:
+        // `site` (the default) · `instance` · a word of the owner's own.
+        let session_scope = env_any("SUMIMI_SESSION_SCOPE").unwrap_or_else(|| "site".to_string());
+        // **A rotation replaces a key we made** — an owner's own key is theirs
+        // to replace, so the two do not go together.
+        if session_rotation.days().is_some() && session_source != crate::session_key::Source::Generated
+        {
+            anyhow::bail!(
+                "the session key is {} — only a key the instance made can be rotated (set SUMIMI_SESSION_KEY=generated)",
+                session_source.as_str()
+            );
+        }
+        let session_key = crate::session_key::SessionKey::load(
+            session_source,
+            session_value,
+            session_rotation,
+            &paths.dir.join("session-key"),
+        )?;
+
         // The frontend and the documentation site live next to the executable
         // when they are shipped with it — that is where the release archive puts
         // them, and where a `cargo install`ed binary finds them. The working
@@ -553,6 +608,8 @@ impl Config {
             store_session_start,
             store_language,
             store_screen,
+            session_key: Arc::new(std::sync::RwLock::new(session_key)),
+            session_scope,
             js_dir,
             app_url,
             docs_dir,
@@ -588,6 +645,20 @@ impl Config {
             "store_language" => self.store_language,
             "store_screen" => self.store_screen,
             _ => false,
+        }
+    }
+
+    /// The value of one **word** switch **for a site**.
+    ///
+    /// **The site's own setting wins.** When the site says nothing, the
+    /// instance's default stands — the same rule the flags follow.
+    pub fn switch_word(&self, settings: &serde_json::Value, name: &str) -> Option<String> {
+        if let Some(own) = crate::settings::word(settings, name) {
+            return Some(own);
+        }
+        match name {
+            "session_scope" => Some(self.session_scope.clone()),
+            _ => None,
         }
     }
 

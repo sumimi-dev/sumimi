@@ -404,6 +404,32 @@ pub async fn serve_with_geo(
         config.paths.dir.display()
     );
 
+    // **The secret is replaced on its schedule** (mneme#196) — a background
+    // task that wakes up now and then and swaps the key when the period is
+    // over. It is off by default: the key stays, and a visitor's id is the
+    // same across days.
+    {
+        let rotation = config
+            .session_key
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .rotation();
+        if rotation.days().is_some() {
+            let key = config.session_key.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    ticker.tick().await;
+                    let now = chrono::Utc::now().timestamp();
+                    let mut key = key.write().unwrap_or_else(|e| e.into_inner());
+                    if key.rotate_if_due(now) {
+                        tracing::info!("the session key was replaced — the visitor ids change with it");
+                    }
+                }
+            });
+        }
+    }
+
     // The uptime checker: every website, every few minutes.
     if config.uptime_interval_secs > 0 {
         let state = state.clone();

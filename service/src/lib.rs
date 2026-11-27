@@ -28,6 +28,7 @@ pub mod row;
 pub mod schema;
 pub mod server;
 pub mod session;
+pub mod session_key;
 pub mod settings;
 pub mod sqlite;
 pub mod storage;

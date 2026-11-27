@@ -240,17 +240,25 @@ async fn the_answer_carries_the_token() {
     // The token is ours: it carries the ids it is about.
     let claims = sumimi_service::token::verify("test-secret", &answer.cache).unwrap();
     assert_eq!(claims.website_id, "website-1");
-    // The visitor is the hash of the address and the agent — the first eight
-    // bytes of it, because that is what the token carries.
-    let visitor = sumimi_service::ua::visitor_id(
+    // The visitor is the hash of the address, the agent and the site's own id,
+    // made with **the instance's key** — the first eight bytes of it, because
+    // that is what the token carries.
+    let key = sumimi_service::session_key::SessionKey::load(
+        sumimi_service::session_key::Source::Generated,
+        None,
+        sumimi_service::session_key::Rotation::Never,
+        &path.parent().unwrap().join("session-key"),
+    )
+    .unwrap();
+    let visitor = key.derive(
+        "website-1",
         &sumimi_service::ua::visitor_address("0.0.0.0"),
         "",
-        "website-1",
     );
     assert_eq!(
         claims.visitor().map(|id| id.as_bytes()[..8].to_vec()),
         Some(visitor.as_bytes()[..8].to_vec()),
-        "the visitor is the hash of the address and the agent"
+        "the visitor is the hash of the address and the agent, made with the key"
     );
     assert_eq!(claims.session().map(|id| id.to_string()), Some(answer.visit_id));
 

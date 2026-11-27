@@ -289,14 +289,15 @@ pub fn visitor_address(ip: &str) -> String {
 /// The id is **pure**: the same visitor gets the same id on every server, after
 /// every restart, and an offline import can work it out for itself. So the row
 /// carries it, and the reports count the visitors out of it.
+///
+/// **This is the derivation without a key** — the one the instance makes by
+/// default is [`crate::session_key::SessionKey::derive`], which is keyed: the
+/// formula is public, the key is not, and so the id cannot be recomputed from
+/// the stored data. The pure one is what the owner gets when they ask for it
+/// (`SUMIMI_SESSION_KEY=none`), and it is the **same bytes** this function has
+/// always written ⇒ ⇒ a site that turns the key off gets its old ids back.
 pub fn visitor_id(address: &str, user_agent: &str, website_id: &str) -> Uuid {
-    let mut hasher = Sha256::new();
-    hasher.update(address.as_bytes());
-    hasher.update(b"\x1f");
-    hasher.update(user_agent.as_bytes());
-    hasher.update(b"\x1f");
-    hasher.update(website_id.as_bytes());
-    uuid_from_bytes(&hasher.finalize()[..16])
+    crate::session_key::pure_id(website_id, address, user_agent)
 }
 
 /// The width of the visitor id we store: **eight bytes**.

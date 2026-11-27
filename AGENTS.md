@@ -78,6 +78,10 @@ The defaults are chosen for the deployment target, not for a workstation:
 | `SUMIMI_STORE_SESSION_START` | **on** | Whether to store the session's start on every row. It is what the visit's length is measured from; without it the reports measure it from the visit's first row. |
 | `SUMIMI_STORE_LANGUAGE` | **on** | Whether to store the visitor's language. It is a dimension the dashboard breaks the traffic down by; Plausible does not store it at all. |
 | `SUMIMI_STORE_SCREEN` | **on** | Whether to store the screen's resolution (besides the device class). Plausible stores the device class only. |
+| `SUMIMI_SESSION_KEY` | **generated** | Where the visitor id's secret comes from: `generated` (the instance makes one on first run and keeps it in `session-key` beside the instance), `custom` (the owner brings one), `none` (the keyless derivation — the same identifier on every server, and computable by anybody who knows the visitor's address and user agent). **The formula is public; the value is not.** |
+| `SUMIMI_SESSION_KEY_FILE` | — | A file holding the owner's own key, when `SUMIMI_SESSION_KEY=custom`. The safer form: the value does not sit in the environment. |
+| `SUMIMI_SESSION_ROTATION` | **never** | When the key is replaced: `never` (a visitor's identifier is the same across days) or a period such as `day`, `7d`, `30d`. Only a key the instance made can be replaced. |
+| `SUMIMI_SESSION_SCOPE` | **site** | The scope a visitor id is derived in, when a site says nothing: `site` (the same visitor on two of your sites has two identifiers), `instance`, or a word of your own. |
 
 Measured on 10M and 100M row tables (`cli/examples/scale.rs`, event-row schema,
 128 MB DuckDB limit, the production thread derivation — 2 threads on a 128 MB budget):

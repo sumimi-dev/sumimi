@@ -218,26 +218,40 @@ Retention is a
     <h2>The visitor identifier</h2>
     <p>
       Analytics needs some way to say "this is the same person as yesterday". Sumimi does
-      that with <strong>one one-way hash</strong>:
+      that with <strong>one one-way hash</strong>, and — by default — with a
+      <strong>secret key</strong>:
     </p>
-    <pre class="shell"><code>session_id = SHA-256(address ‖ user_agent ‖ website_id)</code></pre>
+    <pre class="shell"><code>session_id = HMAC-SHA256(key, scope ‖ address ‖ user_agent)</code></pre>
     <p>
       The first sixteen bytes of that digest are the visitor's identifier. It is written to
       every row, and the visitor count is the number of distinct identifiers in the window.
     </p>
     <ul>
       <li>
-        <strong>It is one-way.</strong> The hash cannot be turned back into an address or a
-        user agent, so there is nothing there to leak and no secret to protect.
+        <strong>It is one-way, and the key is not published.</strong> The hash cannot be turned
+        back into an address or a user agent. The <em>formula</em> is on this page — that is
+        not a secret, and hiding it helps nobody — but the <em>key</em> is not: it is made on
+        first run, kept in a file beside your instance with mode <code>0600</code>, and never
+        written into the database, so it does not travel with a backup of your data. Somebody
+        who has only the data cannot work out which visitor is which.
+      </li>
+      <li>
+        <strong>You can see the raw traffic yourself</strong> — it arrives at your server. The
+        key does not hide the traffic from you; it keeps the stored data from being turned back
+        into people by somebody else.
       </li>
       <li>
         <strong>It survives across days</strong>, which is what "unique visitors" means: the
-        same person, seen yesterday and today, is one visitor. It is never rotated.
+        same person, seen yesterday and today, is one visitor. By default the key is never
+        replaced. Set <code>SUMIMI_SESSION_ROTATION=day</code> (or <code>7d</code>,
+        <code>30d</code>) to replace it on a schedule: the identifiers of different periods
+        then cannot be correlated, and the visitor count counts one visitor per period.
       </li>
       <li>
         <strong>It is scoped to one website</strong>: the site's own id is part of the input,
         so the same visitor on two of your sites has two identifiers and the two cannot be
-        correlated.
+        correlated. A site may choose another scope — <code>instance</code>, to merge the sites
+        of one instance, or a word of your own, to merge a set of sites wherever they run.
       </li>
       <li>
         <strong>The address that goes in is the whole IPv4 address, or the /64 of an IPv6
@@ -247,6 +261,12 @@ Retention is a
         single visitor.
       </li>
     </ul>
+    <p>
+      If you would rather have the keyless derivation — the same person has the same identifier
+      on every server, and an offline import can work it out for itself — set
+      <code>SUMIMI_SESSION_KEY=none</code>. Then the formula is the whole story, and anybody
+      who knows a visitor's address and user agent can compute their identifier.
+    </p>
     <p>
       The country, the region and the city are worked out of the address before it is
       hashed, and what is kept are those readings. Set <code>SUMIMI_STORE_RAW=1</code> and the
@@ -467,8 +487,14 @@ curl -X DELETE https://analytics.example.com/api/websites/3f2a... \
       Two practical consequences:
     </p>
     <ul>
-      <li>The database files and the JWT secret should be mode <code>0600</code>, owned by the
-        service user. The <a href="../self-host/">self-hosting guide</a> sets that up.</li>
+      <li>The database files, the JWT secret and the session key should be mode
+        <code>0600</code>, owned by the service user. The
+        <a href="../self-host/">self-hosting guide</a> sets that up.</li>
+      <li>Back up the session key <strong>separately</strong> from the data, or point
+        <code>SUMIMI_SESSION_KEY_FILE</code> at a copy kept elsewhere. Restore the data
+        without the key and the identifiers written before the restore no longer match the
+        ones written after it — the visitor count breaks at that point, while the visit count
+        and everything else carry on.</li>
       <li>If you put your site behind a CDN, the CDN sees visitor addresses regardless of
         what Sumimi does. That is outside Sumimi's control, and it is worth remembering when
         you weigh the privacy benefit of running your own analytics.</li>

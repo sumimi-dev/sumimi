@@ -438,6 +438,26 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
       <li><code>SUMIMI_STORE_SCREEN</code> — whether to store the screen's resolution
         (besides the device class). It is <strong>on</strong> by default; Plausible stores
         the device class only.</li>
+      <li><code>SUMIMI_SESSION_KEY</code> — where the visitor id's secret comes from:
+        <code>generated</code> (the default — the instance makes one on first run and keeps
+        it in <code>session-key</code> beside the instance), <code>custom</code> (you bring
+        one: point <code>SUMIMI_SESSION_KEY_FILE</code> at it, or set
+        <code>SUMIMI_SESSION_KEY_VALUE</code>), or <code>none</code> (the old keyless
+        derivation — the same identifier on every server, and computable by anybody who
+        knows the visitor's address and user agent).</li>
+      <li><code>SUMIMI_SESSION_KEY_FILE</code> — a file holding your own key, when
+        <code>SUMIMI_SESSION_KEY=custom</code>. A file is the safer form: the value does not
+        sit in the environment, where anything on the machine can read it.</li>
+      <li><code>SUMIMI_SESSION_ROTATION</code> — when the key is replaced:
+        <code>never</code> (the default — a visitor's identifier is the same across days, and
+        the visitor count of a window is a real count of people), or a period such as
+        <code>day</code>, <code>7d</code> or <code>30d</code>. Only a key the instance made
+        can be replaced.</li>
+      <li><code>SUMIMI_SESSION_SCOPE</code> — the scope a visitor id is derived in, when a
+        site says nothing: <code>site</code> (the default — the same visitor on two of your
+        sites has two identifiers), <code>instance</code> (the sites of one instance may be
+        merged), or a word of your own (the sites that share it may be merged, wherever they
+        run).</li>
       <li><code>SUMIMI_APP_URL</code> — base URL of the dashboard frontend
         (<code>sumimi-app.js</code> and <code>sumimi.css</code>). It defaults to
         <code>https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js</code>, so the frontend is

@@ -17,6 +17,15 @@
 
 use serde_json::Value;
 
+/// What a switch's value looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// **A flag**: on or off — the site says nothing, on, or off.
+    Flag,
+    /// **A word**: the site's own string, which means something by itself.
+    Word,
+}
+
 /// One switch.
 #[derive(Debug, Clone, Copy)]
 pub struct Switch {
@@ -24,6 +33,8 @@ pub struct Switch {
     pub name: &'static str,
     /// What it turns off.
     pub what: &'static str,
+    /// What its value looks like.
+    pub kind: Kind,
 }
 
 /// The switches a site may set.
@@ -31,46 +42,62 @@ pub const SWITCHES: &[Switch] = &[
     Switch {
         name: "store_raw",
         what: "the raw address and the raw agent",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_titles",
         what: "the page title",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_referrer_path",
         what: "the referrer's path",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_referrer_query",
         what: "the referrer's query",
+        kind: Kind::Flag,
     },
     Switch {
         name: "keep_query",
         what: "the query string",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_click_ids",
         what: "the advertising click ids' values",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_coordinates",
         what: "the coordinates",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_web_vitals",
         what: "the web vitals",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_session_start",
         what: "the session's start on every row",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_language",
         what: "the visitor's language",
+        kind: Kind::Flag,
     },
     Switch {
         name: "store_screen",
         what: "the screen's resolution",
+        kind: Kind::Flag,
+    },
+    Switch {
+        name: "session_scope",
+        what: "the scope the visitor id is derived in: site (the default) · instance · a word of your own",
+        kind: Kind::Word,
     },
 ];
 
@@ -81,6 +108,13 @@ pub fn of(settings: &Value, name: &str) -> Option<bool> {
     settings.get(name).and_then(|value| value.as_bool())
 }
 
+/// The setting of one **word** switch in a site's settings.
+///
+/// **`None` means the site says nothing** ⇒ ⇒ the instance's default stands.
+pub fn word(settings: &Value, name: &str) -> Option<String> {
+    settings.get(name).and_then(|value| value.as_str()).map(String::from)
+}
+
 /// Check the settings: an object, and every key one of ours.
 ///
 /// **A `null` is allowed** ⇒ ⇒ it means "inherit", the same as an absent key.
@@ -89,11 +123,17 @@ pub fn validate(settings: &Value) -> Result<(), String> {
         return Err("the settings must be an object".to_string());
     };
     for (name, value) in object {
-        if !SWITCHES.iter().any(|switch| switch.name == name) {
+        let Some(switch) = SWITCHES.iter().find(|switch| switch.name == name) else {
             return Err(format!("unknown switch: {name}"));
+        };
+        if value.is_null() {
+            continue;
         }
-        if !value.is_boolean() && !value.is_null() {
-            return Err(format!("the switch {name} must be true, false or null"));
+        match switch.kind {
+            Kind::Flag if value.is_boolean() => {}
+            Kind::Flag => return Err(format!("the switch {name} must be true, false or null")),
+            Kind::Word if value.is_string() => {}
+            Kind::Word => return Err(format!("the switch {name} must be a word or null")),
         }
     }
     Ok(())

@@ -8,7 +8,7 @@ use axum::Json;
 use serde::Deserialize;
 use std::net::SocketAddr;
 
-use crate::api::AppState;
+use crate::api::{AppState, WebsiteMeta};
 use crate::error::ApiError;
 use crate::models::{normalise, Hit, HitKind, Payload, SendRequest};
 use crate::token;
@@ -280,6 +280,32 @@ pub struct CollectParams {
 
 /// Decide what kind of hit this is.
 ///
+/// The **scope** a visitor id is derived in (D-051).
+///
+/// | the setting says | the scope is |
+/// |---|---|
+/// | `site` (the default) | the website's own id ⇒ ⇒ two sites never share a visitor |
+/// | `instance` | the instance's id ⇒ ⇒ the sites of one instance may be merged |
+/// | any other word | that word ⇒ ⇒ the sites that share it may be merged |
+///
+/// The **site's own setting wins** over the instance's default (D-052).
+fn scope_of(state: &AppState, meta: &WebsiteMeta) -> String {
+    let scope = state
+        .config
+        .switch_word(&meta.settings, "session_scope")
+        .unwrap_or_else(|| state.config.session_scope.clone());
+    match scope.as_str() {
+        "site" => meta.id.clone(),
+        "instance" => state
+            .config
+            .session_key
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .instance_id(),
+        other => other.to_string(),
+    }
+}
+
 /// `type: "event"` without a name is a pageview (that is how the Umami v2 tracker
 /// sends them); with a name it is a custom event.
 fn resolve_kind(kind: Option<&str>, has_name: bool) -> HitKind {
@@ -353,11 +379,19 @@ pub fn build_hit(
     };
     let ip_prefix = ua::ip_prefix(&ip);
 
-    // The visitor: what the session is cut for. It is a hash of the visitor's
-    // address (the whole IPv4 one, the /64 of an IPv6 one), the user agent
-    // and the website — **sixteen bytes**, and pure: the same visitor gets the
-    // same id on every server.
-    let visitor_id = ua::visitor_id(&ua::visitor_address(&ip), &user_agent, &meta.id);
+    // The visitor: what the session is cut for.
+    //
+    // **The scope** says which namespace the id lives in (D-051): the site
+    // (the default — two sites never share a visitor) · the instance (the
+    // sites of one instance may be merged) · a word of the owner's own.
+    let scope = scope_of(state, &meta);
+    // **The key** is the instance's secret: the formula is public, the key is
+    // not ⇒ ⇒ a visitor's id cannot be recomputed from the stored data alone.
+    let address = ua::visitor_address(&ip);
+    let mut visitor_id = {
+        let key = state.config.session_key.read().unwrap_or_else(|e| e.into_inner());
+        key.derive(&scope, &address, &user_agent)
+    };
 
     let clock = crate::db::now();
 
@@ -376,6 +410,22 @@ pub fn build_hit(
     };
     let at = created_at.and_utc().timestamp_micros();
     let now = created_at.and_utc().timestamp();
+
+    // **A visit that straddles a rotation** keeps the id it had: the key was
+    // replaced while the visitor was there, and the id they would get now is
+    // a different one ⇒ ⇒ without this they would be counted twice, and the
+    // visit would be cut in two. The previous key is kept for two days, and
+    // the token says which visitor it belongs to ⇒ ⇒ so the token settles it.
+    if let Some(previous) = {
+        let key = state.config.session_key.read().unwrap_or_else(|e| e.into_inner());
+        key.derive_previous(&scope, &address, &user_agent, now)
+    } {
+        if let Some(claims) = token.as_ref() {
+            if claims.visitor() == Some(previous) {
+                visitor_id = previous;
+            }
+        }
+    }
 
     // The session: **the client's own token first**, then the client's own id
     // (the older way), and only then the one the server works out.
