@@ -248,9 +248,9 @@ pub struct Config {
     pub store_bots: bool,
     /// Store the page title with every hit.
     ///
-    /// **Off by default** — the way Plausible has it: its tracker sends no title
-    /// and its table has no column for one. Turn it on with
-    /// `SUMIMI_STORE_TITLES=1` when the title is worth having.
+    /// **On by default** — the title is the **site's own content**, not the
+    /// visitor's data ⇒ ⇒ it belongs to the "as many features as possible,
+    /// and private" default. (Plausible does not collect it at all.)
     pub store_titles: bool,
     /// Store the referrer's **path** (besides its host).
     ///
@@ -281,10 +281,9 @@ pub struct Config {
     pub store_coordinates: bool,
     /// Store the **web vitals** (LCP, INP, CLS, FCP, TTFB).
     ///
-    /// **Off by default** — the way Plausible has it (it has no such thing).
-    /// The tracker sends them and the tracker documentation promises them, so
-    /// a site that wants them turns them on with
-    /// `SUMIMI_STORE_WEB_VITALS=1`.
+    /// **On by default** — they are the **site's own performance**, not the
+    /// visitor's data, and the tracker documentation promises them. (Plausible
+    /// has no such thing.)
     pub store_web_vitals: bool,
     /// Store the visitor's **language**.
     ///
@@ -442,11 +441,13 @@ impl Config {
         // These three keep everything by default — that is what Umami stores, and
         // it is the baseline we promised. Turning one off is a per-site policy
         // decision, so it is environment-only.
-        // **The defaults are Plausible's way** (the owner's call, 2026-11-28):
-        // no page title, no query string, no referrer query, no web vitals,
-        // no raw address or agent, no click id values, no coordinates ⇒ ⇒ and
-        // the referrer's path stays, because Plausible keeps it.
-        let store_titles = env_flag("SUMIMI_STORE_TITLES", false);
+        // **The default is "as many features as possible, and private"**
+        // (the owner's call, 2026-11-28) ⇒ ⇒ what is **the visitor's data**
+        // is not stored: no raw address or agent, no query string, no
+        // referrer's query, no click id values, no coordinates ⇒ ⇒ what is
+        // **the site's own data** is stored: the page title, the web vitals,
+        // the referrer's path, the language, the screen's resolution.
+        let store_titles = env_flag("SUMIMI_STORE_TITLES", true);
         // The raw address and the raw agent: **off** by default.
         let store_raw = env_flag("SUMIMI_STORE_RAW", false);
         // The crawlers: **on** by default — they are kept and marked, and the
@@ -479,7 +480,7 @@ impl Config {
         let store_coordinates = env_flag("SUMIMI_STORE_COORDINATES", false);
         // **The web vitals are on**: the tracker sends them and the
         // documentation promises them.
-        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", false);
+        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", true);
         // **The session's start is on**: it is what the visit's length is
         // measured from.
         let store_session_start = env_flag("SUMIMI_STORE_SESSION_START", true);

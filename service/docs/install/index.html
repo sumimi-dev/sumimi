@@ -407,8 +407,8 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         tokens and other personal data tend to be. Set it to <code>1</code> to keep the
         raw query string (Umami keeps it).</li>
       <li><code>SUMIMI_STORE_TITLES</code> — whether to store the page title. It is
-        <strong>off</strong> by default (Plausible does not collect it at all); set it to
-        <code>1</code> to keep it.</li>
+        <strong>on</strong> by default — the title is the site's own content; set it to
+        <code>0</code> to leave it out (Plausible does not collect it at all).</li>
       <li><code>SUMIMI_STORE_REFERRER_PATH</code> — whether to store the referrer's
         path (besides its host). It is <strong>on</strong> by default; set it to
         <code>0</code> to keep the host alone, which is what the referrer breakdown
@@ -426,8 +426,9 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         visit. It is <strong>off</strong> by default; the country, the region and the city
         are stored instead, and they are what the reports group by.</li>
       <li><code>SUMIMI_STORE_WEB_VITALS</code> — whether to store the web vitals (LCP,
-        INP, CLS, FCP, TTFB). It is <strong>off</strong> by default (Plausible has no such
-        thing); the tracker sends them, so set it to <code>1</code> to keep them.</li>
+        INP, CLS, FCP, TTFB). It is <strong>on</strong> by default — they are the site's
+        own performance; set it to <code>0</code> to leave them out (Plausible has no such
+        thing).</li>
       <li><code>SUMIMI_STORE_SESSION_START</code> — whether to store the session's start
         on every row. It is <strong>on</strong> by default: it is what the visit's length
         is measured from.</li>

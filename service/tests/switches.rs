@@ -168,13 +168,14 @@ async fn a_site_that_says_nothing_inherits_the_instance() {
     assert!(response.status().is_success());
     assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
 
-    // **The instance's defaults are Plausible's way** (the owner's call): the
-    // title is not kept, the query string is not kept, the click ids' values
-    // are not kept, the web vitals are not kept — and the referrer's path is.
-    assert_eq!(column(&db, "page_title"), None);
+    // **The instance's default is "as many features as possible, and private"**
+    // (the owner's call): what is the visitor's data is not kept — the query
+    // string, the click ids' values, the raw address and the agent — and what
+    // is the site's own data is kept: the title, the web vitals, the
+    // referrer's path, the language, the screen.
+    assert_eq!(column(&db, "page_title").as_deref(), Some("The page"));
     assert_eq!(column(&db, "gclid"), None);
     assert_eq!(column(&db, "url_query"), None);
-    assert_eq!(column(&db, "lcp"), None);
     assert_eq!(column(&db, "referrer_path").as_deref(), Some("/item"));
 }
 

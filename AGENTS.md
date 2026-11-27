@@ -68,13 +68,13 @@ The defaults are chosen for the deployment target, not for a workstation:
 | `SUMIMI_DUCKDB_TEMP_LIMIT` | 2 GB | A query that spills must not fill the disk. |
 | `SUMIMI_DUCKDB_THREADS` | auto (one per 64 MB of budget) | A parallel `COUNT(DISTINCT …)` builds **one hash table per thread**, so a query's memory scales with the thread count: at 10 threads a 5M-row summary query runs out of a 128 MB limit, at 2 threads it takes 154 ms. |
 | `SUMIMI_MAX_BATCH` | **10 000** | The most events written in one batch. **The batch is what the write path costs in memory** — a batch is one transaction, and its rows sit in memory while it is written. The flush interval says how *often* we write; this says how *much*. Without it, two seconds of traffic at 170 000 views a second is 340 000 rows — 170 MB in one transaction, and the measured peak RSS was 1.5 GB. With it, the write path's memory does not depend on the rate. |
-| `SUMIMI_STORE_TITLES` | **off** | Off by default (Plausible does not collect the title at all). Set it to `1` to keep it. |
+| `SUMIMI_STORE_TITLES` | **on** | Whether to store the page title. It is the site's own content ⇒ ⇒ it is kept; set it to `0` to leave it out. |
 | `SUMIMI_STORE_REFERRER_PATH` | **on** | Whether to store the referrer's path (besides its host). Plausible stores it too. |
 | `SUMIMI_STORE_REFERRER_QUERY` | **off** | Whether to store the referrer's query — the part that can carry a person's data. Plausible drops it too. |
 | `SUMIMI_KEEP_QUERY` | **off** | Whether to store the raw query string. The marketing parameters are parsed out of it either way. Umami keeps it; Plausible drops it. |
 | `SUMIMI_STORE_CLICK_IDS` | **off** | Whether to store the ad click ids' **values** (`gclid` and the rest). The value's only use is to tell a paid search from an organic one at the moment of collection — after that it is a person's identifier. Plausible keeps only the parameter's name. |
 | `SUMIMI_STORE_COORDINATES` | **off** | Whether to store the coordinates of the visit. Nothing reads them: the country, the region and the city are what the reports group by. Plausible stores a city id, never coordinates. |
-| `SUMIMI_STORE_WEB_VITALS` | **off** | Whether to store the web vitals (LCP, INP, CLS, FCP, TTFB). They are the largest thing stored per row. Plausible has no such thing. |
+| `SUMIMI_STORE_WEB_VITALS` | **on** | Whether to store the web vitals (LCP, INP, CLS, FCP, TTFB). They are the site's own performance (the largest thing stored per row). Plausible has no such thing. |
 | `SUMIMI_STORE_SESSION_START` | **on** | Whether to store the session's start on every row. It is what the visit's length is measured from; without it the reports measure it from the visit's first row. |
 | `SUMIMI_STORE_LANGUAGE` | **on** | Whether to store the visitor's language. It is a dimension the dashboard breaks the traffic down by; Plausible does not store it at all. |
 | `SUMIMI_STORE_SCREEN` | **on** | Whether to store the screen's resolution (besides the device class). Plausible stores the device class only. |
