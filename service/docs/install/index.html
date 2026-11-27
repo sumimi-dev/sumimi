@@ -411,9 +411,14 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         <strong>on</strong> by default (Umami stores it); set it to <code>0</code> to
         save the space — the title is roughly half of the stored bytes and almost nobody
         looks at it.</li>
-      <li><code>SUMIMI_STORE_FULL_REFERRER</code> — whether to store the referring URL
-        in full. It is <strong>on</strong> by default; set it to <code>0</code> to keep
-        the host alone, which is what the referrer breakdown groups by anyway.</li>
+      <li><code>SUMIMI_STORE_REFERRER_PATH</code> — whether to store the referrer's
+        path (besides its host). It is <strong>on</strong> by default; set it to
+        <code>0</code> to keep the host alone, which is what the referrer breakdown
+        groups by anyway.</li>
+      <li><code>SUMIMI_STORE_REFERRER_QUERY</code> — whether to store the referrer's
+        query. It is <strong>on</strong> by default; set it to <code>0</code> to drop
+        it — that is the part of the referrer that can carry a person's data (session
+        tokens, search terms), and it is what Plausible drops.</li>
       <li><code>SUMIMI_APP_URL</code> — base URL of the dashboard frontend
         (<code>sumimi-app.js</code> and <code>sumimi.css</code>). It defaults to
         <code>https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js</code>, so the frontend is

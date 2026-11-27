@@ -223,6 +223,29 @@ async fn a_site_can_turn_the_title_off() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_referrers_path_and_query_are_two_switches() {
+    let (app, db, _guard) = app("referrer", r#"{"store_referrer_query": false}"#, |_| {});
+    let response = app.oneshot(request(&hit())).await.unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
+
+    // The path stays (Plausible keeps it too) — the query goes.
+    assert_eq!(column(&db, "referrer_path").as_deref(), Some("/item"));
+    assert_eq!(column(&db, "referrer_query"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_referrers_query_can_stay_while_the_path_goes() {
+    let (app, db, _guard) = app("referrer-path", r#"{"store_referrer_path": false}"#, |_| {});
+    let response = app.oneshot(request(&hit())).await.unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
+
+    assert_eq!(column(&db, "referrer_path"), None);
+    assert_eq!(column(&db, "referrer_query").as_deref(), Some("id=7"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_settings_survive_a_round_trip() {
     let (app, db, _guard) = app("round-trip", r#"{"store_click_ids": false}"#, |_| {});
 

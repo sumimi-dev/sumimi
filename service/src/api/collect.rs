@@ -499,7 +499,9 @@ pub fn build_hit(
 
     // The referrer: host, path and query. The breakdown groups by the host, which
     // is what Umami shows; the path and the query are the extra we keep.
-    // `SUMIMI_STORE_FULL_REFERRER=0` keeps the host alone.
+    // **They are two switches** (`store_referrer_path` · `store_referrer_query`)
+    // ⇒ ⇒ the query — the part that can carry a person's data — can be turned
+    // off on its own.
     let (referrer, referrer_path, referrer_query) = match raw.referrer {
         Some(referrer) => {
             let (host, path, query) = split_referrer(referrer);
@@ -521,11 +523,9 @@ pub fn build_hit(
                 _ => false,
             };
             let host = if self_referral { None } else { host };
-            if switch("store_full_referrer") {
-                (host, path, query)
-            } else {
-                (host, None, None)
-            }
+            let path = if switch("store_referrer_path") { path } else { None };
+            let query = if switch("store_referrer_query") { query } else { None };
+            (host, path, query)
         }
         None => (None, None, None),
     };

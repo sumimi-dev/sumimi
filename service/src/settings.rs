@@ -37,8 +37,12 @@ pub const SWITCHES: &[Switch] = &[
         what: "the page title",
     },
     Switch {
-        name: "store_full_referrer",
-        what: "the referrer's path and query",
+        name: "store_referrer_path",
+        what: "the referrer's path",
+    },
+    Switch {
+        name: "store_referrer_query",
+        what: "the referrer's query",
     },
     Switch {
         name: "keep_query",

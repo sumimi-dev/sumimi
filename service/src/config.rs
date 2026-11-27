@@ -249,12 +249,18 @@ pub struct Config {
     /// to save the space — at 10M views/day the title is roughly half of the stored
     /// bytes and almost nobody looks at it.
     pub store_titles: bool,
-    /// Store the whole referring URL instead of just its host.
+    /// Store the referrer's **path** (besides its host).
     ///
-    /// On by default: Umami stores the full referrer. Turn it off to keep the host
-    /// alone — the breakdown groups by the host anyway, and the full URL is the
-    /// single largest field we store.
-    pub store_full_referrer: bool,
+    /// On by default: Plausible stores the referrer's host and path too (only
+    /// its query is dropped), and the path says which page the visit came
+    /// from.
+    pub store_referrer_path: bool,
+    /// Store the referrer's **query**.
+    ///
+    /// On by default — **but it is the part that carries a person's data**
+    /// (session tokens, search terms) ⇒ ⇒ so this is the one to turn off
+    /// first, and Plausible drops it by default.
+    pub store_referrer_query: bool,
     /// Store the **advertising click ids' values** (`gclid`, `fbclid`, …).
     ///
     /// **Off by default** (D-064): the value's only use is to tell a paid
@@ -428,7 +434,18 @@ impl Config {
         // marked traffic is left out of the numbers. Turn it off and they are
         // dropped at the door, the way Umami drops them.
         let store_bots = env_flag("SUMIMI_STORE_BOTS", true);
-        let store_full_referrer = env_flag("SUMIMI_STORE_FULL_REFERRER", true);
+        // **The referrer's path and its query are two switches** (D-064's
+        // follow-up): Plausible stores the host and the path, and drops the
+        // query ⇒ ⇒ they are told apart here too.
+        let mut store_referrer_path = env_flag("SUMIMI_STORE_REFERRER_PATH", true);
+        let mut store_referrer_query = env_flag("SUMIMI_STORE_REFERRER_QUERY", true);
+        // **The old name still works** — it sets both ⇒ ⇒ an operator who
+        // turned the whole referrer off keeps it off (a privacy setting must
+        // not quietly turn itself back on).
+        if let Some(old) = env_flag_opt("SUMIMI_STORE_FULL_REFERRER") {
+            store_referrer_path = old;
+            store_referrer_query = old;
+        }
 
         let keep_query = env_flag("SUMIMI_KEEP_QUERY", true);
 
@@ -503,7 +520,8 @@ impl Config {
             store_raw,
             store_bots,
             store_titles,
-            store_full_referrer,
+            store_referrer_path,
+            store_referrer_query,
             store_click_ids,
             store_coordinates,
             store_web_vitals,
@@ -533,7 +551,8 @@ impl Config {
         match name {
             "store_raw" => self.store_raw,
             "store_titles" => self.store_titles,
-            "store_full_referrer" => self.store_full_referrer,
+            "store_referrer_path" => self.store_referrer_path,
+            "store_referrer_query" => self.store_referrer_query,
             "keep_query" => self.keep_query,
             "store_click_ids" => self.store_click_ids,
             "store_coordinates" => self.store_coordinates,
@@ -741,9 +760,17 @@ pub fn total_ram_bytes() -> Option<u64> {
 
 /// Read a boolean environment variable.
 fn env_flag(key: &str, default: bool) -> bool {
+    env_flag_opt(key).unwrap_or(default)
+}
+
+/// A flag from the environment — **`None` when it is not there**.
+///
+/// ⇒ ⇒ A caller can tell "the operator said off" from "the operator said
+/// nothing" ⇒ ⇒ which is what a default that another variable may override
+/// needs.
+fn env_flag_opt(key: &str) -> Option<bool> {
     env_any(key)
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(default)
 }
 
 /// The instance field of the event ids, when it is set in the environment.

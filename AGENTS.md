@@ -69,7 +69,8 @@ The defaults are chosen for the deployment target, not for a workstation:
 | `SUMIMI_DUCKDB_THREADS` | auto (one per 64 MB of budget) | A parallel `COUNT(DISTINCT …)` builds **one hash table per thread**, so a query's memory scales with the thread count: at 10 threads a 5M-row summary query runs out of a 128 MB limit, at 2 threads it takes 154 ms. |
 | `SUMIMI_MAX_BATCH` | **10 000** | The most events written in one batch. **The batch is what the write path costs in memory** — a batch is one transaction, and its rows sit in memory while it is written. The flush interval says how *often* we write; this says how *much*. Without it, two seconds of traffic at 170 000 views a second is 340 000 rows — 170 MB in one transaction, and the measured peak RSS was 1.5 GB. With it, the write path's memory does not depend on the rate. |
 | `SUMIMI_STORE_TITLES` | **on** | On by default: Umami stores the title, and that is the baseline. Set it to `0` to save the space — the title is roughly half of the stored bytes and almost nobody looks at it. |
-| `SUMIMI_STORE_FULL_REFERRER` | **on** | On by default. Set it to `0` to keep the referrer host alone — which is what the breakdown groups by anyway. |
+| `SUMIMI_STORE_REFERRER_PATH` | **on** | Whether to store the referrer's path (besides its host). Plausible stores it too. |
+| `SUMIMI_STORE_REFERRER_QUERY` | **on** | Whether to store the referrer's query — the part that can carry a person's data. Plausible drops it. |
 | `SUMIMI_KEEP_QUERY` | **on** | On by default: Umami stores the query string, and the marketing parameters live in it (they are parsed out of it either way). Set it to `0` to drop the raw query string. |
 
 Measured on 10M and 100M row tables (`cli/examples/scale.rs`, event-row schema,
