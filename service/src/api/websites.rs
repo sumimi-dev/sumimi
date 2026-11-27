@@ -36,6 +36,23 @@ pub async fn create(
         state.config.retention_days,
         state.config.country_header.as_deref(),
     )?;
+    // **The switches may be set right away** — a site that is born with them
+    // does not have to be born and then changed.
+    let website = match request.settings.as_ref() {
+        Some(settings) => {
+            if let Err(message) = crate::settings::validate(settings) {
+                return Err(ApiError::BadRequest(message));
+            }
+            state.storage.update_website(
+                &website.id,
+                &WebsitePatch {
+                    settings: Some(settings.clone()),
+                    ..Default::default()
+                },
+            )?
+        }
+        None => website,
+    };
 
     Ok((
         StatusCode::CREATED,
@@ -47,6 +64,7 @@ pub async fn create(
             "createdAt": website.created_at,
             "updatedAt": website.updated_at,
             "retentionDays": website.retention_days,
+            "settings": website.settings,
         })),
     ))
 }
@@ -69,11 +87,19 @@ pub async fn update(
     Path(id): Path<String>,
     Json(request): Json<UpdateWebsite>,
 ) -> Result<Json<Website>, ApiError> {
+    // **The switches are checked** — a name that is not ours is a mistake,
+    // and it is caught here rather than silently doing nothing.
+    if let Some(settings) = request.settings.as_ref() {
+        if let Err(message) = crate::settings::validate(settings) {
+            return Err(ApiError::BadRequest(message));
+        }
+    }
     let patch = WebsitePatch {
         name: request.name.clone(),
         domain: request.domain.clone(),
         retention_days: request.retention_days,
         country_header: request.country_header.clone(),
+        settings: request.settings.clone(),
     };
     Ok(Json(state.storage.update_website(&id, &patch)?))
 }

@@ -337,6 +337,9 @@ pub fn build_hit(
     token: Option<&token::Claims>,
 ) -> Result<(Hit, token::Claims), ApiError> {
     let meta = state.website_meta(website_key)?;
+    // **The site's own switches**, over the instance's defaults (D-052):
+    // the environment is the instance's default, and a site may override it.
+    let switch = |name: &str| state.config.switch(&meta.settings, name);
 
     // **The client may say who the visitor is** — Umami's rule. A server-side
     // import knows the visitor's address and browser better than the server
@@ -480,7 +483,7 @@ pub fn build_hit(
     // The query string is stored by default — Umami stores it, and it is where the
     // marketing parameters live. `SUMIMI_KEEP_QUERY=0` keeps the parameters but
     // drops the raw query string.
-    let url_query = if state.config.keep_query { url_query } else { None };
+    let url_query = if switch("keep_query") { url_query } else { None };
     let param = |name: &str| -> Option<&str> {
         params
             .iter()
@@ -518,7 +521,7 @@ pub fn build_hit(
                 _ => false,
             };
             let host = if self_referral { None } else { host };
-            if state.config.store_full_referrer {
+            if switch("store_full_referrer") {
                 (host, path, query)
             } else {
                 (host, None, None)
@@ -614,7 +617,15 @@ pub fn build_hit(
         website_id: meta.id,
         visit_id,
         visitor_id,
-        session_start,
+        // **The session's start**: the token keeps it either way — the session
+        // goes on across the events ⇒ ⇒ so the switch is about the column,
+        // not about the session. Without it the reports measure the visit
+        // from its first row.
+        session_start: if switch("store_session_start") {
+            session_start
+        } else {
+            None
+        },
         // **The raw address and the raw agent are not stored by default.**
         //
         // What is stored is the *reading* of them — the country, the region,
@@ -624,9 +635,9 @@ pub fn build_hit(
         //
         // `SUMIMI_STORE_RAW=1` stores them anyway, for the owner who wants
         // the full set of dimensions.
-        ip: if state.config.store_raw { ip } else { String::new() },
-        ip_prefix: if state.config.store_raw { ip_prefix } else { String::new() },
-        user_agent: if state.config.store_raw { user_agent } else { String::new() },
+        ip: if switch("store_raw") { ip } else { String::new() },
+        ip_prefix: if switch("store_raw") { ip_prefix } else { String::new() },
+        user_agent: if switch("store_raw") { user_agent } else { String::new() },
         user_id,
         retention_days: meta.retention_days,
         kind,
@@ -634,7 +645,7 @@ pub fn build_hit(
 
         url,
         url_query,
-        title: if state.config.store_titles { raw.title } else { None },
+        title: if switch("store_titles") { raw.title } else { None },
 
         referrer,
         referrer_path,
@@ -654,8 +665,11 @@ pub fn build_hit(
         country,
         region,
         city,
-        latitude,
-        longitude,
+        // **The coordinates**: nothing reads them ⇒ ⇒ they are off unless
+        // the site asks for them (the country, the region and the city are
+        // what the reports group by).
+        latitude: if switch("store_coordinates") { latitude } else { None },
+        longitude: if switch("store_coordinates") { longitude } else { None },
 
         utm_source,
         utm_medium,
@@ -663,18 +677,24 @@ pub fn build_hit(
         utm_content,
         utm_term,
 
-        gclid,
-        fbclid,
-        msclkid,
-        ttclid,
-        lifatid,
-        twclid,
+        // **The advertising click ids' values** (D-064): the value's only use
+        // is to tell a paid search from an organic one, and that was worked
+        // out above ⇒ ⇒ after that it is a person's identifier ⇒ ⇒ so it is
+        // not kept unless the site asks for it.
+        gclid: if switch("store_click_ids") { gclid } else { None },
+        fbclid: if switch("store_click_ids") { fbclid } else { None },
+        msclkid: if switch("store_click_ids") { msclkid } else { None },
+        ttclid: if switch("store_click_ids") { ttclid } else { None },
+        lifatid: if switch("store_click_ids") { lifatid } else { None },
+        twclid: if switch("store_click_ids") { twclid } else { None },
 
-        lcp: raw.lcp,
-        inp: raw.inp,
-        cls: raw.cls,
-        fcp: raw.fcp,
-        ttfb: raw.ttfb,
+        // **The web vitals**: the largest thing we store per row ⇒ ⇒ a site
+        // that does not look at them can turn them off.
+        lcp: if switch("store_web_vitals") { raw.lcp } else { None },
+        inp: if switch("store_web_vitals") { raw.inp } else { None },
+        cls: if switch("store_web_vitals") { raw.cls } else { None },
+        fcp: if switch("store_web_vitals") { raw.fcp } else { None },
+        ttfb: if switch("store_web_vitals") { raw.ttfb } else { None },
 
         name: raw.name,
         // The owner's own tag, unless the hit carries a marker.

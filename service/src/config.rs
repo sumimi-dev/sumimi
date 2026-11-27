@@ -255,6 +255,32 @@ pub struct Config {
     /// alone — the breakdown groups by the host anyway, and the full URL is the
     /// single largest field we store.
     pub store_full_referrer: bool,
+    /// Store the **advertising click ids' values** (`gclid`, `fbclid`, …).
+    ///
+    /// **Off by default** (D-064): the value's only use is to tell a paid
+    /// search from an organic one at the moment of collection — which is
+    /// exactly what Plausible does — ⇒ ⇒ and after that the value is a
+    /// person's identifier, so it is not kept.
+    ///
+    /// The marketing parameters beside them (`utm_source`, …) are **not** part
+    /// of this: they say where the visit came from, not who it is.
+    pub store_click_ids: bool,
+    /// Store the **coordinates** of the visit.
+    ///
+    /// **Off by default**: nothing reads them. The country, the region and
+    /// the city are stored instead — and they are what the reports group by.
+    pub store_coordinates: bool,
+    /// Store the **web vitals** (LCP, INP, CLS, FCP, TTFB).
+    ///
+    /// On by default: the tracker sends them and the documentation promises
+    /// them. They are the largest thing we store per row, so a site that
+    /// does not look at them can turn them off.
+    pub store_web_vitals: bool,
+    /// Store the **session's start** on every row.
+    ///
+    /// On by default: it is what the visit's length is measured from, and
+    /// working it out from the rows costs a pass over the visit.
+    pub store_session_start: bool,
     /// Directory holding the frontend files served at `/app/*` (and the tracker source).
     pub js_dir: PathBuf,
     /// Base URL of the frontend JavaScript. Point this at a CDN to serve the dashboard
@@ -406,6 +432,22 @@ impl Config {
 
         let keep_query = env_flag("SUMIMI_KEEP_QUERY", true);
 
+        // The four storage switches (D-064 and what the columns cost).
+        //
+        // **The click ids' values are off** (D-064): the value's only use is
+        // to tell a paid search from an organic one, at the moment of
+        // collection ⇒ ⇒ and after that it is a person's identifier.
+        let store_click_ids = env_flag("SUMIMI_STORE_CLICK_IDS", false);
+        // **The coordinates are off**: nothing reads them — the country, the
+        // region and the city are what the reports group by.
+        let store_coordinates = env_flag("SUMIMI_STORE_COORDINATES", false);
+        // **The web vitals are on**: the tracker sends them and the
+        // documentation promises them.
+        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", true);
+        // **The session's start is on**: it is what the visit's length is
+        // measured from.
+        let store_session_start = env_flag("SUMIMI_STORE_SESSION_START", true);
+
         // The frontend and the documentation site live next to the executable
         // when they are shipped with it — that is where the release archive puts
         // them, and where a `cargo install`ed binary finds them. The working
@@ -462,6 +504,10 @@ impl Config {
             store_bots,
             store_titles,
             store_full_referrer,
+            store_click_ids,
+            store_coordinates,
+            store_web_vitals,
+            store_session_start,
             js_dir,
             app_url,
             docs_dir,
@@ -470,6 +516,31 @@ impl Config {
             ssl_cache_dir,
             ssl_port,
         })
+    }
+
+    /// The value of one switch **for a site**.
+    ///
+    /// **The site's own setting wins.** When the site says nothing, the
+    /// instance's default stands — the environment is the instance's default
+    /// (D-052), and a site may override it.
+    ///
+    /// The names are the switch names ([`crate::settings::SWITCHES`]) ⇒ ⇒ one
+    /// list says what exists, and this says what each one defaults to.
+    pub fn switch(&self, settings: &serde_json::Value, name: &str) -> bool {
+        if let Some(own) = crate::settings::of(settings, name) {
+            return own;
+        }
+        match name {
+            "store_raw" => self.store_raw,
+            "store_titles" => self.store_titles,
+            "store_full_referrer" => self.store_full_referrer,
+            "keep_query" => self.keep_query,
+            "store_click_ids" => self.store_click_ids,
+            "store_coordinates" => self.store_coordinates,
+            "store_web_vitals" => self.store_web_vitals,
+            "store_session_start" => self.store_session_start,
+            _ => false,
+        }
     }
 
     /// The collection path's limits — what the admission gate enforces.

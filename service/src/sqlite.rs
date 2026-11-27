@@ -382,6 +382,19 @@ impl SqliteBackend {
                     )
                 })?;
                 conn = Connection::open(path)?;
+            } else if version == 13 {
+                // **v13 → v14**: the site's own switches get a column.
+                //
+                // **The rows are carried over** — nothing a row means changes:
+                // the column is empty, so every switch inherits the instance's
+                // default, exactly as it did before.
+                tracing::warn!(
+                    "the database {} was written by schema v{version}: the settings column is \
+                    added — the rows are carried over",
+                    path.display()
+                );
+                conn.execute_batch("ALTER TABLE website ADD COLUMN settings TEXT;")?;
+                write_schema_version(&conn)?;
             } else {
                 tracing::warn!(
                     "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \
@@ -852,7 +865,7 @@ fn ts(value: chrono::NaiveDateTime) -> i64 {
 ///   page is `url_path`, its title is `page_title`, the referrer's host is
 ///   `referrer_domain`, and the click id is `li_fat_id`. ⇒ ⇒ The main file
 ///   holds the sites and the bookkeeping; each site's file holds its facts.
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// The schema version the database was written with (`0` for a fresh file).
 fn read_schema_version(conn: &Connection) -> Result<i64> {
@@ -1315,7 +1328,7 @@ impl Storage for SqliteBackend {
     fn websites(&self) -> Result<Vec<Website>> {
         self.with_reader(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, domain, created_at, updated_at, retention_days, country_header
+                "SELECT id, name, domain, created_at, updated_at, retention_days, country_header, settings
                  FROM website ORDER BY created_at DESC",
             )?;
             let mut rows = stmt.query([])?;
@@ -1329,6 +1342,7 @@ impl Storage for SqliteBackend {
                     updated_at: from_ts(row.get(4)?),
                     retention_days: row.get(5)?,
                     country_header: row.get(6)?,
+                    settings: crate::settings::parse(row.get::<usize, Option<String>>(7)?.as_deref()),
                 });
             }
             Ok(out)
@@ -1339,7 +1353,7 @@ impl Storage for SqliteBackend {
         self.with_reader(|conn| {
             Ok(conn
                 .query_row(
-                    "SELECT id, name, domain, created_at, updated_at, retention_days, country_header
+                    "SELECT id, name, domain, created_at, updated_at, retention_days, country_header, settings
                      FROM website WHERE id = ?1",
                     params![id],
                     |row| {
@@ -1351,6 +1365,9 @@ impl Storage for SqliteBackend {
                             updated_at: from_ts(row.get(4)?),
                             retention_days: row.get(5)?,
                             country_header: row.get(6)?,
+                            settings: crate::settings::parse(
+                                row.get::<usize, Option<String>>(7)?.as_deref(),
+                            ),
                         })
                     },
                 )
@@ -1374,11 +1391,14 @@ impl Storage for SqliteBackend {
             updated_at: now,
             retention_days,
             country_header: country_header.map(|c| c.to_string()),
+            // **A new site says nothing** ⇒ ⇒ every switch inherits the
+            // instance's default.
+            settings: serde_json::Value::Object(serde_json::Map::new()),
         };
         self.with(|conn| {
             conn.execute(
-                "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header, settings)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     website.id,
                     website.name,
@@ -1386,7 +1406,9 @@ impl Storage for SqliteBackend {
                     ts(website.created_at),
                     ts(website.updated_at),
                     website.retention_days,
-                    website.country_header
+                    website.country_header,
+                    // Nothing in the column ⇒ ⇒ the instance's default stands.
+                    Option::<String>::None
                 ],
             )?;
             Ok(())
@@ -1401,7 +1423,7 @@ impl Storage for SqliteBackend {
         self.with(|conn| {
             let mut website = conn
                 .query_row(
-                    "SELECT id, name, domain, created_at, updated_at, retention_days, country_header
+                    "SELECT id, name, domain, created_at, updated_at, retention_days, country_header, settings
                      FROM website WHERE id = ?1",
                     params![id],
                     |row| {
@@ -1413,6 +1435,9 @@ impl Storage for SqliteBackend {
                             updated_at: from_ts(row.get(4)?),
                             retention_days: row.get(5)?,
                             country_header: row.get(6)?,
+                            settings: crate::settings::parse(
+                                row.get::<usize, Option<String>>(7)?.as_deref(),
+                            ),
                         })
                     },
                 )
@@ -1435,11 +1460,17 @@ impl Storage for SqliteBackend {
             if let Some(country_header) = patch.country_header.as_ref() {
                 website.country_header = Some(country_header.clone());
             }
+            // **The switches**: the patch replaces the whole object ⇒ ⇒ an
+            // empty object puts every switch back to the instance's default.
+            if let Some(settings) = patch.settings.as_ref() {
+                website.settings = settings.clone();
+            }
+            let settings_text = crate::settings::to_text(&website.settings);
             website.updated_at = crate_now();
 
             conn.execute(
                 "UPDATE website SET name = ?2, domain = ?3, updated_at = ?4,
-                        retention_days = ?5, country_header = ?6
+                        retention_days = ?5, country_header = ?6, settings = ?7
                  WHERE id = ?1",
                 params![
                     website.id,
@@ -1447,7 +1478,8 @@ impl Storage for SqliteBackend {
                     website.domain,
                     ts(website.updated_at),
                     website.retention_days,
-                    website.country_header
+                    website.country_header,
+                    settings_text
                 ],
             )?;
             Ok(website)

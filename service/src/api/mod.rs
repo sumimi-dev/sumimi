@@ -66,6 +66,10 @@ pub struct WebsiteMeta {
     pub domain: Option<String>,
     pub retention_days: i32,
     pub country_header: Option<String>,
+    /// **The site's own switches** — see [`crate::settings`].
+    ///
+    /// A switch that is not in it inherits the instance's default.
+    pub settings: serde_json::Value,
 }
 
 /// Shared application state.
@@ -191,6 +195,7 @@ impl AppState {
                 domain: website.domain,
                 retention_days: website.retention_days,
                 country_header: website.country_header,
+                settings: website.settings,
             })
             .collect::<Vec<_>>();
 

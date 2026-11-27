@@ -289,6 +289,7 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
             updated_at: start_date().and_hms_opt(0, 0, 0).unwrap(),
             retention_days: 0,
             country_header: None,
+            settings: serde_json::Value::Object(serde_json::Map::new()),
         })
         .collect();
 

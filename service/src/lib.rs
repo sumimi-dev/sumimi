@@ -28,6 +28,7 @@ pub mod row;
 pub mod schema;
 pub mod server;
 pub mod session;
+pub mod settings;
 pub mod sqlite;
 pub mod storage;
 pub mod static_files;

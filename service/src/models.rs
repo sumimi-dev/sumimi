@@ -619,6 +619,11 @@ pub struct Website {
     pub updated_at: chrono::NaiveDateTime,
     pub retention_days: i32,
     pub country_header: Option<String>,
+    /// **The site's own switches** — see [`crate::settings`].
+    ///
+    /// An object; a switch that is not in it inherits the instance's default.
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 
 /// Request body for creating a website.
@@ -627,6 +632,11 @@ pub struct CreateWebsite {
     pub name: String,
     #[serde(default)]
     pub domain: Option<String>,
+    /// **The site's own switches** — see [`crate::settings`].
+    ///
+    /// A switch that is not in it inherits the instance's default.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
 }
 
 /// Request body for updating a website.
@@ -640,6 +650,12 @@ pub struct UpdateWebsite {
     pub retention_days: Option<i32>,
     #[serde(default)]
     pub country_header: Option<String>,
+    /// **The site's own switches** — the whole object replaces the old one.
+    ///
+    /// `null` (or an empty object) puts every switch back to the instance's
+    /// default.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
 }
 
 /// Login request.

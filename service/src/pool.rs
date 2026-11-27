@@ -354,6 +354,19 @@ impl Db {
                     anyhow::anyhow!("opening the new duckdb database {}: {e}", path.display())
                 })?;
                 Self::configure(&conn, &settings)?;
+            } else if version == 13 {
+                // **v13 → v14**: the site's own switches get a column.
+                //
+                // **The rows are carried over** — nothing a row means changes:
+                // the column is empty, so every switch inherits the instance's
+                // default, exactly as it did before.
+                tracing::warn!(
+                    "the database {} was written by schema v{version}: the settings column is \
+                    added — the rows are carried over",
+                    path.display()
+                );
+                conn.execute_batch("ALTER TABLE website ADD COLUMN settings VARCHAR;")?;
+                crate::db::write_version(&conn, None)?;
             } else {
                 tracing::warn!(
                     "the database {} was written by schema v{version}: it is replaced by an empty v{} one — \

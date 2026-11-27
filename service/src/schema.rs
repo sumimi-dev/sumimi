@@ -375,6 +375,9 @@ pub const WEBSITE: &[Column] = &[
     Column::required("updated_at", Kind::Time),
     Column::with_default("retention_days", Kind::Small, "0"),
     Column::new("country_header", Kind::Text),
+    // **The site's own switches** — a JSON object (see [`crate::settings`]).
+    // Nothing in it means "inherit the instance's default".
+    Column::new("settings", Kind::Text),
 ];
 
 /// The columns of the `meta` table.

@@ -429,7 +429,7 @@ fn erase_site(conn: &Connection, website_id: &str, layout: Layout) -> Result<(u6
 
 fn websites(conn: &Connection) -> Result<Vec<Website>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, domain, created_at, updated_at, retention_days, country_header
+        "SELECT id, name, domain, created_at, updated_at, retention_days, country_header, settings
          FROM website ORDER BY created_at DESC",
     )?;
     let mut rows = stmt.query([])?;
@@ -443,6 +443,7 @@ fn websites(conn: &Connection) -> Result<Vec<Website>> {
             updated_at: row.get(4)?,
             retention_days: row.get(5)?,
             country_header: row.get(6)?,
+            settings: crate::settings::parse(row.get::<usize, Option<String>>(7)?.as_deref()),
         });
     }
     Ok(out)
@@ -450,7 +451,7 @@ fn websites(conn: &Connection) -> Result<Vec<Website>> {
 
 fn website(conn: &Connection, id: &str) -> Result<Option<Website>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, domain, created_at, updated_at, retention_days, country_header
+        "SELECT id, name, domain, created_at, updated_at, retention_days, country_header, settings
          FROM website WHERE id = ?",
     )?;
     let mut rows = stmt.query([id])?;
@@ -463,6 +464,7 @@ fn website(conn: &Connection, id: &str) -> Result<Option<Website>> {
             updated_at: row.get(4)?,
             retention_days: row.get(5)?,
             country_header: row.get(6)?,
+            settings: crate::settings::parse(row.get::<usize, Option<String>>(7)?.as_deref()),
         })),
         None => Ok(None),
     }
@@ -478,9 +480,20 @@ fn create_website(
     let id = uuid::Uuid::new_v4().to_string();
     let now = crate::db::now();
     conn.execute(
-        "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-        duckdb::params![id, name, domain, now, now, retention_days, country_header],
+        "INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header, settings)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        duckdb::params![
+            id,
+            name,
+            domain,
+            now,
+            now,
+            retention_days,
+            country_header,
+            // **A new site says nothing** ⇒ ⇒ every switch inherits the
+            // instance's default.
+            Option::<String>::None
+        ],
     )?;
     Ok(Website {
         id,
@@ -490,6 +503,7 @@ fn create_website(
         updated_at: now,
         retention_days,
         country_header: country_header.map(str::to_string),
+        settings: serde_json::Value::Object(serde_json::Map::new()),
     })
 }
 
@@ -515,12 +529,16 @@ fn update_website(conn: &Connection, id: &str, patch: &WebsitePatch) -> Result<W
     };
     let retention_days = patch.retention_days.unwrap_or(existing.retention_days);
     let country_header = patch.country_header.clone().or(existing.country_header.clone());
+    // **The switches**: the patch replaces the whole object ⇒ ⇒ an empty
+    // object puts every switch back to the instance's default.
+    let settings = patch.settings.clone().unwrap_or(existing.settings.clone());
+    let settings_text = crate::settings::to_text(&settings);
     let now = crate::db::now();
 
     conn.execute(
-        "UPDATE website SET name = ?, domain = ?, retention_days = ?, country_header = ?, updated_at = ?
+        "UPDATE website SET name = ?, domain = ?, retention_days = ?, country_header = ?, settings = ?, updated_at = ?
          WHERE id = ?",
-        duckdb::params![name, domain, retention_days, country_header, now, id],
+        duckdb::params![name, domain, retention_days, country_header, settings_text, now, id],
     )?;
 
     Ok(Website {
@@ -531,6 +549,7 @@ fn update_website(conn: &Connection, id: &str, patch: &WebsitePatch) -> Result<W
         updated_at: now,
         retention_days,
         country_header,
+        settings,
     })
 }
 

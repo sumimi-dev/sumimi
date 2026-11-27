@@ -501,8 +501,10 @@ fn a_v11_database_is_split_into_one_file_per_site() {
             );
             CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR);
             INSERT INTO meta VALUES ('schema_version', '11');
-            INSERT INTO website VALUES ('w1', 'One', 'one.example', now(), now(), 0, NULL);
-            INSERT INTO website VALUES ('w2', 'Two', 'two.example', now(), now(), 0, NULL);
+            INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+            VALUES ('w1', 'One', 'one.example', now(), now(), 0, NULL);
+            INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+            VALUES ('w2', 'Two', 'two.example', now(), now(), 0, NULL);
             INSERT INTO event (id, website_id, visit_id, session_id, ip, ip_prefix, user_agent, created_at, url, url_query, title, referrer, referrer_path, referrer_query, hostname, browser, os, device, country, city, event_type)
             VALUES (1, 'w1', '00000000-0000-0000-0000-000000000001',
                     '00000000-0000-0000-0000-000000000002', '', '203.0.113', 'UA', now(),
@@ -716,7 +718,8 @@ fn an_older_database_is_replaced_by_an_empty_one() {
             );
             CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR);
             INSERT INTO meta VALUES ('schema_version', '6');
-            INSERT INTO website VALUES ('w1', 'One', 'one.example', now(), now(), 0, NULL);
+            INSERT INTO website (id, name, domain, created_at, updated_at, retention_days, country_header)
+            VALUES ('w1', 'One', 'one.example', now(), now(), 0, NULL);
             INSERT INTO event (id, website_id, visit_id, visitor_id, created_at, url, event_type)
             VALUES (1, 'w1', '00000000-0000-0000-0000-000000000001',
                     '00000000-0000-0000-0000-000000000002', now(), '/one', 'pageview');

@@ -80,7 +80,7 @@ use duckdb::Connection;
 ///   page is `url_path`, its title is `page_title`, the referrer's host is
 ///   `referrer_domain`, and the click id is `li_fat_id`. ⇒ ⇒ The main file
 ///   holds the sites and the bookkeeping; each site's file holds its facts.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// How DuckDB spells the kinds.
 pub struct Duck;
@@ -197,7 +197,7 @@ fn create_table(
 }
 
 /// Write the schema version into the `meta` table.
-fn write_version(conn: &Connection, catalog: Option<&str>) -> Result<()> {
+pub fn write_version(conn: &Connection, catalog: Option<&str>) -> Result<()> {
     conn.execute(
         &format!(
             "INSERT INTO {} (key, value) VALUES ('schema_version', ?) \
@@ -565,7 +565,18 @@ pub fn split_into_sites(path: &Path, conn: &Connection, instance: u128) -> Resul
     let escaped = new_path.to_string_lossy().replace('\'', "''");
     conn.execute_batch(&format!("ATTACH '{escaped}' AS new"))?;
     init_main_schema_at(conn, Some("new"))?;
-    conn.execute("INSERT INTO new.website SELECT * FROM main.website", [])?;
+    // **The columns are named** — the old table has one less than the new one
+    // (the settings column came later), and `SELECT *` would not fit.
+    let carried = crate::schema::names(crate::schema::WEBSITE)
+        .iter()
+        .filter(|name| **name != "settings")
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<String>>()
+        .join(", ");
+    conn.execute(
+        &format!("INSERT INTO new.website ({carried}) SELECT {carried} FROM main.website"),
+        [],
+    )?;
     // **The half the migration used is the instance's half** — so the rows
     // that were carried over and the rows written from now on are in one
     // namespace.

@@ -473,6 +473,10 @@ pub struct WebsitePatch {
     pub retention_days: Option<i32>,
     /// A new country header.
     pub country_header: Option<String>,
+    /// **The site's own switches** — the whole object replaces the old one.
+    ///
+    /// `None` leaves them alone.
+    pub settings: Option<serde_json::Value>,
 }
 /// One event of the session log: the fields a session row is built from.
 #[derive(Debug, Clone)]
