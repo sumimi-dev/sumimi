@@ -402,23 +402,41 @@ password: 8f3c1b9d0e7a4f26b5c8d1e3a9f7b2c4
         “how many AI crawlers came?” at all — with them dropped, that question has
         no answer for the past, only for what comes after.</li>
       <li><code>SUMIMI_KEEP_QUERY</code> — whether to store the query string of the
-        collected URLs. It is <strong>on</strong> by default, because that is what Umami
-        stores and the marketing parameters (UTM, ad click ids) live in it — they are
-        parsed out of it either way. Set it to <code>0</code> to keep the parameters but
-        drop the raw query string, which is where session tokens and other personal data
-        tend to be.</li>
+        collected URLs. It is <strong>off</strong> by default — the marketing parameters
+        (UTM) are parsed out of it either way, and what is left over is where session
+        tokens and other personal data tend to be. Set it to <code>1</code> to keep the
+        raw query string (Umami keeps it).</li>
       <li><code>SUMIMI_STORE_TITLES</code> — whether to store the page title. It is
-        <strong>on</strong> by default (Umami stores it); set it to <code>0</code> to
-        save the space — the title is roughly half of the stored bytes and almost nobody
-        looks at it.</li>
+        <strong>off</strong> by default (Plausible does not collect it at all); set it to
+        <code>1</code> to keep it.</li>
       <li><code>SUMIMI_STORE_REFERRER_PATH</code> — whether to store the referrer's
         path (besides its host). It is <strong>on</strong> by default; set it to
         <code>0</code> to keep the host alone, which is what the referrer breakdown
         groups by anyway.</li>
       <li><code>SUMIMI_STORE_REFERRER_QUERY</code> — whether to store the referrer's
-        query. It is <strong>on</strong> by default; set it to <code>0</code> to drop
-        it — that is the part of the referrer that can carry a person's data (session
-        tokens, search terms), and it is what Plausible drops.</li>
+        query. It is <strong>off</strong> by default — that is the part of the referrer
+        that can carry a person's data (session tokens, search terms), and it is what
+        Plausible drops. Set it to <code>1</code> to keep it.</li>
+      <li><code>SUMIMI_STORE_CLICK_IDS</code> — whether to store the ad click ids'
+        <em>values</em> (<code>gclid</code> and the rest). It is <strong>off</strong> by
+        default: the value's only use is to tell a paid search from an organic one at the
+        moment of collection, and after that it is a person's identifier. Set it to
+        <code>1</code> to keep the values.</li>
+      <li><code>SUMIMI_STORE_COORDINATES</code> — whether to store the coordinates of the
+        visit. It is <strong>off</strong> by default; the country, the region and the city
+        are stored instead, and they are what the reports group by.</li>
+      <li><code>SUMIMI_STORE_WEB_VITALS</code> — whether to store the web vitals (LCP,
+        INP, CLS, FCP, TTFB). It is <strong>off</strong> by default (Plausible has no such
+        thing); the tracker sends them, so set it to <code>1</code> to keep them.</li>
+      <li><code>SUMIMI_STORE_SESSION_START</code> — whether to store the session's start
+        on every row. It is <strong>on</strong> by default: it is what the visit's length
+        is measured from.</li>
+      <li><code>SUMIMI_STORE_LANGUAGE</code> — whether to store the visitor's language.
+        It is <strong>on</strong> by default (it is a dimension the dashboard breaks the
+        traffic down by); Plausible does not store it at all.</li>
+      <li><code>SUMIMI_STORE_SCREEN</code> — whether to store the screen's resolution
+        (besides the device class). It is <strong>on</strong> by default; Plausible stores
+        the device class only.</li>
       <li><code>SUMIMI_APP_URL</code> — base URL of the dashboard frontend
         (<code>sumimi-app.js</code> and <code>sumimi.css</code>). It defaults to
         <code>https://cdn.jsdelivr.net/gh/sumimi-dev/sumimi@main/js</code>, so the frontend is

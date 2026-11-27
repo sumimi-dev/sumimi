@@ -111,17 +111,17 @@ Retention is a
           <tr>
             <td>Page URL</td>
             <td>The tracker</td>
-            <td>The path <em>and</em> the query string. The server splits the two apart and parses the marketing parameters out of the query.</td>
+            <td>The path. The query string is parsed — the marketing parameters come out of it — and then dropped. <strong>Not stored.</strong></td>
           </tr>
           <tr>
             <td>Referrer</td>
             <td>The tracker</td>
-            <td>The full referring URL. The server splits it into its host, its path and its query.</td>
+            <td>The host and the path. The query is dropped. <strong>Not stored:</strong> the query.</td>
           </tr>
           <tr>
             <td>Page title</td>
             <td>The tracker</td>
-            <td>The <code>&lt;title&gt;</code> of the page.</td>
+            <td>The <code>&lt;title&gt;</code> of the page. <strong>Not stored</strong> by default — set <code>SUMIMI_STORE_TITLES=1</code> to keep it.</td>
           </tr>
           <tr>
             <td>Host name</td>
@@ -293,30 +293,36 @@ Retention is a
     <h2>URLs and query strings</h2>
     <p>
       The tracker sends the page URL and the referrer in full, and the server splits them
-      apart: it stores the path, the query string and the referrer's host, path and query.
-      The query string is kept because it is where the marketing parameters live.
+      apart: it keeps the path, and the marketing parameters that come out of the query
+      string. The query string itself — and the referrer's query — are <strong>not
+      stored</strong>. They are where the personal data lives (session tokens, email
+      addresses, search terms), and the marketing parameters do not need them.
     </p>
     <pre class="shell"><code><span class="cmt"># what the visitor visits</span>
 https://blog.example.com/posts/hello?utm_source=newsletter&amp;email=ada@example.com
 
 <span class="cmt"># what is stored</span>
 url_path = /posts/hello
-url_query = utm_source=newsletter&amp;email=ada@example.com
 utm_source = newsletter</code></pre>
     <p>
       The server parses the marketing parameters (<code>utm_source</code>,
       <code>utm_medium</code>, <code>utm_campaign</code>, <code>utm_content</code>,
-      <code>utm_term</code>) and the ad click ids (<code>gclid</code>,
-      <code>fbclid</code>, <code>msclkid</code>, <code>ttclid</code>,
-      <code>li_fat_id</code> — <code>lifatid</code> is accepted too —
-      <code>twclid</code>) out of it and stores them as their own
-      columns.
+      <code>utm_term</code>) out of the query string and stores them as their own
+      columns. The ad click ids (<code>gclid</code>, <code>fbclid</code>,
+      <code>msclkid</code>, <code>ttclid</code>, <code>li_fat_id</code> —
+      <code>lifatid</code> is accepted too — <code>twclid</code>) are parsed out of it
+      too, but <strong>their values are not stored</strong>: the only thing that is done
+      with them is to tell a paid search from an organic one at the moment of collection
+      (a <code>Google</code> visit that carries a <code>gclid</code> is a paid one). Set
+      <code>SUMIMI_STORE_CLICK_IDS=1</code> to keep the values themselves.
     </p>
     <p>
-      This does mean the query string is personal data: it routinely carries session
-      tokens, email addresses and search terms. If you do not want it, run your own
-      Sumimi behind a reverse proxy that strips the query string before it reaches
-      <code>POST /api/send</code>.
+      The referrer is treated the same way: the host and the path are kept, the query is
+      dropped.
+    </p>
+    <p>
+      If you want the query string itself — Umami keeps it, and it is the one place where
+      a campaign's own parameters end up — set <code>SUMIMI_KEEP_QUERY=1</code>.
     </p>
 
     <h2>Geography</h2>

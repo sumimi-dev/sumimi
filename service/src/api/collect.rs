@@ -660,8 +660,10 @@ pub fn build_hit(
         os: raw.os.or(info.os),
         os_version: info.os_version,
         device: raw.device.or(info.device),
-        screen: raw.screen,
-        language: raw.language,
+        // **The language and the screen's resolution** — the two dimensions
+        // Plausible does not have ⇒ ⇒ they are switches.
+        screen: if switch("store_screen") { raw.screen } else { None },
+        language: if switch("store_language") { raw.language } else { None },
         country,
         region,
         city,

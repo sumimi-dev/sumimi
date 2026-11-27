@@ -64,6 +64,14 @@ pub const SWITCHES: &[Switch] = &[
         name: "store_session_start",
         what: "the session's start on every row",
     },
+    Switch {
+        name: "store_language",
+        what: "the visitor's language",
+    },
+    Switch {
+        name: "store_screen",
+        what: "the screen's resolution",
+    },
 ];
 
 /// The setting of one switch in a site's settings.

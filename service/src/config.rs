@@ -213,9 +213,12 @@ pub struct Config {
     pub session_capacity: usize,
     /// Header used to derive the country code (e.g. `CF-IPCountry`).
     pub country_header: Option<String>,
-    /// Keep the query string of collected URLs (**on** by default: the marketing
-    /// parameters live in it, and Umami stores it too). Set `SUMIMI_KEEP_QUERY=0`
-    /// to drop the raw query string.
+    /// Keep the query string of collected URLs.
+    ///
+    /// **Off by default** — the way Plausible has it: the marketing parameters
+    /// are parsed out of the query string either way, and what is left over
+    /// (session tokens, email addresses, search terms) is not kept. Turn it on
+    /// with `SUMIMI_KEEP_QUERY=1`.
     pub keep_query: bool,
     /// Store the **raw** address and the **raw** user agent with every hit.
     ///
@@ -243,11 +246,11 @@ pub struct Config {
     /// crawlers came?" at all. With them dropped, that question has no answer
     /// for the past — only for what comes after.
     pub store_bots: bool,
-    /// Store the page title with every session.
+    /// Store the page title with every hit.
     ///
-    /// On by default: Umami stores the title, and that is the baseline. Turn it off
-    /// to save the space — at 10M views/day the title is roughly half of the stored
-    /// bytes and almost nobody looks at it.
+    /// **Off by default** — the way Plausible has it: its tracker sends no title
+    /// and its table has no column for one. Turn it on with
+    /// `SUMIMI_STORE_TITLES=1` when the title is worth having.
     pub store_titles: bool,
     /// Store the referrer's **path** (besides its host).
     ///
@@ -257,9 +260,9 @@ pub struct Config {
     pub store_referrer_path: bool,
     /// Store the referrer's **query**.
     ///
-    /// On by default — **but it is the part that carries a person's data**
-    /// (session tokens, search terms) ⇒ ⇒ so this is the one to turn off
-    /// first, and Plausible drops it by default.
+    /// **Off by default** — Plausible drops it too, and it is the part of the
+    /// referrer that can carry a person's data (session tokens, search
+    /// terms). Turn it on with `SUMIMI_STORE_REFERRER_QUERY=1`.
     pub store_referrer_query: bool,
     /// Store the **advertising click ids' values** (`gclid`, `fbclid`, …).
     ///
@@ -278,10 +281,22 @@ pub struct Config {
     pub store_coordinates: bool,
     /// Store the **web vitals** (LCP, INP, CLS, FCP, TTFB).
     ///
-    /// On by default: the tracker sends them and the documentation promises
-    /// them. They are the largest thing we store per row, so a site that
-    /// does not look at them can turn them off.
+    /// **Off by default** — the way Plausible has it (it has no such thing).
+    /// The tracker sends them and the tracker documentation promises them, so
+    /// a site that wants them turns them on with
+    /// `SUMIMI_STORE_WEB_VITALS=1`.
     pub store_web_vitals: bool,
+    /// Store the visitor's **language**.
+    ///
+    /// On by default: it is a dimension the dashboard breaks the traffic down
+    /// by. Plausible does not store it at all.
+    pub store_language: bool,
+    /// Store the screen's **resolution** (besides the device class).
+    ///
+    /// On by default: it is a dimension the dashboard breaks the traffic down
+    /// by. Plausible stores the device class only (its `screen_size` is the
+    /// class, not the resolution).
+    pub store_screen: bool,
     /// Store the **session's start** on every row.
     ///
     /// On by default: it is what the visit's length is measured from, and
@@ -427,7 +442,11 @@ impl Config {
         // These three keep everything by default — that is what Umami stores, and
         // it is the baseline we promised. Turning one off is a per-site policy
         // decision, so it is environment-only.
-        let store_titles = env_flag("SUMIMI_STORE_TITLES", true);
+        // **The defaults are Plausible's way** (the owner's call, 2026-11-28):
+        // no page title, no query string, no referrer query, no web vitals,
+        // no raw address or agent, no click id values, no coordinates ⇒ ⇒ and
+        // the referrer's path stays, because Plausible keeps it.
+        let store_titles = env_flag("SUMIMI_STORE_TITLES", false);
         // The raw address and the raw agent: **off** by default.
         let store_raw = env_flag("SUMIMI_STORE_RAW", false);
         // The crawlers: **on** by default — they are kept and marked, and the
@@ -438,7 +457,7 @@ impl Config {
         // follow-up): Plausible stores the host and the path, and drops the
         // query ⇒ ⇒ they are told apart here too.
         let mut store_referrer_path = env_flag("SUMIMI_STORE_REFERRER_PATH", true);
-        let mut store_referrer_query = env_flag("SUMIMI_STORE_REFERRER_QUERY", true);
+        let mut store_referrer_query = env_flag("SUMIMI_STORE_REFERRER_QUERY", false);
         // **The old name still works** — it sets both ⇒ ⇒ an operator who
         // turned the whole referrer off keeps it off (a privacy setting must
         // not quietly turn itself back on).
@@ -447,7 +466,7 @@ impl Config {
             store_referrer_query = old;
         }
 
-        let keep_query = env_flag("SUMIMI_KEEP_QUERY", true);
+        let keep_query = env_flag("SUMIMI_KEEP_QUERY", false);
 
         // The four storage switches (D-064 and what the columns cost).
         //
@@ -460,10 +479,15 @@ impl Config {
         let store_coordinates = env_flag("SUMIMI_STORE_COORDINATES", false);
         // **The web vitals are on**: the tracker sends them and the
         // documentation promises them.
-        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", true);
+        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", false);
         // **The session's start is on**: it is what the visit's length is
         // measured from.
         let store_session_start = env_flag("SUMIMI_STORE_SESSION_START", true);
+        // The two dimensions Plausible does not have: the language and the
+        // screen's resolution ⇒ ⇒ they are switches, and they are on (the
+        // dashboard breaks the traffic down by them).
+        let store_language = env_flag("SUMIMI_STORE_LANGUAGE", true);
+        let store_screen = env_flag("SUMIMI_STORE_SCREEN", true);
 
         // The frontend and the documentation site live next to the executable
         // when they are shipped with it — that is where the release archive puts
@@ -526,6 +550,8 @@ impl Config {
             store_coordinates,
             store_web_vitals,
             store_session_start,
+            store_language,
+            store_screen,
             js_dir,
             app_url,
             docs_dir,
@@ -558,6 +584,8 @@ impl Config {
             "store_coordinates" => self.store_coordinates,
             "store_web_vitals" => self.store_web_vitals,
             "store_session_start" => self.store_session_start,
+            "store_language" => self.store_language,
+            "store_screen" => self.store_screen,
             _ => false,
         }
     }

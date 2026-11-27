@@ -446,6 +446,10 @@ async fn an_error_report_is_not_an_event() {
 
 /// The Umami tracker sends the **whole** URL, so the origin comes off and the
 /// path is what is kept.
+///
+/// **The query string is not kept** — it is off by default (the way Plausible
+/// has it): the marketing parameters are parsed out of it either way, and what
+/// is left over is where the personal data lives.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_url_is_resolved_the_way_umami_resolves_it() {
     let (app, db, path, _guard) = app("url");
@@ -463,13 +467,47 @@ async fn the_url_is_resolved_the_way_umami_resolves_it() {
 
     let stored = written(
         &db,
-        &facts("SELECT count(*) FROM website_event WHERE url_path = '/blog/post#top' AND url_query = 'a=1'"),
+        &facts("SELECT count(*) FROM website_event WHERE url_path = '/blog/post#top'"),
     )
     .await;
     assert_eq!(stored, 1, "the path is kept, the origin is not");
 
+    let queries = written(
+        &db,
+        &facts("SELECT count(*) FROM website_event WHERE url_query IS NOT NULL"),
+    )
+    .await;
+    assert_eq!(queries, 0, "the query string is not kept by default");
+
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = website;
+}
+
+/// The query string is kept when the instance says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_query_string_is_kept_when_the_instance_says_so() {
+    let (app, db, path, _guard) = app_with("url-query", |config| {
+        config.keep_query = true;
+    });
+
+    let response = app
+        .clone()
+        .oneshot(umami_request(
+            r#"{"type":"event","payload":{"website":"website-1","url":"http://example.com/blog/post?a=1#top"}}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let stored = written(
+        &db,
+        &facts("SELECT count(*) FROM website_event WHERE url_path = '/blog/post#top' AND url_query = 'a=1'"),
+    )
+    .await;
+    assert_eq!(stored, 1, "the path and the query string are kept");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 /// A site is not a referrer to itself: the traffic of a site does not show up

@@ -168,10 +168,14 @@ async fn a_site_that_says_nothing_inherits_the_instance() {
     assert!(response.status().is_success());
     assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
 
-    // The instance's defaults: the title is kept, the click ids are not
-    // (D-064's default), the web vitals are kept.
-    assert_eq!(column(&db, "page_title").as_deref(), Some("The page"));
+    // **The instance's defaults are Plausible's way** (the owner's call): the
+    // title is not kept, the query string is not kept, the click ids' values
+    // are not kept, the web vitals are not kept — and the referrer's path is.
+    assert_eq!(column(&db, "page_title"), None);
     assert_eq!(column(&db, "gclid"), None);
+    assert_eq!(column(&db, "url_query"), None);
+    assert_eq!(column(&db, "lcp"), None);
+    assert_eq!(column(&db, "referrer_path").as_deref(), Some("/item"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -236,13 +240,32 @@ async fn the_referrers_path_and_query_are_two_switches() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_referrers_query_can_stay_while_the_path_goes() {
-    let (app, db, _guard) = app("referrer-path", r#"{"store_referrer_path": false}"#, |_| {});
+    let (app, db, _guard) = app("referrer-path", r#"{"store_referrer_path": false}"#, |config| {
+        // The instance keeps the referrer's query — the site is the one that
+        // turns the path off.
+        config.store_referrer_query = true;
+    });
     let response = app.oneshot(request(&hit())).await.unwrap();
     assert!(response.status().is_success());
     assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
 
     assert_eq!(column(&db, "referrer_path"), None);
     assert_eq!(column(&db, "referrer_query").as_deref(), Some("id=7"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_can_turn_the_language_and_the_screen_off() {
+    let (app, db, _guard) = app(
+        "language",
+        r#"{"store_language": false, "store_screen": false}"#,
+        |_| {},
+    );
+    let response = app.oneshot(request(&hit())).await.unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
+
+    assert_eq!(column(&db, "language"), None);
+    assert_eq!(column(&db, "screen"), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
