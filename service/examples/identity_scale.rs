@@ -362,11 +362,12 @@ fn pairs() -> Vec<Pair> {
 /// - a **visitor** (the product's `session_id`) has a couple of visits, and
 ///   one visitor in five is a heavy one (a fifth of the visits);
 /// - the visitor's browser, os and device do not change between their visits.
+#[allow(clippy::too_many_arguments)]
 fn traffic(
     pair: &Pair,
     rows: i64,
     events_per_visit: i64,
-    visitors: i64,
+    _visitors: i64,
     instance_hex: &str,
     interleave: i64,
     days: i64,
@@ -440,8 +441,8 @@ fn traffic(
     };
     // **The session side gets the visitor's number** (the visit side gets the
     // counter) — the growth layouts need to know which era a visitor is from.
-    let session_value = (pair.session.value)("s.hs", &visitors_expr_outer, &instance_hex);
-    let visit_value = (pair.visit.value)("s.hv", &counter_expr, &instance_hex);
+    let session_value = (pair.session.value)("s.hs", &visitors_expr_outer, instance_hex);
+    let visit_value = (pair.visit.value)("s.hv", &counter_expr, instance_hex);
     let website_value = if sites > 1 {
         format!("'w' || CAST({site_expr_outer} AS VARCHAR)")
     } else {
@@ -700,6 +701,7 @@ struct Row {
     spill_bytes: i64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure(
     pair: &Pair,
     rows: i64,
@@ -748,7 +750,7 @@ fn measure(
     // **The time bucket**: how many rows make an hour of the model's
     // timeline. The bucketed layouts divide the row's number by it.
     let bucket_rows = (rows / (days * 24).max(1)).max(1);
-    let sql = traffic(&pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
+    let sql = traffic(pair, rows, events_per_visit, visitors, &instance_hex, interleave, days, visit_stride, sites)
         .replace("{ROWS}", &rows.to_string())
         .replace("{VISITORS}", &visitors.to_string())
         .replace("{GROW_VISITORS}", &grow_visitors.to_string())
@@ -917,6 +919,7 @@ fn measure(
 }
 
 /// The engine's handholds: can the bit packing's cost be taken away?
+#[allow(clippy::too_many_arguments)]
 fn knobs(
     dir: &Path,
     rows: i64,
@@ -1010,6 +1013,7 @@ fn knobs(
 }
 
 /// Which part of the summary statement costs what.
+#[allow(clippy::too_many_arguments)]
 fn debug_bisect(
     dir: &Path,
     rows: i64,
@@ -1022,7 +1026,7 @@ fn debug_bisect(
     sites: i64,
 ) -> anyhow::Result<()> {
     let layout = layouts().into_iter().find(|l| l.name == "today").expect("today");
-    let pair = Pair { name: "today", session: layout, visit: layout };
+    let _pair = Pair { name: "today", session: layout, visit: layout };
     let instance = 0x0f1e2d3c4b5a69788796u128 & event_id::INSTANCE_MAX;
     let instance_hex = event_id::instance_hex(instance);
     let path = dir.join("debug.duckdb");

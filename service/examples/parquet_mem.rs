@@ -27,7 +27,6 @@
 
 use std::time::Instant;
 
-use anyhow::anyhow;
 use duckdb::Connection;
 
 fn event_ddl(conn: &Connection) -> anyhow::Result<()> {
@@ -252,9 +251,9 @@ fn footer_why(dir: &std::path::Path) -> anyhow::Result<()> {
         let exprs: Vec<String> = (0..columns)
             .flat_map(|i| {
                 [
-                    format!("CAST(i AS BIGINT)"),
-                    format!("'v' || CAST(i % 100 AS VARCHAR)"),
-                    format!("TIMESTAMP '2026-01-01' + INTERVAL (i) SECOND"),
+                    "CAST(i AS BIGINT)".to_string(),
+                    "'v' || CAST(i % 100 AS VARCHAR)".to_string(),
+                    "TIMESTAMP '2026-01-01' + INTERVAL (i) SECOND".to_string(),
                 ]
                 .iter()
                 .map(|e| e.replace("i ", &format!("{i} ")).to_string())
@@ -360,6 +359,7 @@ fn group_date(group: &str, day: i64) -> String {
 }
 
 /// The metadata of every file of a layout.
+#[allow(dead_code, clippy::type_complexity)]
 fn shards_of(conn: &Connection, pattern: &str) -> anyhow::Result<Vec<(String, String, String, i64, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT file_name,

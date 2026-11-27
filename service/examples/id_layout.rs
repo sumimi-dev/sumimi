@@ -22,6 +22,7 @@
 use duckdb::Connection;
 
 /// The instance part — one value for the whole instance (16 hex characters).
+#[allow(dead_code)]
 const INSTANCE: &str = "1234567890ABCDEF";
 
 /// The 32 hex characters of a 16-byte value, as a UUID.
@@ -151,7 +152,7 @@ fn main() -> anyhow::Result<()> {
     for (label, hex, _) in layouts() {
         let path = dir.join(format!("{}.duckdb", label.replace([' ', '(', ')', '·', '+'], "_")));
         let _ = std::fs::remove_file(&path);
-        let mut how = String::new();
+        let how;
         let bytes = {
             let conn = Connection::open(&path)?;
             conn.execute_batch("CREATE TABLE t (id UUID);")?;

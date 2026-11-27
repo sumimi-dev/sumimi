@@ -538,6 +538,7 @@ struct Row {
     events: i64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure(
     shape: &Shape,
     rows: i64,

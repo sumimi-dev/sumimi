@@ -137,7 +137,7 @@ fn shapes() -> Vec<(&'static str, &'static str, String)> {
 fn duckdb_bytes(dir: &std::path::Path, name: &str, kind: &str, expression: &str, rows: i64) -> anyhow::Result<(f64, String)> {
     let path = dir.join(format!("{name}.duckdb"));
     let _ = std::fs::remove_file(&path);
-    let mut how = String::new();
+    let how;
     let bytes = {
         let conn = Connection::open(&path)?;
         conn.execute_batch(&format!("CREATE TABLE t (id {kind});"))?;
@@ -285,8 +285,8 @@ fn main() -> anyhow::Result<()> {
     println!();
     println!("=== one identity column ===");
     println!(
-        "  {:<32} {:>10} {:>12} {:>12}  {}",
-        "the shape", "duckdb B/row", "parquet B/row", "distinct ms", "how DuckDB stores it"
+        "  {:<32} {:>10} {:>12} {:>12}  how DuckDB stores it",
+        "the shape", "duckdb B/row", "parquet B/row", "distinct ms"
     );
     for (label, kind, expression) in shapes() {
         let name = label.replace([' ', '(', ')', '+', '\''], "_");
@@ -325,7 +325,6 @@ fn main() -> anyhow::Result<()> {
     println!();
     println!("=== the two identity columns in one row (the whole point) ===");
     let conn = Connection::open_in_memory()?;
-    let ddl = "CREATE TABLE t (session_id UUID, visitor_id UUID, url_path VARCHAR);";
     let variants: Vec<(&str, String)> = vec![
         (
             "today: 16 random bytes each",
@@ -359,7 +358,7 @@ fn main() -> anyhow::Result<()> {
         "  {:<32} {:>10} {:>12} {:>12}",
         "the shape", "B/row", "summary ms", "browsers ms"
     );
-    let r = rnd();
+    let _r = rnd();
     let whole: Vec<(&str, String, String)> = vec![
         (
             "today: 16 random bytes each",

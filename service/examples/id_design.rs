@@ -107,7 +107,7 @@ fn widths(dir: &std::path::Path, rows: i64) -> anyhow::Result<()> {
 
     // The floor: the same rows without an id.
     let floor_parquet;
-    let floor_duckdb;
+    let _floor_duckdb;
     {
         let select = select_of(&Columns::new());
         floor_parquet = parquet_bytes(
@@ -115,7 +115,7 @@ fn widths(dir: &std::path::Path, rows: i64) -> anyhow::Result<()> {
             &format!("SELECT {select} FROM range(0, {rows}) t(i) ORDER BY created_at"),
             &dir.join("w-floor.parquet"),
         )?;
-        floor_duckdb = duckdb_bytes(
+        _floor_duckdb = duckdb_bytes(
             dir,
             "w-floor.duckdb",
             "CREATE TABLE t (visit_id UUID, created_at TIMESTAMP, url_path VARCHAR, hostname VARCHAR);",
@@ -261,11 +261,10 @@ fn references(dir: &std::path::Path, events: i64, dims: i64) -> anyhow::Result<(
         ),
         (
             "split: two columns",
-            format!(
-                "((i // 1000) * 1000003 + 7) AS run_id, i AS website_event_seq, \
-                 'product_' || CAST(d % 4 AS VARCHAR) AS event_key, \
-                 CAST((i * 7 + d) % 1000 AS VARCHAR) AS event_value"
-            ),
+            "((i // 1000) * 1000003 + 7) AS run_id, i AS website_event_seq, \
+             'product_' || CAST(d % 4 AS VARCHAR) AS event_key, \
+             CAST((i * 7 + d) % 1000 AS VARCHAR) AS event_value"
+                .to_string(),
         ),
     ] {
         let out = dir.join(format!("e-{}.parquet", label.replace([' ', ':'], "_")));
@@ -389,8 +388,8 @@ fn duckdb_order(dir: &std::path::Path, rows: i64) -> anyhow::Result<()> {
 
     let floor = measured[0].1;
     println!(
-        "  {:<40} {:>10} {:>10}  {}",
-        "the id column", "B/row", "it costs", "how DuckDB stores it"
+        "  {:<40} {:>10} {:>10}  how DuckDB stores it",
+        "the id column", "B/row", "it costs"
     );
     for (label, bytes, how) in &measured {
         println!(

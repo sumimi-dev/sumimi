@@ -18,7 +18,6 @@
 
 use std::time::Instant;
 
-use anyhow::anyhow;
 use duckdb::Connection;
 
 /// The event schema — the real one, generated the same way the server writes it.
@@ -479,10 +478,10 @@ fn candidates(dir: &std::path::Path) -> anyhow::Result<()> {
                 |r| r.get(0),
             )?;
             let mut times = Vec::new();
-            let mut m: i64 = 0;
+            let mut _m: i64 = 0;
             for _ in 0..20 {
                 let t = Instant::now();
-                m = conn.query_row(
+                _m = conn.query_row(
                     &format!(
                         "SELECT count(*) FROM read_parquet('{pattern}', hive_partitioning=true)
                          WHERE created_at >= {from} AND created_at < {to}"

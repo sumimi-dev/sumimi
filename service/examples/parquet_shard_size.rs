@@ -18,7 +18,6 @@
 //! cargo run --release --example parquet_shard_size -p sumimi-service
 //! ```
 
-use anyhow::anyhow;
 use duckdb::Connection;
 
 fn event_ddl(conn: &Connection) -> anyhow::Result<()> {
@@ -159,8 +158,7 @@ fn event_id_cost(dir: &std::path::Path) -> anyhow::Result<()> {
     println!("=== the event id in storage ===");
 
     // The same schema, but with `event_id` as a UUID — the shape Umami uses.
-    let uuid_ddl = sumimi_service::db::event_columns_ddl()
-        .replace("event_id UUID NOT NULL", "event_id UUID NOT NULL");
+    let uuid_ddl = sumimi_service::db::event_columns_ddl();
 
     let db = dir.join("idcost.duckdb");
     let _ = std::fs::remove_file(&db);
@@ -397,8 +395,7 @@ fn split_id_cost(dir: &std::path::Path) -> anyhow::Result<()> {
     ] {
         conn.execute_batch("DROP TABLE IF EXISTS base;")?;
         conn.execute_batch("DROP TABLE IF EXISTS t;")?;
-        let base = (
-            "CREATE TABLE base AS SELECT i AS event_id,
+        let base = "CREATE TABLE base AS SELECT i AS event_id,
                     CAST('11111111-1111-1111-1111-111111111111' AS UUID) AS run_id,
                     i AS event_seq,
                     CAST(substr(md5(i::VARCHAR), 1, 8) || '-' || substr(md5(i::VARCHAR), 9, 4) || '-' ||
@@ -409,9 +406,8 @@ fn split_id_cost(dir: &std::path::Path) -> anyhow::Result<()> {
                          substr(md5(i::VARCHAR || 's'), 21, 12) AS UUID) AS session_id,
                     TIMESTAMP '2026-01-01' + INTERVAL (i // 1000) SECOND AS created_at,
                     '/product/' || (i % 200) AS url_path
-             FROM range(0, 1000000) s(i);"
-        );
-        conn.execute_batch(&base)?;
+             FROM range(0, 1000000) s(i);";
+        conn.execute_batch(base)?;
         conn.execute_batch(ddl)?;
         conn.execute_batch(&format!("INSERT INTO t {select};"))?;
         let out = dir.join(format!("split-{}.parquet", label.replace(' ', "-")));
@@ -426,7 +422,7 @@ fn split_id_cost(dir: &std::path::Path) -> anyhow::Result<()> {
         let duck = dir.join(format!("split-{}.duckdb", label.replace(' ', "-")));
         let _ = std::fs::remove_file(&duck);
         let other = Connection::open(&duck)?;
-        other.execute_batch(&base)?;
+        other.execute_batch(base)?;
         other.execute_batch(ddl)?;
         other.execute_batch(&format!("INSERT INTO t {select};"))?;
         other.execute_batch("CHECKPOINT;")?;

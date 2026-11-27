@@ -33,7 +33,6 @@
 
 use std::time::Instant;
 
-use anyhow::anyhow;
 use duckdb::Connection;
 
 fn event_ddl(conn: &Connection) -> anyhow::Result<()> {

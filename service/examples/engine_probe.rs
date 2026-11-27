@@ -86,9 +86,7 @@ fn main() -> anyhow::Result<()> {
             u = uuid_of(h),
         ))?;
         // the second column of each kind, so "two distincts" is the same shape
-        conn.execute_batch(&format!(
-            "CREATE TABLE t2 AS SELECT * FROM t LIMIT 0;"
-        ))?;
+        conn.execute_batch("CREATE TABLE t2 AS SELECT * FROM t LIMIT 0;")?;
         drop(conn);
         let _ = std::fs::remove_file(&path);
 
