@@ -211,6 +211,14 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Give the dead space back — the files are copied and swapped in.
+    Compact {
+        /// The website id (default: every file).
+        website: Option<String>,
+        /// Compact even when there is little to gain.
+        #[arg(long)]
+        force: bool,
+    },
     /// Fill the database with synthetic demo data.
     Seed {
         /// The name of the website to seed (created when missing).
@@ -481,6 +489,7 @@ pub fn run() -> Result<()> {
         ),
         Command::Prune { website } => cmd_prune(&cli, website.as_deref()),
         Command::Erase { website, yes } => cmd_erase(&cli, website, *yes),
+        Command::Compact { website, force } => cmd_compact(&cli, website.as_deref(), *force),
         Command::Ping => cmd_ping(&cli),
         Command::Service { command } => match command {
             ServiceCommand::Start(args) => {
@@ -1014,6 +1023,94 @@ fn cmd_erase(cli: &Cli, website: &str, yes: bool) -> Result<()> {
     let source = open_source(cli, true)?;
     let removed = source.erase(website)?;
     println!("removed {removed} rows");
+    Ok(())
+}
+
+/// Give the dead space back.
+///
+/// **DuckDB frees the blocks of a rewritten row group and never gives them
+/// back to the filesystem** — `VACUUM` does not shrink the file either ⇒ ⇒ a
+/// file that has been written to for a while is bigger than the data in it
+/// (measured, 2026-11-28: the site's file was 280.0 MB on the disk for
+/// 211.8 MB of data — a quarter of the file).
+///
+/// ⇒ ⇒ The way to get the space back is to **write the data into a new file
+/// and swap it in** ⇒ ⇒ and the site files (where the events live) are worth
+/// compacting as much as the main file.
+///
+/// ⇒ ⇒ **The server has to be stopped** — DuckDB holds the file, and a rename
+/// under an open handle would leave the process reading the old file.
+fn cmd_compact(cli: &Cli, website: Option<&str>, force: bool) -> Result<()> {
+    if cli.backend != "duckdb" {
+        return Err(anyhow!(
+            "the dead space is DuckDB's — the {} backend has no such thing",
+            cli.backend
+        ));
+    }
+    let paths = sumimi_service::config::Paths::new(
+        Some(cli.dir.clone()),
+        cli.db.clone(),
+        &cli.backend,
+    );
+    let path = paths.data;
+    if !path.exists() {
+        return Err(anyhow!("there is no database at {}", path.display()));
+    }
+
+    // **The files** — the main one, and the site's files.
+    let files = if website.is_none() {
+        sumimi_service::db::instance_files(&path, "duckdb")
+    } else {
+        let id = website.expect("the website is there");
+        let file = sumimi_service::db::site_path(&path, id, "duckdb");
+        if !file.exists() {
+            return Err(anyhow!("the site {id} has no file of its own"));
+        }
+        vec![file]
+    };
+
+    let mut given_back = 0u64;
+    for file in &files {
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let (on_disk, used) = match sumimi_service::db::file_bytes(file) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                println!("{name}: not measured ({err})");
+                continue;
+            }
+        };
+        let dead = on_disk.saturating_sub(used);
+        // **Below the threshold there is nothing worth the copy** — the copy
+        // reads the whole file and writes it again.
+        if !force && dead < 1_000_000 && dead * 20 < on_disk {
+            println!(
+                "{name}: {:.1} MB on the disk, {:.1} MB of data — nothing to gain",
+                on_disk as f64 / 1e6,
+                used as f64 / 1e6
+            );
+            continue;
+        }
+        // **The copy** — the tables are written into a new file, and the new
+        // file is swapped in once the connection is closed.
+        let conn = duckdb::Connection::open(file)?;
+        sumimi_service::db::compact_to_new_file(file, &conn)?;
+        drop(conn);
+        sumimi_service::db::swap_in_compacted(file)?;
+        let (now, _) = sumimi_service::db::file_bytes(file)?;
+        given_back += on_disk.saturating_sub(now);
+        println!(
+            "{name}: {:.1} MB → {:.1} MB ({:.1} MB given back)",
+            on_disk as f64 / 1e6,
+            now as f64 / 1e6,
+            (on_disk.saturating_sub(now)) as f64 / 1e6
+        );
+    }
+    if given_back > 0 {
+        println!("\n{:.1} MB given back", given_back as f64 / 1e6);
+    }
     Ok(())
 }
 
