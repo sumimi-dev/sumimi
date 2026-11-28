@@ -147,6 +147,19 @@ impl Rng {
         Uuid::from_bytes(bytes)
     }
 
+    /// Pick an hour out of the day's curve.
+    fn weighted_hour(&mut self, hours: &[(u64, u64)]) -> i64 {
+        let total: u64 = hours.iter().map(|(_, weight)| *weight).sum();
+        let mut roll = self.next() % total;
+        for (hour, weight) in hours {
+            if roll < *weight {
+                return *hour as i64;
+            }
+            roll -= weight;
+        }
+        0
+    }
+
     /// Pick an item from a weighted list.
     fn weighted(&mut self, items: &[(&'static str, u64)]) -> &'static str {
         let total: u64 = items.iter().map(|(_, w)| w).sum();
@@ -219,6 +232,18 @@ const SCREENS: &[(&str, u64)] = &[
 
 const SOURCES: &[(&str, u64)] = &[("twitter", 40), ("newsletter", 35), ("google", 20), ("hn", 15)];
 
+/// The curve of a day — **(hour, weight)**.
+///
+/// **A real site's traffic is not spread over the day**: there is a morning
+/// peak, a lull at lunch, and a bigger one in the evening ⇒ ⇒ and the
+/// dataset the measurements use has the same curve ⇒ ⇒ so the demo data looks
+/// like the data the numbers were measured on.
+const HOURS: &[(u64, u64)] = &[
+    (0, 6), (1, 4), (2, 3), (3, 3), (4, 4), (5, 6), (6, 12), (7, 22), (8, 38),
+    (9, 52), (10, 60), (11, 55), (12, 45), (13, 40), (14, 45), (15, 52),
+    (16, 58), (17, 65), (18, 72), (19, 80), (20, 85), (21, 78), (22, 55), (23, 25),
+];
+
 const EVENTS: &[(&str, u64)] = &[("signup", 4), ("download", 3), ("cta_click", 2), ("newsletter", 1)];
 
 /// Generate the demo data.
@@ -283,6 +308,16 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
             // The as-of is at midnight: this day has not started yet.
             continue;
         }
+        // The hours that fit in this day: **the newest day is cut at the
+        // clock** ⇒ ⇒ so only the hours before it are on the table.
+        let latest = day_end - chrono::Duration::seconds(MAX_SPILL_SECONDS);
+        let hours: Vec<(u64, u64)> = HOURS
+            .iter()
+            .copied()
+            .filter(|(hour, _)| day_start + chrono::Duration::hours(*hour as i64) <= latest)
+            .collect();
+        let hours: &[(u64, u64)] = if hours.is_empty() { &HOURS[..1] } else { &hours[..] };
+
         let weekday = day_start.weekday().num_days_from_monday() as i64;
 
         // Weekends are quieter, and traffic grows a little every week.
@@ -302,7 +337,14 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
             let visitor_id = pool[rng.below(pool.len())];
             let (ip, ip_prefix, user_agent) =
                 sumimi_service::testing::visitor_identity(&visitor_id);
-            let started = day_start + chrono::Duration::seconds(rng.between(0, span));
+            // The hour comes out of the day's curve ⇒ ⇒ the demo data has a
+            // day's shape, not a flat line.
+            let hour = rng.weighted_hour(hours);
+            let started = std::cmp::min(
+                day_start + chrono::Duration::hours(hour)
+                    + chrono::Duration::seconds(rng.between(0, 3599)),
+                latest,
+            );
             // The session id is worked out from the visitor and the moment the
             // session began — the same shape the server writes.
             let visitor_id = sumimi_service::ua::visitor_id(
