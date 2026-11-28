@@ -170,8 +170,11 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
     let mut hits: Vec<Hit> = Vec::new();
     let mut views = 0u64;
     let mut events = 0u64;
-    // The visit ids are a counter — the server's own.
-    let mut visit_counter = 0u64;
+    // The visit ids are a counter — the server's own — and the ids are handed
+    // out **in the order the visits happen**, not in the order the generator
+    // walks the days. ⇒ ⇒ So every visit's rows are collected first, and the
+    // ids are minted afterwards, in the order the visits began.
+    let mut sessions: Vec<(chrono::NaiveDateTime, usize, usize)> = Vec::new();
 
     for day in (0..options.days).rev() {
         let day_start = now - chrono::Duration::days(day);
@@ -198,13 +201,9 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                 &user_agent,
                 &website_id,
             );
-            // The visit id is the counter the server mints.
-            let session_id = sumimi_service::event_id::compose_version(
-                sumimi_service::event_id::VISIT_VERSION,
-                1,
-                visit_counter,
-            );
-            visit_counter += 1;
+            // The visit id is the counter the server mints — but it is minted
+            // later, when every visit is known (see below).
+            let first_hit = hits.len();
 
             // A session is one to four page views.
             let page_views = match rng.below(100) {
@@ -248,7 +247,7 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
 
                 hits.push(Hit {
                     website_id: website_id.clone(),
-                    visit_id: session_id,
+                    visit_id: Uuid::nil(),
                     visitor_id,
                     session_start: Some(started),
                     ip: ip.clone(),
@@ -319,7 +318,7 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                 let name = rng.weighted(EVENTS);
                 hits.push(Hit {
                     website_id: website_id.clone(),
-                    visit_id: session_id,
+                    visit_id: Uuid::nil(),
                     visitor_id,
                     session_start: Some(started),
                     ip,
@@ -376,8 +375,31 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
                 });
                 events += 1;
             }
+
+            // The visit's rows: from the first one to here.
+            sessions.push((started, first_hit, hits.len()));
         }
     }
+
+    // **The visit ids**, in the order the visits happen: the counter grows
+    // with the clock, the way it grows on a live server (D-066).
+    sessions.sort_by_key(|(started, _, _)| *started);
+    let mut visit_counter = 0u64;
+    for (_, first, end) in &sessions {
+        visit_counter += 1;
+        let visit_id = sumimi_service::event_id::compose_version(
+            sumimi_service::event_id::VISIT_VERSION,
+            1,
+            visit_counter,
+        );
+        for hit in &mut hits[*first..*end] {
+            hit.visit_id = visit_id;
+        }
+    }
+
+    // The rows go in as they arrive: by time. The row id is the insertion
+    // order, and the reports use it to break the ties.
+    hits.sort_by_key(|hit| hit.created_at);
 
     // Write in batches, the way the server does.
     for chunk in hits.chunks(1000) {
