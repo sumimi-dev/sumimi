@@ -7,17 +7,37 @@
 //! ```bash
 //! sumimi seed --db ./sumimi.duckdb --days 30
 //! sumimi seed --backend sqlite --db ./sumimi.sqlite --days 30
+//! sumimi seed --seed 4242 --as-of 2026-11-28T06:00:00Z
 //! ```
 //!
 //! The data is written through the storage backend, so the same seed works on
 //! DuckDB, on SQLite and on PostgreSQL — and the numbers are the same on all
 //! three.
+//!
+//! **The seed and the clock are the two inputs.** The same seed and the same
+//! clock give the same traffic, so two runs can be compared and a measurement
+//! on one machine can be repeated on another. The clock is the moment the
+//! history is as of: the days are calendar days of it, and the newest day
+//! stops at it — **there is no data in the future**.
 
 use anyhow::Result;
 use chrono::Datelike;
 use sumimi_service::models::{Hit, HitKind};
 use sumimi_service::storage::Storage;
 use uuid::Uuid;
+
+/// The seed the generator uses when nobody says otherwise.
+///
+/// **A fixed one, so the data is the data**: the same seed on every machine,
+/// the same traffic. The clock is the other half of it — see [`SeedOptions`].
+pub const DEFAULT_SEED: u64 = 0xA5A5_1234_ABCD_0001;
+
+/// How far a visit's own rows can reach past its start.
+///
+/// The last page view is a minute later and the custom event up to ten, so
+/// the starts stop this much before the clock — then no row of the data is in
+/// the future.
+const MAX_SPILL_SECONDS: i64 = 600;
 
 /// How much data to generate.
 #[derive(Debug, Clone)]
@@ -30,6 +50,50 @@ pub struct SeedOptions {
     pub days: i64,
     /// Roughly how many visitors per day.
     pub visitors_per_day: i64,
+    /// The seed of the generator.
+    ///
+    /// **The same seed gives the same traffic** — the same visitors, the same
+    /// pages, the same times of day ⇒ ⇒ so two runs can be compared, and a
+    /// measurement on one machine can be repeated on another.
+    pub seed: u64,
+    /// The moment the history is as of.
+    ///
+    /// **The clock is part of the data**, so it is an input and not a thing
+    /// the generator reaches for: the same seed **and** the same as-of give
+    /// the same rows — the same visitors, the same pages, the same moments.
+    ///
+    /// The days are **calendar days** of the as-of ⇒ ⇒ so the shape does not
+    /// move with the hour the seed runs at ⇒ ⇒ and the newest day is cut at
+    /// the as-of ⇒ ⇒ **there is no data in the future** ⇒ ⇒ (which is what a
+    /// demo wants, and what a measurement needs: the data has to fit in the
+    /// range the report asks for).
+    pub as_of: chrono::NaiveDateTime,
+    /// Whether the site's old rows are gone before the new ones go in.
+    ///
+    /// **Off by default**: erasing is the one thing a seed can lose. With it
+    /// on, seeding the same site twice with the same seed and the same as-of
+    /// leaves the same data — the site's own id is reused, so the visitor ids
+    /// are the same too.
+    pub replace: bool,
+}
+
+impl SeedOptions {
+    /// The options the command line uses when nobody says otherwise.
+    ///
+    /// **The clock is the moment the seed runs** — the history is always
+    /// recent, which is what a demo wants. Pin it when the data has to be the
+    /// same as another run's.
+    pub fn new(website: &str, domain: &str, days: i64, visitors_per_day: i64) -> Self {
+        Self {
+            website: website.to_string(),
+            domain: domain.to_string(),
+            days,
+            visitors_per_day,
+            seed: DEFAULT_SEED,
+            as_of: chrono::Utc::now().naive_utc(),
+            replace: false,
+        }
+    }
 }
 
 /// A tiny deterministic PRNG, so a seed run is reproducible.
@@ -70,6 +134,17 @@ impl Rng {
     /// `true` with probability `percent`/100.
     fn chance(&mut self, percent: u64) -> bool {
         self.next() % 100 < percent
+    }
+
+    /// A UUID out of the generator — sixteen bytes, two draws.
+    ///
+    /// **Not `Uuid::new_v4()`**: the random one would make every run a
+    /// different run, and a seed that is not reproducible is not a seed.
+    fn uuid(&mut self) -> Uuid {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&self.next().to_be_bytes());
+        bytes[8..].copy_from_slice(&self.next().to_be_bytes());
+        Uuid::from_bytes(bytes)
     }
 
     /// Pick an item from a weighted list.
@@ -148,13 +223,14 @@ const EVENTS: &[(&str, u64)] = &[("signup", 4), ("download", 3), ("cta_click", 2
 
 /// Generate the demo data.
 ///
-/// Returns the website id, the number of page views and the number of custom
-/// events.
-pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64, u64)> {
+/// Returns the website id, the number of page views, the number of custom
+/// events and the number of rows that were erased first.
+pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64, u64, u64)> {
     // The seed must not be the mixing constant itself: `Rng::new` xors the two
     // together, and xorshift on zero stays zero forever — every session came
     // out identical.
-    let mut rng = Rng::new(0xA5A5_1234_ABCD_0001);
+    let mut rng = Rng::new(options.seed);
+    let as_of = options.as_of;
 
     // The website, created when it is not there yet.
     let website_id = match storage.websites()?.into_iter().find(|website| {
@@ -166,7 +242,20 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
             .id,
     };
 
-    let now = chrono::Utc::now().naive_utc();
+    // The site's old rows: gone, if the caller asked for it.
+    //
+    // **The rows, not the site.** The site stays registered — it is the site
+    // the operator asked for — and only its rows go, so the same site can be
+    // seeded again and land on the same ids.
+    let mut erased = 0u64;
+    if options.replace {
+        let (rows, revenue) = storage.delete_before(
+            as_of + chrono::Duration::days(36_500),
+            Some(&website_id),
+        )?;
+        erased = rows + revenue;
+    }
+
     let mut hits: Vec<Hit> = Vec::new();
     let mut views = 0u64;
     let mut events = 0u64;
@@ -177,7 +266,23 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
     let mut sessions: Vec<(chrono::NaiveDateTime, usize, usize)> = Vec::new();
 
     for day in (0..options.days).rev() {
-        let day_start = now - chrono::Duration::days(day);
+        // **The days are calendar days** — the day the as-of falls on, and the
+        // days before it. The buckets do not slide with the hour the seed
+        // runs at, so the shape of the history is the same whenever it runs.
+        let date = as_of.date() - chrono::Duration::days(day);
+        let day_start = date.and_hms_opt(0, 0, 0).expect("midnight is a time");
+        // The newest day stops at the clock ⇒ ⇒ ⇒ no data in the future ⇒ ⇒ ⇒
+        // and the data fits in the range a report asks for.
+        let day_end = std::cmp::min(day_start + chrono::Duration::days(1), as_of);
+        // The margin: **a visit's own rows reach past its start** — the last
+        // page view is a minute later, the custom event up to ten. So the
+        // starts stop that much before the clock ⇒ ⇒ ⇒ and then no row of the
+        // data is in the future either.
+        let span = (day_end - day_start).num_seconds() - MAX_SPILL_SECONDS;
+        if span <= 0 {
+            // The as-of is at midnight: this day has not started yet.
+            continue;
+        }
         let weekday = day_start.weekday().num_days_from_monday() as i64;
 
         // Weekends are quieter, and traffic grows a little every week.
@@ -187,13 +292,17 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
 
         // A pool of visitors for the day: some of them come back, so the
         // "visitors" count is lower than the "sessions" count, like a real site.
-        let pool: Vec<Uuid> = (0..visitors).map(|_| Uuid::new_v4()).collect();
+        //
+        // **The pool comes out of the seed** ⇒ ⇒ the same seed gives the same
+        // visitors — a run of the seed is a run of the same traffic, not a
+        // different traffic that looks the same.
+        let pool: Vec<Uuid> = (0..visitors).map(|_| rng.uuid()).collect();
 
         for _ in 0..visitors {
             let visitor_id = pool[rng.below(pool.len())];
             let (ip, ip_prefix, user_agent) =
                 sumimi_service::testing::visitor_identity(&visitor_id);
-            let started = day_start + chrono::Duration::seconds(rng.between(0, 86_399));
+            let started = day_start + chrono::Duration::seconds(rng.between(0, span));
             // The session id is worked out from the visitor and the moment the
             // session began — the same shape the server writes.
             let visitor_id = sumimi_service::ua::visitor_id(
@@ -401,12 +510,108 @@ pub fn seed(storage: &dyn Storage, options: &SeedOptions) -> Result<(String, u64
     // order, and the reports use it to break the ties.
     hits.sort_by_key(|hit| hit.created_at);
 
+    // **The data is checked before it is written.** A run that would write
+    // rows that break the rules writes nothing — the seed does not get to
+    // leave a half-right history behind.
+    self_check(&hits, as_of)?;
+
     // Write in batches, the way the server does.
     for chunk in hits.chunks(1000) {
         storage.write_batch(chunk)?;
     }
 
-    Ok((website_id, views, events))
+    Ok((website_id, views, events, erased))
+}
+
+/// The seed's own checks: the properties the data must have.
+///
+/// **Five of them**, and they are the ones the server's own rules make:
+///
+/// 1. **one start per visit** — the rows of a visit share one start, or the
+///    sort key's grouping column does not group;
+/// 2. **the visit ids follow the clock** — the counter grows with the time,
+///    the way it grows on a live server (D-066);
+/// 3. **the rows of a visit are in the order they happened** — a row's time
+///    does not go backwards inside its visit;
+/// 4. **nothing is in the future** — the newest row is at the as-of, or before;
+/// 5. **the rows are where their visit says they are** — every row is at or
+///    after its visit's start.
+fn self_check(hits: &[Hit], as_of: chrono::NaiveDateTime) -> Result<()> {
+    use std::collections::HashMap;
+
+    // 1. One start per visit.
+    let mut starts: HashMap<uuid::Uuid, Option<chrono::NaiveDateTime>> = HashMap::new();
+    for hit in hits {
+        match starts.get(&hit.visit_id) {
+            Some(start) => {
+                if *start != hit.session_start {
+                    anyhow::bail!(
+                        "the visit {} has two starts: {start:?} and {:?}",
+                        hit.visit_id,
+                        hit.session_start
+                    );
+                }
+            }
+            None => {
+                starts.insert(hit.visit_id, hit.session_start);
+            }
+        }
+    }
+
+    // 2. The visit ids follow the clock: sorted by the start, the counters
+    //    grow.
+    let mut by_start: Vec<(&Option<chrono::NaiveDateTime>, u64)> = starts
+        .iter()
+        .map(|(visit, start)| {
+            (
+                start,
+                sumimi_service::event_id::counter_of(visit),
+            )
+        })
+        .collect();
+    by_start.sort_by_key(|(start, _)| start.unwrap_or(chrono::NaiveDateTime::MIN));
+    let mut previous = 0u64;
+    for (_, counter) in &by_start {
+        if *counter <= previous {
+            anyhow::bail!("the visit ids do not follow the clock: {counter} after {previous}");
+        }
+        previous = *counter;
+    }
+
+    // 3, 4 and 5: the rows of a visit, in order, at or after the start, and
+    //    not in the future.
+    let mut last: HashMap<uuid::Uuid, chrono::NaiveDateTime> = HashMap::new();
+    for hit in hits {
+        if hit.created_at > as_of {
+            anyhow::bail!(
+                "a row is in the future: {} at {}",
+                hit.created_at,
+                hit.url.as_deref().unwrap_or("-")
+            );
+        }
+        let start = hit.session_start.unwrap_or(hit.created_at);
+        if hit.created_at < start {
+            anyhow::bail!(
+                "a row is before its visit's start: {} at {}, the visit started at {}",
+                hit.created_at,
+                hit.url.as_deref().unwrap_or("-"),
+                start
+            );
+        }
+        if let Some(previous) = last.get(&hit.visit_id) {
+            if hit.created_at < *previous {
+                anyhow::bail!(
+                    "the rows of the visit {} go backwards: {} after {}",
+                    hit.visit_id,
+                    hit.created_at,
+                    previous
+                );
+            }
+        }
+        last.insert(hit.visit_id, hit.created_at);
+    }
+
+    Ok(())
 }
 
 /// The title of a page.

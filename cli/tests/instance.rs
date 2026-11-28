@@ -53,14 +53,9 @@ fn a_backup_of_an_instance_directory_contains_its_rows() {
     let paths = Paths::new(Some(dir.clone()), None, "duckdb");
 
     let db = Db::open(&paths.data, "256MB").unwrap();
-    let (website, views, _events) = seed::seed(
+    let (website, views, _events, _erased) = seed::seed(
         &db,
-        &seed::SeedOptions {
-            website: "Example".to_string(),
-            domain: "example.com".to_string(),
-            days: 3,
-            visitors_per_day: 50,
-        },
+        &seed::SeedOptions::new("Example", "example.com", 3, 50),
     )
     .unwrap();
     assert!(views > 0, "the seed wrote something");
@@ -107,14 +102,9 @@ fn the_cli_reads_the_facts_out_of_the_sites_files() {
     let paths = Paths::new(Some(dir.clone()), None, "duckdb");
 
     let db = Db::open(&paths.data, "256MB").unwrap();
-    let (website, views, _events) = seed::seed(
+    let (website, views, _events, _erased) = seed::seed(
         &db,
-        &seed::SeedOptions {
-            website: "Example".to_string(),
-            domain: "example.com".to_string(),
-            days: 3,
-            visitors_per_day: 50,
-        },
+        &seed::SeedOptions::new("Example", "example.com", 3, 50),
     )
     .unwrap();
     assert!(views > 0, "the seed wrote something");
@@ -175,14 +165,9 @@ fn the_cli_does_not_write_to_the_instance() {
     let paths = Paths::new(Some(dir.clone()), None, "duckdb");
 
     let db = Db::open(&paths.data, "256MB").unwrap();
-    let (website, _views, _events) = seed::seed(
+    let (website, _views, _events, _erased) = seed::seed(
         &db,
-        &seed::SeedOptions {
-            website: "Example".to_string(),
-            domain: "example.com".to_string(),
-            days: 1,
-            visitors_per_day: 10,
-        },
+        &seed::SeedOptions::new("Example", "example.com", 1, 10),
     )
     .unwrap();
 
@@ -264,14 +249,9 @@ fn a_snapshot_holds_the_facts_too() {
     let paths = Paths::new(Some(dir.clone()), None, "duckdb");
 
     let db = Db::open(&paths.data, "256MB").unwrap();
-    let (website, views, _events) = seed::seed(
+    let (website, views, _events, _erased) = seed::seed(
         &db,
-        &seed::SeedOptions {
-            website: "Example".to_string(),
-            domain: "example.com".to_string(),
-            days: 3,
-            visitors_per_day: 50,
-        },
+        &seed::SeedOptions::new("Example", "example.com", 3, 50),
     )
     .unwrap();
     // The database is closed, so the copy is of a settled file.

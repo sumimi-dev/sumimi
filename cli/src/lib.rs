@@ -225,6 +225,18 @@ enum Command {
         /// Roughly how many visitors per day.
         #[arg(long, default_value_t = 120)]
         visitors: i64,
+        /// The seed of the generator: the same seed gives the same traffic.
+        #[arg(long, default_value_t = seed::DEFAULT_SEED)]
+        seed: u64,
+        /// The moment the history is as of: `YYYY-MM-DD` or an RFC 3339 time.
+        ///
+        /// The same seed **and** the same as-of give the same rows. Without it
+        /// the clock is the moment the seed runs.
+        #[arg(long)]
+        as_of: Option<String>,
+        /// Whether the site's old rows are gone before the new ones go in.
+        #[arg(long)]
+        replace: bool,
     },
     /// The Google Search Console import.
     #[command(subcommand)]
@@ -410,7 +422,19 @@ pub fn run() -> Result<()> {
             domain,
             days,
             visitors,
-        } => cmd_seed(&cli, website, domain, *days, *visitors),
+            seed,
+            as_of,
+            replace,
+        } => cmd_seed(
+            &cli,
+            website,
+            domain,
+            *days,
+            *visitors,
+            *seed,
+            as_of.as_deref(),
+            *replace,
+        ),
         Command::Geoip { command } => match command {
             GeoipCommand::Download { country } => {
                 let kind = if *country {
@@ -641,18 +665,35 @@ fn cmd_gsc(cli: &Cli, command: &GscCommand) -> Result<()> {
 }
 
 /// Fill the database with synthetic demo data.
-fn cmd_seed(cli: &Cli, website: &str, domain: &str, days: i64, visitors: i64) -> Result<()> {
+fn cmd_seed(
+    cli: &Cli,
+    website: &str,
+    domain: &str,
+    days: i64,
+    visitors: i64,
+    seed: u64,
+    as_of: Option<&str>,
+    replace: bool,
+) -> Result<()> {
     let paths = sumimi_service::config::Paths::new(
         Some(cli.dir.clone()),
         cli.db.clone(),
         &cli.backend,
     );
 
+    // The clock: the moment the history is as of. **The default is the moment
+    // the seed runs** — the history is always recent, which is what a demo
+    // wants. Pin it (`--as-of`) and the same seed gives the same rows.
+    let as_of = match as_of {
+        Some(value) => parse_as_of(value)?,
+        None => chrono::Utc::now().naive_utc(),
+    };
+
     let options = seed::SeedOptions {
-        website: website.to_string(),
-        domain: domain.to_string(),
-        days,
-        visitors_per_day: visitors,
+        seed,
+        as_of,
+        replace,
+        ..seed::SeedOptions::new(website, domain, days, visitors)
     };
 
     // The seed goes through the storage backend, so the same data lands in
@@ -672,9 +713,15 @@ fn cmd_seed(cli: &Cli, website: &str, domain: &str, days: i64, visitors: i64) ->
             }
         };
 
-    let (website_id, views, events) = seed::seed(storage.as_ref(), &options).map_err(|err| anyhow!("{err}"))?;
+    let (website_id, views, events, erased) =
+        seed::seed(storage.as_ref(), &options).map_err(|err| anyhow!("{err}"))?;
 
+    if erased > 0 {
+        println!("erased {erased} rows that were there");
+    }
     println!("seeded {views} page views and {events} events");
+    println!("seed: {seed}");
+    println!("as of: {as_of}");
     println!("website: {website_id}");
     println!("start the server and open the dashboard to see it");
     Ok(())
@@ -1151,6 +1198,25 @@ fn open_source(cli: &Cli, writable: bool) -> Result<Source> {
 fn parse_date(value: &str) -> Result<chrono::NaiveDate> {
     chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
         .map_err(|err| anyhow!("invalid date '{value}': {err}"))
+}
+
+/// Parse the moment the history is as of.
+///
+/// **A date is midnight of that day, in UTC**; a full time is an RFC 3339
+/// moment, and the offset in it is dropped — the history is in UTC.
+fn parse_as_of(value: &str) -> Result<chrono::NaiveDateTime> {
+    let value = value.trim();
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return date
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow!("invalid date '{value}'"));
+    }
+    match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(moment) => Ok(moment.naive_utc()),
+        Err(_) => Err(anyhow!(
+            "invalid moment '{value}': a date (YYYY-MM-DD) or an RFC 3339 time"
+        )),
+    }
 }
 
 /// Build the time window.
