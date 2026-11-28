@@ -180,7 +180,37 @@ struct Site {
     profiles: Vec<Profile>,
     /// The campaigns, with their weights.
     campaigns: Vec<(&'static str, u64)>,
+    /// The curve of the day — **(hour, weight)**.
+    ///
+    /// **A real site's traffic is not spread over the day.** There is a
+    /// morning peak, a lull at lunch, and a bigger one in the evening —
+    /// and a site's curve is its own (the docs are read at work, the landing
+    /// page is read in the evening). ⇒ ⇒ So the sessions are spread by
+    /// these weights ⇒ ⇒ and a report that groups by the hour sees a curve
+    /// instead of a flat line.
+    hours: &'static [(u64, u64)],
 }
+
+/// The curve of the blog's day: a morning peak and a bigger evening one.
+const BLOG_HOURS: &[(u64, u64)] = &[
+    (0, 6), (1, 4), (2, 3), (3, 3), (4, 4), (5, 6), (6, 12), (7, 22), (8, 38),
+    (9, 52), (10, 60), (11, 55), (12, 45), (13, 40), (14, 45), (15, 52),
+    (16, 58), (17, 65), (18, 72), (19, 80), (20, 85), (21, 78), (22, 55), (23, 25),
+];
+
+/// The curve of the docs' day: **the working hours**.
+const DOCS_HOURS: &[(u64, u64)] = &[
+    (0, 2), (1, 1), (2, 1), (3, 1), (4, 2), (5, 4), (6, 10), (7, 22), (8, 40),
+    (9, 58), (10, 72), (11, 78), (12, 60), (13, 65), (14, 75), (15, 80),
+    (16, 78), (17, 60), (18, 40), (19, 28), (20, 20), (21, 14), (22, 8), (23, 4),
+];
+
+/// The curve of the landing page's day: **the evening**.
+const LANDING_HOURS: &[(u64, u64)] = &[
+    (0, 5), (1, 3), (2, 2), (3, 2), (4, 2), (5, 4), (6, 10), (7, 18), (8, 28),
+    (9, 38), (10, 45), (11, 48), (12, 50), (13, 52), (14, 55), (15, 60),
+    (16, 68), (17, 78), (18, 88), (19, 95), (20, 92), (21, 80), (22, 60), (23, 35),
+];
 
 /// One visitor's device profile.
 #[derive(Clone)]
@@ -261,6 +291,7 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
             ],
             campaigns: vec![("newsletter", 40), ("twitter", 25), ("google", 20), ("hn", 15)],
             profiles: profiles(),
+            hours: BLOG_HOURS,
         },
         Site {
             id: website_ids[1].clone(),
@@ -283,6 +314,7 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
             ],
             campaigns: vec![("google", 50), ("twitter", 30), ("newsletter", 20)],
             profiles: profiles(),
+            hours: DOCS_HOURS,
         },
         Site {
             id: website_ids[2].clone(),
@@ -303,6 +335,7 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
             ],
             campaigns: vec![("google", 60), ("linkedin", 40)],
             profiles: profiles(),
+            hours: LANDING_HOURS,
         },
     ];
 
@@ -369,9 +402,12 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                     None
                 };
 
-                // The session starts somewhere in the day.
+                // The session starts somewhere in the day — **and the day has
+                // a shape**: the hours are not the same weight.
+                let hour = weighted_hour(&mut rng, site.hours);
                 let start = date.and_hms_opt(0, 0, 0).unwrap()
-                    + Duration::seconds(rng.between(0, 86_399));
+                    + Duration::hours(hour)
+                    + Duration::seconds(rng.between(0, 3599));
                 // The visitor: a hash of the address, the agent and the site.
                 let visitor_id = crate::ua::visitor_id(
                     &crate::ua::visitor_address(&ip),
@@ -1367,6 +1403,54 @@ fn weighted<'a>(rng: &mut Rng, items: &'a [(&'static str, u64)]) -> &'a str {
         roll -= weight;
     }
     items[0].0
+}
+
+/// How many visitors a day make `visits` visits across the whole dataset.
+///
+/// **The dataset's shape is fixed** — 45 days, three sites (the second has a
+/// third of the first's traffic, the third half), a weekend factor and a
+/// growth ⇒ ⇒ so the visits a day's worth of visitors makes is a known
+/// number ⇒ ⇒ and a caller asks for the visits it wants, not for a number
+/// of visitors it has to guess at.
+pub fn visitors_per_day_for(visits: i64) -> i64 {
+    let visits_per_unit = visits_per_day_unit();
+    if visits_per_unit <= 0.0 {
+        return 1;
+    }
+    ((visits as f64 / visits_per_unit).round() as i64).max(1)
+}
+
+/// The visits one visitor a day makes across the dataset.
+///
+/// **The factors are the model's own**: the three sites' shares, the weekend
+/// (the fifth and the sixth of the week are quiet), and the growth over the
+/// weeks.
+fn visits_per_day_unit() -> f64 {
+    let sites = 1.0 + 1.0 / 3.0 + 1.0 / 2.0;
+    let mut days = 0.0f64;
+    for day in 0..DAYS {
+        let date = start_date() + Duration::days(day);
+        let weekend = if date.weekday().num_days_from_monday() >= 5 {
+            0.55
+        } else {
+            1.0
+        };
+        days += weekend * (1.0 + (day as f64) * 0.006);
+    }
+    sites * days
+}
+
+/// A weighted pick of an hour — the curve of a day.
+fn weighted_hour(rng: &mut Rng, hours: &[(u64, u64)]) -> i64 {
+    let total: u64 = hours.iter().map(|(_, weight)| *weight).sum();
+    let mut roll = rng.next() % total;
+    for (hour, weight) in hours {
+        if roll < *weight {
+            return *hour as i64;
+        }
+        roll -= weight;
+    }
+    0
 }
 
 /// A weighted pick among the pages of a site.

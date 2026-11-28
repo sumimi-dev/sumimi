@@ -111,7 +111,11 @@ fn main() -> anyhow::Result<()> {
         .map(|visit| (visit.last - visit.first).num_seconds())
         .collect();
     durations.sort_unstable();
-    let rows: Vec<usize> = minted.iter().map(|visit| visit.rows).collect();
+    // **The rows are sorted before the median is taken** — the visits are in
+    // the order their ids were minted, and the middle *element* of that order
+    // is one visit, not the median one.
+    let mut rows: Vec<usize> = minted.iter().map(|visit| visit.rows).collect();
+    rows.sort_unstable();
     println!("\n4. the shape of a visit");
     println!(
         "   the rows of a visit: min {}, median {}, max {}",
