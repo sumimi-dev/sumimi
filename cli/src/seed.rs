@@ -560,16 +560,20 @@ fn self_check(hits: &[Hit], as_of: chrono::NaiveDateTime) -> Result<()> {
 
     // 2. The visit ids follow the clock: sorted by the start, the counters
     //    grow.
-    let mut by_start: Vec<(&Option<chrono::NaiveDateTime>, u64)> = starts
+    //
+    // **Two visits may begin in the same microsecond** ⇒ ⇒ and then their ids
+    // may be in either order ⇒ ⇒ so the sort is by the start *and* the
+    // counter ⇒ ⇒ and what has to hold is that the counters grow.
+    let mut by_start: Vec<(chrono::NaiveDateTime, u64)> = starts
         .iter()
         .map(|(visit, start)| {
             (
-                start,
+                start.unwrap_or(chrono::NaiveDateTime::MIN),
                 sumimi_service::event_id::counter_of(visit),
             )
         })
         .collect();
-    by_start.sort_by_key(|(start, _)| start.unwrap_or(chrono::NaiveDateTime::MIN));
+    by_start.sort();
     let mut previous = 0u64;
     for (_, counter) in &by_start {
         if *counter <= previous {

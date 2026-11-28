@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
             let mut result = statement.query([])?;
             let mut out = Vec::new();
             while let Some(row) = result.next()? {
-                out.push(json_row(&sumimi_service::reports::DuckRow(&row))?);
+                out.push(json_row(&sumimi_service::reports::DuckRow(row))?);
             }
             Ok::<_, anyhow::Error>(out)
         })?;
