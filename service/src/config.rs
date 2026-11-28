@@ -458,8 +458,8 @@ impl Config {
         // (the owner's call, 2026-11-28) ⇒ ⇒ what is **the visitor's data**
         // is not stored: no raw address or agent, no query string, no
         // referrer's query, no click id values, no coordinates ⇒ ⇒ what is
-        // **the site's own data** is stored: the page title, the web vitals,
-        // the referrer's path, the language, the screen's resolution.
+        // **the site's own data** is stored: the page title, the referrer's
+        // path, the language, the screen's resolution.
         let store_titles = env_flag("SUMIMI_STORE_TITLES", true);
         // The raw address and the raw agent: **off** by default.
         let store_raw = env_flag("SUMIMI_STORE_RAW", false);
@@ -491,9 +491,11 @@ impl Config {
         // **The coordinates are off**: nothing reads them — the country, the
         // region and the city are what the reports group by.
         let store_coordinates = env_flag("SUMIMI_STORE_COORDINATES", false);
-        // **The web vitals are on**: the tracker sends them and the
-        // documentation promises them.
-        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", true);
+        // **The web vitals are off**: they are the largest thing we store per
+        // row (measured, 2026-11-28: 41.7 MB of a 134 MB table on the full
+        // traffic — a third of it), and only a site that looks at them needs
+        // them ⇒ ⇒ the site turns them on, the instance does not pay for them.
+        let store_web_vitals = env_flag("SUMIMI_STORE_WEB_VITALS", false);
         // **The session's start is on**: it is what the visit's length is
         // measured from.
         let store_session_start = env_flag("SUMIMI_STORE_SESSION_START", true);

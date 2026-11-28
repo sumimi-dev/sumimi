@@ -161,6 +161,21 @@ fn column(db: &Db, name: &str) -> Option<String> {
     .unwrap()
 }
 
+/// The value of one **number** column of the first row — **`None` when it is
+/// not set**.
+fn number(db: &Db, name: &str) -> Option<f64> {
+    let sql = facts(&format!("SELECT {name} FROM website_event LIMIT 1"));
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get::<_, Option<f64>>(0)?),
+            None => Ok(None),
+        }
+    })
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_site_that_says_nothing_inherits_the_instance() {
     let (app, db, _guard) = app("inherit", "{}", |_| {});
@@ -171,12 +186,16 @@ async fn a_site_that_says_nothing_inherits_the_instance() {
     // **The instance's default is "as many features as possible, and private"**
     // (the owner's call): what is the visitor's data is not kept — the query
     // string, the click ids' values, the raw address and the agent — and what
-    // is the site's own data is kept: the title, the web vitals, the
-    // referrer's path, the language, the screen.
+    // is the site's own data is kept: the title, the referrer's path, the
+    // language, the screen.
+    // **The web vitals are not kept either** — they are the largest thing
+    // stored per row (a third of the table, measured), and only a site that
+    // looks at them needs them.
     assert_eq!(column(&db, "page_title").as_deref(), Some("The page"));
     assert_eq!(column(&db, "gclid"), None);
     assert_eq!(column(&db, "url_query"), None);
     assert_eq!(column(&db, "referrer_path").as_deref(), Some("/item"));
+    assert_eq!(column(&db, "lcp"), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -205,14 +224,14 @@ async fn a_site_can_turn_the_click_ids_on() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_site_can_turn_the_web_vitals_off() {
-    let (app, db, _guard) = app("vitals", r#"{"store_web_vitals": false}"#, |_| {});
+async fn a_site_can_turn_the_web_vitals_on() {
+    let (app, db, _guard) = app("vitals", r#"{"store_web_vitals": true}"#, |_| {});
     let response = app.oneshot(request(&hit())).await.unwrap();
     assert!(response.status().is_success());
     assert_eq!(written(&db, &facts("SELECT count(*) FROM website_event")).await, 1);
 
-    assert_eq!(column(&db, "lcp"), None);
-    assert_eq!(column(&db, "inp"), None);
+    assert_eq!(number(&db, "lcp"), Some(1200.5));
+    assert_eq!(number(&db, "inp"), Some(80.0));
 }
 
 #[tokio::test(flavor = "multi_thread")]

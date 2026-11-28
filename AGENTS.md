@@ -74,7 +74,7 @@ The defaults are chosen for the deployment target, not for a workstation:
 | `SUMIMI_KEEP_QUERY` | **off** | Whether to store the raw query string. The marketing parameters are parsed out of it either way. Umami keeps it; Plausible drops it. |
 | `SUMIMI_STORE_CLICK_IDS` | **off** | Whether to store the ad click ids' **values** (`gclid` and the rest). The value's only use is to tell a paid search from an organic one at the moment of collection — after that it is a person's identifier. Plausible keeps only the parameter's name. |
 | `SUMIMI_STORE_COORDINATES` | **off** | Whether to store the coordinates of the visit. Nothing reads them: the country, the region and the city are what the reports group by. Plausible stores a city id, never coordinates. |
-| `SUMIMI_STORE_WEB_VITALS` | **on** | Whether to store the web vitals (LCP, INP, CLS, FCP, TTFB). They are the site's own performance (the largest thing stored per row). Plausible has no such thing. |
+| `SUMIMI_STORE_WEB_VITALS` | **off** | Whether to store the web vitals (LCP, INP, CLS, FCP, TTFB). They are the site's own performance, and **the largest thing stored per row** — measured on the full traffic (2,767,665 rows): 41.7 MB of a 134 MB table, a third of it. Only a site that looks at them needs them ⇒ ⇒ the site turns them on (`{"store_web_vitals": true}`) and the instance does not pay for them. Plausible has no such thing at all. |
 | `SUMIMI_STORE_SESSION_START` | **on** | Whether to store the session's start on every row. It is what the visit's length is measured from; without it the reports measure it from the visit's first row. |
 | `SUMIMI_STORE_LANGUAGE` | **on** | Whether to store the visitor's language. It is a dimension the dashboard breaks the traffic down by; Plausible does not store it at all. |
 | `SUMIMI_STORE_SCREEN` | **on** | Whether to store the screen's resolution (besides the device class). Plausible stores the device class only. |
@@ -194,6 +194,16 @@ the bookkeeping; each site's facts live in a file of its own, under
 `<main file>.sites/`. ⇒ ⇒ The instance is still **one directory** — copying it is
 still one operation — but it is **not one file** any more, and the backup section of
 the docs says so.
+
+**The dead space is given back by `sumimi compact`.** DuckDB frees the blocks of a
+rewritten row group and never returns them to the filesystem (`VACUUM` does not shrink
+the file either), so a file that has been written to for a while is bigger than the data
+in it — measured on the production-like traffic (2,767,665 rows): **280.0 MB on the disk
+for 211.8 MB of data**, a quarter of the file. ⇒ ⇒ `sumimi compact` copies each file
+into a new one and swaps it in (the rows are the same; it is not a migration) — measured:
+**29.9 MB given back** on the same traffic. ⇒ ⇒ The **server has to be stopped**:
+DuckDB holds the file, and a rename under an open handle would leave the process reading
+the old file.
 
 **One release artifact:**
 
@@ -972,6 +982,7 @@ sumimi timeseries --website <id>    # hourly/daily series
 sumimi export    --website <id> --format json|csv
 sumimi prune     --website <id>     # enforce retention   (local only)
 sumimi erase     --website <id>     # delete a website's data
+sumimi compact                     # give DuckDB's dead space back (local only)
 ```
 
 **Source selection** (exactly one of):

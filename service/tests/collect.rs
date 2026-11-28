@@ -452,9 +452,14 @@ async fn the_website_can_come_in_the_header() {
 }
 
 /// The web vitals are a hit of their own — and they are not a page view.
+///
+/// **The site turns them on** — they are off by default (they are the largest
+/// thing stored per row), so the test says the site wants them.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_vitals_are_not_a_page_view() {
-    let (app, db, path, _guard) = app("performance");
+    let (app, db, path, _guard) = app_with("performance", |config| {
+        config.store_web_vitals = true;
+    });
 
     let response = app
         .clone()
