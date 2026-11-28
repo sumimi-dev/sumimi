@@ -13,6 +13,13 @@
 //! awkward cases (a `NULL` and an empty string are not the same thing, a title with
 //! emoji in it, a URL longer than most people write, a session that runs past
 //! midnight).
+//!
+//! It also has the **order** a real instance's traffic has: the rows go in as
+//! they arrive, and the visit ids are handed out in that same order — one
+//! counter for the whole instance, growing as the requests arrive. ⇒ ⇒ So the
+//! id's order is the order the visits happen in, which is the property the
+//! storage design leans on (see `self_check` below, and the sort key's rule
+//! that a key may lean on the id's order only if the product guarantees it).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -193,6 +200,26 @@ struct Profile {
     longitude: f64,
 }
 
+/// A visit, before the instance has laid the traffic out.
+///
+/// The visit id is **not** known yet: the ids are handed out once the whole
+/// traffic is known, in the order the visits happen — the way the collect path
+/// hands them out, one per request as it arrives.
+struct Pending {
+    /// The site the visit belongs to.
+    website_id: String,
+    /// When the visit started.
+    start: NaiveDateTime,
+    /// The visitor the visit belongs to.
+    visitor_id: Uuid,
+    /// The id the visit was given — filled in when the ids are handed out.
+    visit_id: Option<Uuid>,
+    /// The rows of the visit.
+    hits: Vec<Hit>,
+    /// The revenue the visit earned.
+    revenue: Vec<Revenue>,
+}
+
 /// Build the dataset.
 ///
 /// `visitors_per_day` scales every site down; the default is small enough for a
@@ -293,13 +320,18 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
         })
         .collect();
 
-    let mut hits: Vec<Hit> = Vec::new();
-    let mut revenue: Vec<Revenue> = Vec::new();
+    // The traffic is generated in two steps, because the **visit ids** cannot
+    // be handed out while the traffic is being made.
+    //
+    // The id is minted when the request arrives, so the id's order is the
+    // order the visits happen in — and the visits happen in the order the
+    // clock says, not in the order the generator walks the sites and the
+    // days. ⇒ ⇒ So every session is built first, and the ids are handed out
+    // afterwards, in the order the sessions start.
+    let mut sessions: Vec<Pending> = Vec::new();
     // Visitors that came back on a later day.
     let mut returning_visitors: Vec<Uuid> = Vec::new();
     let mut visitor_counter = 0u64;
-    // The visit ids are a counter — the server's own.
-    let mut visit_counter = 0u64;
 
     for site in &sites {
         for day in 0..DAYS {
@@ -346,12 +378,15 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                     &user_agent,
                     &site.id,
                 );
-                visit_counter += 1;
-                let session_id = crate::event_id::compose_version(
-                    crate::event_id::VISIT_VERSION,
-                    1,
-                    visit_counter,
-                );
+                // The session's rows, waiting for the visit id.
+                let mut pending = Pending {
+                    website_id: site.id.clone(),
+                    start,
+                    visitor_id,
+                    visit_id: None,
+                    hits: Vec::new(),
+                    revenue: Vec::new(),
+                };
 
                 // How many pages the session looks at.
                 let views = match rng.below(100) {
@@ -368,6 +403,10 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                 let mut url = landing.0.to_string();
                 let mut title = landing.1.to_string();
 
+                // The rows of one visit follow each other: every page adds its
+                // own gap, so the rows are in the order they happened — the
+                // order the collect path would have received them in.
+                let mut elapsed = 0i64;
                 for view in 0..views {
                     // The pages after the first are chosen from the site too.
                     if view > 0 {
@@ -471,11 +510,15 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
 
                     // A session that runs past midnight: the timestamp is on the
                     // next day.
-                    let at = start + Duration::seconds(view * rng.between(8, 90));
+                    let gap = rng.between(8, 90);
+                    if view > 0 {
+                        elapsed += gap;
+                    }
+                    let at = start + Duration::seconds(elapsed);
 
-                    hits.push(Hit {
+                    pending.hits.push(Hit {
                         website_id: site.id.clone(),
-                        visit_id: session_id,
+                        visit_id: Uuid::nil(),
                         visitor_id,
                         session_start: Some(start),
                         referrer_name: if referrer.is_empty() {
@@ -559,9 +602,9 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                 // A third of the sessions fire a custom event.
                 if rng.chance(33) {
                     let name = *rng.pick(&["signup", "download", "cta_click", "newsletter"]);
-                    hits.push(Hit {
+                    pending.hits.push(Hit {
                         website_id: site.id.clone(),
-                        visit_id: session_id,
+                        visit_id: Uuid::nil(),
                         visitor_id,
                         session_start: Some(start),
                         referrer_name: if referrer.is_empty() {
@@ -637,9 +680,9 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
 
                 // Some sessions earn money.
                 if rng.chance(12) {
-                    revenue.push(Revenue {
+                    pending.revenue.push(Revenue {
                         website_id: site.id.clone(),
-                        visit_id: Some(session_id),
+                        visit_id: None,
                         event_id: None,
                         event_name: Some("carbon".to_string()),
                         currency: "USD".to_string(),
@@ -647,14 +690,53 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
                         created_at: start + Duration::seconds(rng.between(60, 1800)),
                     });
                 }
+
+                sessions.push(pending);
             }
         }
+    }
+
+    // **The visit ids.** One counter for the whole instance — the three sites
+    // share it, the way the collect path shares it — and the ids are handed
+    // out in the order the visits happen, across the sites.
+    let mut order: Vec<usize> = (0..sessions.len()).collect();
+    order.sort_by_key(|index| (sessions[*index].start, *index));
+    let mut visit_counter = 0u64;
+    for &index in &order {
+        visit_counter += 1;
+        let visit_id = crate::event_id::compose_version(
+            crate::event_id::VISIT_VERSION,
+            1,
+            visit_counter,
+        );
+        let session = &mut sessions[index];
+        session.visit_id = Some(visit_id);
+        for hit in &mut session.hits {
+            hit.visit_id = visit_id;
+        }
+        for record in &mut session.revenue {
+            record.visit_id = Some(visit_id);
+        }
+    }
+
+    // The rows go in as they arrive: by time. The row id is the insertion
+    // order, and the reports use it to break the ties.
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut revenue: Vec<Revenue> = Vec::new();
+    for &index in &order {
+        hits.append(&mut sessions[index].hits);
+        revenue.append(&mut sessions[index].revenue);
     }
 
     // The edge cases a real site produces, on top of the generated traffic.
     let edge = edge_cases(&sites[0]);
     hits.extend(edge.0);
     revenue.extend(edge.1);
+    hits.sort_by_key(|hit| hit.created_at);
+    revenue.sort_by_key(|record| record.created_at);
+
+    // The checks that keep the traffic honest.
+    self_check(&sessions, &hits);
 
     let windows = windows(&sites);
     let expected = compute_expectations(&hits, &revenue, &windows);
@@ -665,6 +747,159 @@ pub fn build(visitors_per_day: i64, website_ids: &[String]) -> Dataset {
         revenue,
         windows,
         expected,
+    }
+}
+
+/// The checks that keep the traffic honest.
+///
+/// The dataset is the **truth** every engine is measured against, so a dataset
+/// that is wrong makes every number wrong — and every conclusion drawn from
+/// those numbers wrong too. ⇒ ⇒ These are assertions, not tests: they run
+/// whenever the dataset is built, so a broken generator cannot be measured by
+/// accident.
+///
+/// Every property below is one the collect path gives the traffic in real
+/// life, because the collect path is what produces it.
+fn self_check(sessions: &[Pending], hits: &[Hit]) {
+    // **1. One start per visit.** The id and the start are minted together, so
+    //    a visit has exactly one start — the moment it began.
+    let mut starts: HashMap<Uuid, Option<NaiveDateTime>> = HashMap::new();
+    for hit in hits {
+        let entry = starts.entry(hit.visit_id).or_insert(hit.session_start);
+        assert_eq!(
+            *entry, hit.session_start,
+            "a visit has one start: {}",
+            hit.visit_id
+        );
+    }
+
+    // **2. The ids follow the clock.** The counter grows as the requests
+    //    arrive, so the ids are handed out in the order the visits happen.
+    let mut by_id: Vec<(u64, Uuid, NaiveDateTime)> = sessions
+        .iter()
+        .filter_map(|session| {
+            let id = session.visit_id?;
+            Some((crate::event_id::counter_of(&id), id, session.start))
+        })
+        .collect();
+    by_id.sort_by_key(|(counter, _, _)| *counter);
+    for pair in by_id.windows(2) {
+        assert!(
+            pair[0].2 <= pair[1].2,
+            "the visit ids must follow the clock: {} starts at {}, but the next id {} starts at {}",
+            pair[0].1,
+            pair[0].2,
+            pair[1].1,
+            pair[1].2
+        );
+    }
+
+    // **3. No id is shared by two sites.** The counter is one for the whole
+    //    instance, so an id belongs to one site and one site only.
+    let mut site_of: HashMap<Uuid, &str> = HashMap::new();
+    for session in sessions {
+        let Some(id) = session.visit_id else { continue };
+        if let Some(previous) = site_of.insert(id, session.website_id.as_str()) {
+            assert_eq!(
+                previous, session.website_id.as_str(),
+                "a visit id belongs to one site: {}",
+                id
+            );
+        }
+    }
+
+    // **4. One visit is one stretch of activity.** It ends when the visitor is
+    //    quiet for the idle timeout, so its rows cannot be spread further
+    //    apart than that — and in the order the key puts them (site, day,
+    //    start, id) they are one run, which is what makes them compress
+    //    together.
+    let mut span: HashMap<Uuid, (NaiveDateTime, NaiveDateTime)> = HashMap::new();
+    for hit in hits {
+        let entry = span
+            .entry(hit.visit_id)
+            .or_insert((hit.created_at, hit.created_at));
+        entry.0 = entry.0.min(hit.created_at);
+        entry.1 = entry.1.max(hit.created_at);
+    }
+    for (id, (first, last)) in &span {
+        let seconds = (*last - *first).num_seconds();
+        assert!(
+            seconds < crate::session::IDLE_TIMEOUT_SECONDS,
+            "a visit is shorter than the idle timeout: {} lasts {seconds}s",
+            id
+        );
+    }
+    let mut keyed: Vec<&Hit> = hits.iter().collect();
+    keyed.sort_by_key(|hit| {
+        (
+            hit.website_id.as_str(),
+            hit.created_at.date(),
+            hit.session_start,
+            hit.visit_id,
+        )
+    });
+    let mut group: Option<(&str, NaiveDate)> = None;
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    let mut last: Option<Uuid> = None;
+    for hit in keyed {
+        let key = (hit.website_id.as_str(), hit.created_at.date());
+        if group != Some(key) {
+            group = Some(key);
+            seen.clear();
+            last = None;
+        }
+        if last != Some(hit.visit_id) {
+            assert!(
+                seen.insert(hit.visit_id),
+                "the rows of a visit must be one run in the key's order: {} in {key:?}",
+                hit.visit_id
+            );
+            last = Some(hit.visit_id);
+        }
+    }
+
+    // **5. A visit belongs to one visitor.** The visitor's id is a hash of the
+    //    address, the agent and the site, and every row of the visit carries
+    //    it — so a visitor's visits share the id and differ in the visit id.
+    for session in sessions {
+        for hit in &session.hits {
+            assert_eq!(
+                session.visitor_id, hit.visitor_id,
+                "the rows of a visit carry one visitor: {}",
+                hit.visit_id
+            );
+        }
+    }
+    let mut visitor_of: HashMap<Uuid, Uuid> = HashMap::new();
+    for hit in hits {
+        if let Some(previous) = visitor_of.insert(hit.visit_id, hit.visitor_id) {
+            assert_eq!(
+                previous, hit.visitor_id,
+                "a visit belongs to one visitor: {}",
+                hit.visit_id
+            );
+        }
+    }
+
+    // **6. The event properties have one shape.** The same keys, the same
+    //    kinds: a number must not turn into a text halfway through, or the
+    //    reports would read the column as one kind and the rows as another.
+    let mut shape: Option<Vec<(String, &'static str)>> = None;
+    for hit in hits {
+        if hit.properties.is_empty() {
+            continue;
+        }
+        let row: Vec<(String, &'static str)> = hit
+            .properties
+            .iter()
+            .map(|property| (property.key.clone(), property.value.data_type()))
+            .collect();
+        match &shape {
+            None => shape = Some(row),
+            Some(expected) => {
+                assert_eq!(expected, &row, "the event properties must have one shape")
+            }
+        }
     }
 }
 
