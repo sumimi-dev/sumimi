@@ -425,16 +425,23 @@ pub fn run() -> Result<()> {
             seed,
             as_of,
             replace,
-        } => cmd_seed(
-            &cli,
-            website,
-            domain,
-            *days,
-            *visitors,
-            *seed,
-            as_of.as_deref(),
-            *replace,
-        ),
+        } => {
+            // The clock: the moment the history is as of. **The default is the
+            // moment the seed runs** — the history is always recent, which is
+            // what a demo wants. Pin it (`--as-of`) and the same seed gives
+            // the same rows.
+            let as_of = match as_of.as_deref() {
+                Some(value) => parse_as_of(value)?,
+                None => chrono::Utc::now().naive_utc(),
+            };
+            let options = seed::SeedOptions {
+                seed: *seed,
+                as_of,
+                replace: *replace,
+                ..seed::SeedOptions::new(website, domain, *days, *visitors)
+            };
+            cmd_seed(&cli, options)
+        }
         Command::Geoip { command } => match command {
             GeoipCommand::Download { country } => {
                 let kind = if *country {
@@ -665,36 +672,15 @@ fn cmd_gsc(cli: &Cli, command: &GscCommand) -> Result<()> {
 }
 
 /// Fill the database with synthetic demo data.
-fn cmd_seed(
-    cli: &Cli,
-    website: &str,
-    domain: &str,
-    days: i64,
-    visitors: i64,
-    seed: u64,
-    as_of: Option<&str>,
-    replace: bool,
-) -> Result<()> {
+fn cmd_seed(cli: &Cli, options: seed::SeedOptions) -> Result<()> {
     let paths = sumimi_service::config::Paths::new(
         Some(cli.dir.clone()),
         cli.db.clone(),
         &cli.backend,
     );
 
-    // The clock: the moment the history is as of. **The default is the moment
-    // the seed runs** — the history is always recent, which is what a demo
-    // wants. Pin it (`--as-of`) and the same seed gives the same rows.
-    let as_of = match as_of {
-        Some(value) => parse_as_of(value)?,
-        None => chrono::Utc::now().naive_utc(),
-    };
-
-    let options = seed::SeedOptions {
-        seed,
-        as_of,
-        replace,
-        ..seed::SeedOptions::new(website, domain, days, visitors)
-    };
+    let seed = options.seed;
+    let as_of = options.as_of;
 
     // The seed goes through the storage backend, so the same data lands in
     // DuckDB, in SQLite and in PostgreSQL — and the numbers agree.

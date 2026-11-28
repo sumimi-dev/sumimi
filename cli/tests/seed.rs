@@ -11,7 +11,7 @@
 //!   - **nothing is in the future** — the newest row is at the clock, or
 //!     before it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sumimi_cli::seed::{seed, SeedOptions};
 use sumimi_service::pool::Db;
@@ -33,7 +33,7 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 /// The rows a seeded database has: the moment, the page and the visit.
-fn traffic(dir: &PathBuf, seed_value: u64, as_of: chrono::NaiveDateTime) -> Vec<(String, String, String)> {
+fn traffic(dir: &Path, seed_value: u64, as_of: chrono::NaiveDateTime) -> Vec<(String, String, String)> {
     let db = Db::open(&dir.join("data.duckdb"), "128MB").unwrap();
     let options = SeedOptions {
         website: "Example".to_string(),
