@@ -328,6 +328,72 @@ async fn a_token_that_is_not_ours_is_ignored() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+/// The rows of one visit share their start.
+///
+/// **This is the property the storage leans on.** The rows of a visit are
+/// grouped by their `session_start` ⇒ ⇒ so every row of a visit has to carry
+/// the *same* start — and the token is what carries it from one request to the
+/// next.
+///
+/// ⇒ ⇒ The test sends the second hit a second later, so the two requests are
+/// in different seconds: without the token the second hit would start its own
+/// session and the two rows would have two different starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_rows_of_one_visit_share_their_start() {
+    let (app, db, path, _guard) = app("session-start");
+
+    let first = app
+        .clone()
+        .oneshot(umami_request(
+            r#"{"type":"event","payload":{"website":"website-1","url":"/one"}}"#,
+            None,
+        ))
+        .await
+        .unwrap();
+    let first: Answer = serde_json::from_str(&body_of(first).await).unwrap();
+
+    // A second later, with the token the first hit carried.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let second = app
+        .clone()
+        .oneshot(umami_request(
+            r#"{"type":"event","payload":{"website":"website-1","url":"/two"}}"#,
+            Some(&first.cache),
+        ))
+        .await
+        .unwrap();
+    let second: Answer = serde_json::from_str(&body_of(second).await).unwrap();
+    assert_eq!(first.visit_id, second.visit_id, "the token carries the visit");
+
+    // The rows: both of them, one visit, one start.
+    let mut rows = 0;
+    for _ in 0..50 {
+        rows = count(&db, &facts("SELECT count(*) FROM website_event")).await;
+        if rows >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let starts = count(
+        &db,
+        &facts("SELECT count(DISTINCT session_start) FROM website_event"),
+    )
+    .await;
+    let visits = count(
+        &db,
+        &facts("SELECT count(DISTINCT visit_id) FROM website_event"),
+    )
+    .await;
+    assert_eq!(rows, 2, "both hits are stored");
+    assert_eq!(visits, 1, "the two hits are one visit");
+    assert_eq!(
+        starts, 1,
+        "the rows of one visit share their start: the token carries it"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 /// Our own header wins over Umami's.
 #[tokio::test(flavor = "multi_thread")]
 async fn our_header_wins_over_umamis() {

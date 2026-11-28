@@ -421,7 +421,11 @@ pub fn build_hit(
         key.derive_previous(&scope, &address, &user_agent, now)
     } {
         if let Some(claims) = token.as_ref() {
-            if claims.visitor() == Some(previous) {
+            if claims
+                .visitor()
+                .map(|id| crate::ua::same_visitor(&id, &previous))
+                .unwrap_or(false)
+            {
                 visitor_id = previous;
             }
         }
@@ -448,12 +452,19 @@ pub fn build_hit(
     // because the visitor id is already one-way, so an offline import can work
     // it out for itself.
     let ours = token.filter(|claims| {
-        claims.website_id == meta.id && claims.visitor() == Some(visitor_id)
+        claims.website_id == meta.id
+            && claims
+                .visitor()
+                .map(|id| crate::ua::same_visitor(&id, &visitor_id))
+                .unwrap_or(false)
     });
     let (visit_id, session_start) = match ours {
         // The token is ours and the visitor is still active: the session goes
         // on — and it keeps the start it had.
-        Some(claims) if now - claims.last <= crate::session::IDLE_TIMEOUT_SECONDS => (
+        Some(claims)
+            if at - claims.last
+                <= crate::session::IDLE_TIMEOUT_SECONDS * 1_000_000 =>
+        (
             claims.session().unwrap_or_else(|| state.storage.next_visit_id()),
             claims.started_at(),
         ),
@@ -466,23 +477,33 @@ pub fn build_hit(
             Some(client_id) if is_safe_client_id(client_id) => {
                 (crate::session::client_session_id(client_id), None)
             }
-            _ => (
-                state.sessions.session(visitor_id, at),
-                Some(created_at),
-            ),
+            _ => {
+                // The server works the session out — and it knows when the
+                // session began, so every row of it carries that moment.
+                let (visit_id, start) = state.sessions.session(visitor_id, at);
+                (
+                    visit_id,
+                    chrono::DateTime::from_timestamp_micros(start)
+                        .map(|moment| moment.naive_utc()),
+                )
+            }
         },
     };
 
     // The token the client gets back: the session it is in, when it started,
     // and the moment of this hit.
+    //
+    // **The moments are microseconds** — the same precision the rows carry,
+    // so the start the token hands to the next hit is the start the first hit
+    // wrote, and not a rounded one.
     let claims = token::Claims::new(
         &meta.id,
         visitor_id,
         visit_id,
         session_start
-            .map(|start| start.and_utc().timestamp())
-            .unwrap_or(now),
-        now,
+            .map(|start| start.and_utc().timestamp_micros())
+            .unwrap_or(at),
+        at,
     );
 
     // The identity the site owner knows the visitor by — their own user id, a

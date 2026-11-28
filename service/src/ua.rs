@@ -323,6 +323,20 @@ pub fn visitor_bytes(id: &Uuid) -> Vec<u8> {
     id.as_bytes()[..VISITOR_ID_BYTES].to_vec()
 }
 
+/// Are these two the same visitor?
+///
+/// The **stored** identity is eight bytes — the column keeps the first eight
+/// bytes of the hash ([`VISITOR_ID_BYTES`]), and the session token carries
+/// those eight bytes in their hex form ⇒ ⇒ so this compares **those eight
+/// bytes**, not the whole sixteen-byte hash.
+///
+/// ⇒ ⇒ The token's visitor and the one the server derives again are the same
+/// visitor when their stored bytes are the same — which is the same question
+/// the reports ask, since they count the visitors out of that column.
+pub fn same_visitor(one: &Uuid, other: &Uuid) -> bool {
+    one.as_bytes()[..VISITOR_ID_BYTES] == other.as_bytes()[..VISITOR_ID_BYTES]
+}
+
 /// The visitor's id, back from its text.
 ///
 /// **Two forms are read**: the hex the server writes now (eight bytes, sixteen

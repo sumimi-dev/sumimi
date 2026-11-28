@@ -44,9 +44,14 @@ pub struct Claims {
     pub visitor_id: String,
     /// The session's id.
     pub visit_id: String,
-    /// The moment the session started, in seconds since the epoch.
+    /// The moment the session started, in **microseconds** since the epoch.
+    ///
+    /// ⇒ ⇒ Microseconds, not seconds: this is the value the `session_start`
+    /// column carries, and the column's precision is the microsecond — a
+    /// second-granular token would hand the next hit a start that is not the
+    /// one the first hit wrote.
     pub start: i64,
-    /// The moment of the last hit, in seconds since the epoch.
+    /// The moment of the last hit, in microseconds since the epoch.
     pub last: i64,
     /// The type of the token.
     #[serde(rename = "type")]
@@ -89,7 +94,7 @@ impl Claims {
 
     /// The moment the session started.
     pub fn started_at(&self) -> Option<chrono::NaiveDateTime> {
-        chrono::DateTime::from_timestamp(self.start, 0).map(|moment| moment.naive_utc())
+        chrono::DateTime::from_timestamp_micros(self.start).map(|moment| moment.naive_utc())
     }
 }
 
@@ -140,8 +145,8 @@ mod tests {
             "site-1",
             Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef),
             Uuid::from_u128(42),
-            1_699_999_000,
-            1_700_000_000,
+            1_699_999_000_000_000,
+            1_700_000_000_000_000,
         )
     }
 
@@ -164,8 +169,8 @@ mod tests {
             )
         );
         assert_eq!(read.session(), Some(Uuid::from_u128(42)));
-        assert_eq!(read.last, 1_700_000_000);
-        assert_eq!(read.start, 1_699_999_000);
+        assert_eq!(read.last, 1_700_000_000_000_000);
+        assert_eq!(read.start, 1_699_999_000_000_000);
         assert!(read.started_at().is_some());
     }
 

@@ -63,6 +63,12 @@ pub const DEFAULT_CAPACITY: usize = 100_000;
 struct Active {
     /// When the visitor was last seen — microseconds since the epoch.
     last: i64,
+    /// When the session began — microseconds since the epoch.
+    ///
+    /// ⇒ ⇒ The server keeps it so that a client which does not carry the
+    /// token still gets the **session's** start on every row — the same value
+    /// the token would have carried.
+    start: i64,
     /// The session they are in.
     visit_id: VisitId,
 }
@@ -116,24 +122,36 @@ impl Sessions {
     /// An event that arrives **out of order** — a late import, a clock that
     /// moved — joins the session that is open now. The cut follows the order
     /// the events arrived in, which is the only order the server saw.
-    pub fn session(&self, visitor: Uuid, at: i64) -> VisitId {
+    ///
+    /// It answers with **the session's id and the session's start** — the
+    /// start in microseconds since the epoch. ⇒ ⇒ The start is the moment the
+    /// session began, not the moment of this event: every row of the session
+    /// carries the same one.
+    pub fn session(&self, visitor: Uuid, at: i64) -> (VisitId, i64) {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         match active.get_mut(&visitor) {
             // Still in the same stretch of activity: the session goes on.
             Some(entry) if at >= entry.last && at - entry.last <= self.timeout => {
                 entry.last = at;
-                entry.visit_id
+                (entry.visit_id, entry.start)
             }
             // Out of order: the session stays where it is.
-            Some(entry) if at < entry.last => entry.visit_id,
+            Some(entry) if at < entry.last => (entry.visit_id, entry.start),
             // Quiet for longer than the timeout: a new session starts here.
             _ => {
                 let visit_id = (self.mint)();
-                active.insert(visitor, Active { last: at, visit_id });
+                active.insert(
+                    visitor,
+                    Active {
+                        last: at,
+                        start: at,
+                        visit_id,
+                    },
+                );
                 if active.len() > self.capacity {
                     self.evict(&mut active, at);
                 }
-                visit_id
+                (visit_id, at)
             }
         }
     }
@@ -275,16 +293,18 @@ mod tests {
         let (mint, counter) = mint();
         let sessions = Sessions::new(Duration::from_secs(1800), 100, mint);
         let start = 1_700_000_000_000_000;
-        let first = sessions.session(visitor(1), start);
+        let (first, start_of_the_session) = sessions.session(visitor(1), start);
         // The counter handed out one id.
         assert_eq!(counter.load(Ordering::Acquire), 1);
         // A second visitor: another id.
-        let second = sessions.session(visitor(2), start);
+        let (second, _) = sessions.session(visitor(2), start);
         assert_ne!(first, second);
         assert_eq!(counter.load(Ordering::Acquire), 2);
         // Sixteen bytes, and the visit layout — not the event one.
         assert_eq!(first.as_bytes().len(), 16);
         assert_eq!(crate::event_id::layout_of(&first), crate::event_id::VISIT_VERSION);
+        // The session's start is the moment it began.
+        assert_eq!(start_of_the_session, start);
     }
 
     #[test]
